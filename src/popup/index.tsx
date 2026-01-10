@@ -1,36 +1,31 @@
 import { render } from 'preact';
 import { useState, useEffect } from 'preact/hooks';
-import type { AssetType, TipInfo } from '@/types';
+import type { AssetType, TipInfo, MessageResponse, OnboardingState } from '@/types';
+import { runtime } from '@/lib/browser';
 
-// Asset display info
-const ASSETS: Record<AssetType, { name: string; symbol: string; icon: string }> = {
-  btc: { name: 'Bitcoin', symbol: 'BTC', icon: '₿' },
-  ltc: { name: 'Litecoin', symbol: 'LTC', icon: 'Ł' },
-  xmr: { name: 'Monero', symbol: 'XMR', icon: 'ɱ' },
-  wow: { name: 'Wownero', symbol: 'WOW', icon: '🐕' },
-  grin: { name: 'Grin', symbol: 'GRIN', icon: '😊' },
+// Asset display info with SVG icon paths
+const ASSETS: Record<AssetType, { name: string; symbol: string; iconPath: string }> = {
+  btc: { name: 'Bitcoin', symbol: 'BTC', iconPath: 'icons/coins/bitcoin.svg' },
+  ltc: { name: 'Litecoin', symbol: 'LTC', iconPath: 'icons/coins/litecoin.svg' },
+  xmr: { name: 'Monero', symbol: 'XMR', iconPath: 'icons/coins/monero.svg' },
+  wow: { name: 'Wownero', symbol: 'WOW', iconPath: 'icons/coins/wownero.svg' },
+  grin: { name: 'Grin', symbol: 'GRIN', iconPath: 'icons/coins/grin.svg' },
 };
 
 // Send message to background
 async function sendMessage<T>(message: unknown): Promise<T> {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(message, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-      } else if (response?.success) {
-        resolve(response.data);
-      } else {
-        reject(new Error(response?.error || 'Unknown error'));
-      }
-    });
-  });
+  const response = await runtime.sendMessage<MessageResponse<T>>(message);
+  if (response?.success) {
+    return response.data as T;
+  }
+  throw new Error(response?.error || 'Unknown error');
 }
 
 // ============================================================================
 // Onboarding Flow Components
 // ============================================================================
 
-type OnboardingStep = 'choice' | 'generate' | 'verify' | 'password';
+type OnboardingStep = 'choice' | 'generate' | 'verify' | 'password' | 'restore';
 
 function OnboardingChoice({
   onCreateNew,
@@ -41,7 +36,7 @@ function OnboardingChoice({
 }) {
   return (
     <div class="lock-screen">
-      <div class="lock-icon">🦊</div>
+      <img src="icons/logo_256.png" alt="Smirk" style={{ width: '80px', height: '80px', marginBottom: '16px' }} />
       <h2 class="lock-title">Welcome to Smirk</h2>
       <p class="lock-text">Non-custodial multi-currency tip wallet</p>
 
@@ -49,7 +44,7 @@ function OnboardingChoice({
         <button class="btn btn-primary" style={{ width: '100%', marginBottom: '12px' }} onClick={onCreateNew}>
           Create New Wallet
         </button>
-        <button class="btn" style={{ width: '100%', background: '#3f3f46' }} onClick={onRestore}>
+        <button class="btn btn-secondary" style={{ width: '100%' }} onClick={onRestore}>
           Restore from Seed
         </button>
       </div>
@@ -60,11 +55,24 @@ function OnboardingChoice({
 function SeedDisplay({
   words,
   onContinue,
+  onBack,
 }: {
   words: string[];
   onContinue: () => void;
+  onBack: () => void;
 }) {
   const [confirmed, setConfirmed] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(words.join(' '));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
 
   return (
     <div class="lock-screen" style={{ padding: '16px' }}>
@@ -81,25 +89,24 @@ function SeedDisplay({
           gridTemplateColumns: 'repeat(3, 1fr)',
           gap: '8px',
           width: '100%',
-          marginBottom: '16px',
+          marginBottom: '12px',
         }}
       >
         {words.map((word, i) => (
-          <div
-            key={i}
-            style={{
-              background: '#27272a',
-              padding: '8px',
-              borderRadius: '6px',
-              fontSize: '12px',
-              textAlign: 'center',
-            }}
-          >
-            <span style={{ color: '#71717a', marginRight: '4px' }}>{i + 1}.</span>
+          <div key={i} class="seed-word">
+            <span class="seed-word-number">{i + 1}.</span>
             {word}
           </div>
         ))}
       </div>
+
+      <button
+        class="btn btn-secondary"
+        style={{ width: '100%', marginBottom: '16px' }}
+        onClick={handleCopy}
+      >
+        {copied ? 'Copied!' : 'Copy to Clipboard'}
+      </button>
 
       <label
         style={{
@@ -119,14 +126,24 @@ function SeedDisplay({
         I have written down my recovery phrase
       </label>
 
-      <button
-        class="btn btn-primary"
-        style={{ width: '100%' }}
-        disabled={!confirmed}
-        onClick={onContinue}
-      >
-        Continue
-      </button>
+      <div style={{ display: 'flex', gap: '12px' }}>
+        <button
+          type="button"
+          class="btn btn-secondary"
+          style={{ flex: 1 }}
+          onClick={onBack}
+        >
+          Back
+        </button>
+        <button
+          class="btn btn-primary"
+          style={{ flex: 1 }}
+          disabled={!confirmed}
+          onClick={onContinue}
+        >
+          Continue
+        </button>
+      </div>
     </div>
   );
 }
@@ -197,8 +214,8 @@ function SeedVerify({
         <div style={{ display: 'flex', gap: '12px' }}>
           <button
             type="button"
-            class="btn"
-            style={{ flex: 1, background: '#3f3f46' }}
+            class="btn btn-secondary"
+            style={{ flex: 1 }}
             onClick={onBack}
           >
             Back
@@ -386,8 +403,8 @@ function RestoreWallet({ onComplete, onBack }: { onComplete: () => void; onBack:
         <div style={{ display: 'flex', gap: '12px' }}>
           <button
             type="button"
-            class="btn"
-            style={{ flex: 1, background: '#3f3f46' }}
+            class="btn btn-secondary"
+            style={{ flex: 1 }}
             onClick={onBack}
             disabled={loading}
           >
@@ -404,10 +421,52 @@ function RestoreWallet({ onComplete, onBack }: { onComplete: () => void; onBack:
 
 function Onboarding({ onComplete }: { onComplete: () => void }) {
   const [step, setStep] = useState<OnboardingStep>('choice');
-  const [isRestoring, setIsRestoring] = useState(false);
   const [words, setWords] = useState<string[]>([]);
   const [verifyIndices, setVerifyIndices] = useState<number[]>([]);
   const [verifiedWords, setVerifiedWords] = useState<Record<number, string>>({});
+  const [loading, setLoading] = useState(true);
+
+  // Load persisted onboarding state on mount
+  useEffect(() => {
+    loadOnboardingState();
+  }, []);
+
+  const loadOnboardingState = async () => {
+    try {
+      const result = await sendMessage<{ state: OnboardingState | null }>({
+        type: 'GET_ONBOARDING_STATE',
+      });
+
+      if (result.state) {
+        // Restore previous state
+        if (result.state.step === 'restore') {
+          setStep('choice'); // Show restore option from choice screen
+        } else {
+          setStep(result.state.step);
+        }
+        if (result.state.words) setWords(result.state.words);
+        if (result.state.verifyIndices) setVerifyIndices(result.state.verifyIndices);
+      }
+    } catch (err) {
+      console.error('Failed to load onboarding state:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saveState = async (newStep: OnboardingStep, newWords?: string[], newIndices?: number[]) => {
+    const state: OnboardingState = {
+      step: newStep,
+      words: newWords ?? words,
+      verifyIndices: newIndices ?? verifyIndices,
+      createdAt: Date.now(),
+    };
+    await sendMessage({ type: 'SAVE_ONBOARDING_STATE', state });
+  };
+
+  const clearState = async () => {
+    await sendMessage({ type: 'CLEAR_ONBOARDING_STATE' });
+  };
 
   const handleCreateNew = async () => {
     try {
@@ -417,38 +476,72 @@ function Onboarding({ onComplete }: { onComplete: () => void }) {
       setWords(result.words);
       setVerifyIndices(result.verifyIndices);
       setStep('generate');
+      // Persist state so user can click away and come back
+      await saveState('generate', result.words, result.verifyIndices);
     } catch (err) {
       console.error('Failed to generate mnemonic:', err);
     }
   };
 
-  const handleRestore = () => {
-    setIsRestoring(true);
+  const handleRestore = async () => {
+    setStep('restore' as OnboardingStep);
+    await saveState('restore' as OnboardingStep);
   };
 
-  if (isRestoring) {
-    return <RestoreWallet onComplete={onComplete} onBack={() => setIsRestoring(false)} />;
+  const handleComplete = async () => {
+    await clearState();
+    onComplete();
+  };
+
+  const handleBackToChoice = async () => {
+    setStep('choice');
+    await clearState();
+  };
+
+  if (loading) {
+    return (
+      <div class="lock-screen">
+        <div class="spinner" />
+      </div>
+    );
+  }
+
+  if (step === 'restore') {
+    return <RestoreWallet onComplete={handleComplete} onBack={handleBackToChoice} />;
   }
 
   switch (step) {
     case 'choice':
       return <OnboardingChoice onCreateNew={handleCreateNew} onRestore={handleRestore} />;
     case 'generate':
-      return <SeedDisplay words={words} onContinue={() => setStep('verify')} />;
+      return (
+        <SeedDisplay
+          words={words}
+          onContinue={async () => {
+            setStep('verify');
+            await saveState('verify');
+          }}
+          onBack={handleBackToChoice}
+        />
+      );
     case 'verify':
       return (
         <SeedVerify
           words={words}
           verifyIndices={verifyIndices}
-          onVerified={(verified) => {
+          onVerified={async (verified) => {
             setVerifiedWords(verified);
             setStep('password');
+            await saveState('password');
           }}
-          onBack={() => setStep('generate')}
+          onBack={async () => {
+            setStep('generate');
+            await saveState('generate');
+          }}
         />
       );
     case 'password':
-      return <PasswordSetup verifiedWords={verifiedWords} onComplete={onComplete} />;
+      return <PasswordSetup verifiedWords={verifiedWords} onComplete={handleComplete} />;
   }
 }
 
@@ -532,8 +625,13 @@ function WalletView({ onLock }: { onLock: () => void }) {
               key={asset}
               class={`asset-tab ${activeAsset === asset ? 'active' : ''}`}
               onClick={() => setActiveAsset(asset)}
+              title={ASSETS[asset].name}
             >
-              {ASSETS[asset].icon} {ASSETS[asset].symbol}
+              <img
+                src={ASSETS[asset].iconPath}
+                alt={ASSETS[asset].symbol}
+                style={{ width: '20px', height: '20px' }}
+              />
             </button>
           ))}
         </div>
@@ -650,8 +748,8 @@ function ClaimView({
 
       <div style={{ display: 'flex', gap: '12px', width: '100%', maxWidth: '280px' }}>
         <button
-          class="btn"
-          style={{ flex: 1, background: '#3f3f46' }}
+          class="btn btn-secondary"
+          style={{ flex: 1 }}
           onClick={onCancel}
           disabled={claiming}
         >

@@ -6,6 +6,7 @@ export interface WalletKey {
   asset: AssetType;
   publicKey: string;      // Hex encoded
   privateKey: string;     // Encrypted with user password
+  privateKeySalt: string; // Salt used for encryption (hex encoded)
   // For XMR/WOW: additional keys
   viewKey?: string;
   spendKey?: string;
@@ -50,6 +51,14 @@ export interface TipInfo {
   recipientHint?: string;
 }
 
+// Onboarding state for persisting wallet creation progress
+export interface OnboardingState {
+  step: 'choice' | 'generate' | 'verify' | 'password' | 'restore';
+  words?: string[];
+  verifyIndices?: number[];
+  createdAt: number;
+}
+
 // Message types for background <-> popup/content communication
 export type MessageType =
   | { type: 'GET_WALLET_STATE' }
@@ -66,7 +75,10 @@ export type MessageType =
   | { type: 'GET_TIP_INFO'; linkId: string }
   | { type: 'CLAIM_TIP'; linkId: string; fragmentKey?: string }
   | { type: 'GET_PENDING_CLAIM' }
-  | { type: 'CLEAR_PENDING_CLAIM' };
+  | { type: 'CLEAR_PENDING_CLAIM' }
+  | { type: 'GET_ONBOARDING_STATE' }
+  | { type: 'SAVE_ONBOARDING_STATE'; state: OnboardingState }
+  | { type: 'CLEAR_ONBOARDING_STATE' };
 
 export type MessageResponse<T = unknown> =
   | { success: true; data: T }

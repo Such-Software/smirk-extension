@@ -1,0 +1,171 @@
+/**
+ * Browser API abstraction layer.
+ *
+ * Provides a unified interface for Chrome, Firefox, and Safari extensions.
+ * Firefox uses `browser.*` with Promises, Chrome uses `chrome.*` with callbacks.
+ * This wrapper normalizes the API to always use Promises.
+ */
+
+// Detect browser environment
+const isFirefox = typeof globalThis.browser !== 'undefined';
+const browserAPI = isFirefox ? globalThis.browser : globalThis.chrome;
+
+/**
+ * Storage API wrapper.
+ */
+export const storage = {
+  local: {
+    async get<T = Record<string, unknown>>(keys: string | string[]): Promise<T> {
+      if (isFirefox) {
+        return browserAPI.storage.local.get(keys) as Promise<T>;
+      }
+      return new Promise((resolve) => {
+        browserAPI.storage.local.get(keys, (result: T) => resolve(result));
+      });
+    },
+
+    async set(items: Record<string, unknown>): Promise<void> {
+      if (isFirefox) {
+        return browserAPI.storage.local.set(items);
+      }
+      return new Promise((resolve) => {
+        browserAPI.storage.local.set(items, () => resolve());
+      });
+    },
+
+    async remove(keys: string | string[]): Promise<void> {
+      if (isFirefox) {
+        return browserAPI.storage.local.remove(keys);
+      }
+      return new Promise((resolve) => {
+        browserAPI.storage.local.remove(keys, () => resolve());
+      });
+    },
+
+    async clear(): Promise<void> {
+      if (isFirefox) {
+        return browserAPI.storage.local.clear();
+      }
+      return new Promise((resolve) => {
+        browserAPI.storage.local.clear(() => resolve());
+      });
+    },
+  },
+};
+
+/**
+ * Runtime API wrapper.
+ */
+export const runtime = {
+  sendMessage<T = unknown>(message: unknown): Promise<T> {
+    if (isFirefox) {
+      return browserAPI.runtime.sendMessage(message) as Promise<T>;
+    }
+    return new Promise((resolve) => {
+      browserAPI.runtime.sendMessage(message, (response: T) => resolve(response));
+    });
+  },
+
+  onMessage: {
+    addListener(
+      callback: (
+        message: unknown,
+        sender: chrome.runtime.MessageSender,
+        sendResponse: (response: unknown) => void
+      ) => boolean | void
+    ): void {
+      browserAPI.runtime.onMessage.addListener(callback);
+    },
+
+    removeListener(
+      callback: (
+        message: unknown,
+        sender: chrome.runtime.MessageSender,
+        sendResponse: (response: unknown) => void
+      ) => boolean | void
+    ): void {
+      browserAPI.runtime.onMessage.removeListener(callback);
+    },
+  },
+
+  onInstalled: {
+    addListener(
+      callback: (details: chrome.runtime.InstalledDetails) => void
+    ): void {
+      browserAPI.runtime.onInstalled.addListener(callback);
+    },
+  },
+
+  getURL(path: string): string {
+    return browserAPI.runtime.getURL(path);
+  },
+
+  get id(): string | undefined {
+    return browserAPI.runtime.id;
+  },
+};
+
+/**
+ * Notifications API wrapper.
+ */
+export const notifications = {
+  create(
+    notificationId: string | undefined,
+    options: chrome.notifications.NotificationOptions
+  ): Promise<string> {
+    if (isFirefox) {
+      return browserAPI.notifications.create(notificationId, options);
+    }
+    return new Promise((resolve) => {
+      browserAPI.notifications.create(notificationId ?? '', options, (id: string) =>
+        resolve(id)
+      );
+    });
+  },
+
+  clear(notificationId: string): Promise<boolean> {
+    if (isFirefox) {
+      return browserAPI.notifications.clear(notificationId);
+    }
+    return new Promise((resolve) => {
+      browserAPI.notifications.clear(notificationId, (wasCleared: boolean) =>
+        resolve(wasCleared)
+      );
+    });
+  },
+};
+
+/**
+ * Tabs API wrapper.
+ */
+export const tabs = {
+  async query(queryInfo: chrome.tabs.QueryInfo): Promise<chrome.tabs.Tab[]> {
+    if (isFirefox) {
+      return browserAPI.tabs.query(queryInfo);
+    }
+    return new Promise((resolve) => {
+      browserAPI.tabs.query(queryInfo, (tabs: chrome.tabs.Tab[]) => resolve(tabs));
+    });
+  },
+
+  async sendMessage<T = unknown>(tabId: number, message: unknown): Promise<T> {
+    if (isFirefox) {
+      return browserAPI.tabs.sendMessage(tabId, message) as Promise<T>;
+    }
+    return new Promise((resolve) => {
+      browserAPI.tabs.sendMessage(tabId, message, (response: T) => resolve(response));
+    });
+  },
+
+  async create(createProperties: chrome.tabs.CreateProperties): Promise<chrome.tabs.Tab> {
+    if (isFirefox) {
+      return browserAPI.tabs.create(createProperties);
+    }
+    return new Promise((resolve) => {
+      browserAPI.tabs.create(createProperties, (tab: chrome.tabs.Tab) => resolve(tab));
+    });
+  },
+};
+
+// Re-export for convenience
+export { browserAPI, isFirefox };

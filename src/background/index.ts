@@ -28,8 +28,17 @@ import {
   mnemonicToWords,
   getVerificationIndices,
 } from '@/lib/hd';
-import { getWalletState, saveWalletState, DEFAULT_WALLET_STATE } from '@/lib/storage';
+import {
+  getWalletState,
+  saveWalletState,
+  DEFAULT_WALLET_STATE,
+  getOnboardingState,
+  saveOnboardingState,
+  clearOnboardingState,
+} from '@/lib/storage';
+import type { OnboardingState } from '@/types';
 import { api } from '@/lib/api';
+import { runtime, notifications } from '@/lib/browser';
 
 // Pending claim data from content script
 let pendingClaim: { linkId: string; fragmentKey?: string } | null = null;
@@ -44,11 +53,11 @@ let isUnlocked = false;
 /**
  * Handles messages from popup and content scripts.
  */
-chrome.runtime.onMessage.addListener(
-  (message: MessageType, _sender, sendResponse: (response: MessageResponse) => void) => {
-    handleMessage(message)
+runtime.onMessage.addListener(
+  (message: unknown, _sender, sendResponse: (response: unknown) => void) => {
+    handleMessage(message as MessageType)
       .then(sendResponse)
-      .catch((err) => sendResponse({ success: false, error: err.message }));
+      .catch((err: Error) => sendResponse({ success: false, error: err.message }));
 
     // Return true to indicate async response
     return true;
@@ -99,6 +108,15 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
     case 'CLEAR_PENDING_CLAIM':
       pendingClaim = null;
       return { success: true, data: { cleared: true } };
+
+    case 'GET_ONBOARDING_STATE':
+      return handleGetOnboardingState();
+
+    case 'SAVE_ONBOARDING_STATE':
+      return handleSaveOnboardingState(message.state);
+
+    case 'CLEAR_ONBOARDING_STATE':
+      return handleClearOnboardingState();
 
     default:
       return { success: false, error: 'Unknown message type' };
@@ -209,14 +227,13 @@ async function createWalletFromMnemonic(
 
   // Encrypt mnemonic for storage
   const mnemonicBytes = new TextEncoder().encode(mnemonic);
-  const salt = randomBytes(16);
-  const { encrypted: encryptedMnemonic } = await encryptPrivateKey(mnemonicBytes, password);
+  const { encrypted: encryptedMnemonic, salt: mnemonicSalt } = await encryptPrivateKey(mnemonicBytes, password);
 
   // Build wallet state
   const state: WalletState = {
     ...DEFAULT_WALLET_STATE,
     encryptedSeed: encryptedMnemonic,
-    seedSalt: bytesToHex(salt),
+    seedSalt: mnemonicSalt,
     backupConfirmed,
     walletBirthday: Date.now(),
   };
@@ -225,32 +242,35 @@ async function createWalletFromMnemonic(
 
   // Store BTC key
   const btcPub = getPublicKey(derivedKeys.btc.privateKey);
-  const { encrypted: btcEnc } = await encryptPrivateKey(derivedKeys.btc.privateKey, password);
+  const { encrypted: btcEnc, salt: btcSalt } = await encryptPrivateKey(derivedKeys.btc.privateKey, password);
   state.keys.btc = {
     asset: 'btc',
     publicKey: bytesToHex(btcPub),
     privateKey: btcEnc,
+    privateKeySalt: btcSalt,
     createdAt: Date.now(),
   };
   unlockedKeys.set('btc', derivedKeys.btc.privateKey);
 
   // Store LTC key
   const ltcPub = getPublicKey(derivedKeys.ltc.privateKey);
-  const { encrypted: ltcEnc } = await encryptPrivateKey(derivedKeys.ltc.privateKey, password);
+  const { encrypted: ltcEnc, salt: ltcSalt } = await encryptPrivateKey(derivedKeys.ltc.privateKey, password);
   state.keys.ltc = {
     asset: 'ltc',
     publicKey: bytesToHex(ltcPub),
     privateKey: ltcEnc,
+    privateKeySalt: ltcSalt,
     createdAt: Date.now(),
   };
   unlockedKeys.set('ltc', derivedKeys.ltc.privateKey);
 
   // Store XMR keys
-  const { encrypted: xmrSpendEnc } = await encryptPrivateKey(derivedKeys.xmr.spendKey, password);
+  const { encrypted: xmrSpendEnc, salt: xmrSalt } = await encryptPrivateKey(derivedKeys.xmr.spendKey, password);
   state.keys.xmr = {
     asset: 'xmr',
     publicKey: bytesToHex(derivedKeys.xmr.viewKey), // View key is public
     privateKey: xmrSpendEnc,
+    privateKeySalt: xmrSalt,
     viewKey: bytesToHex(derivedKeys.xmr.viewKey),
     spendKey: xmrSpendEnc,
     createdAt: Date.now(),
@@ -258,11 +278,12 @@ async function createWalletFromMnemonic(
   unlockedKeys.set('xmr', derivedKeys.xmr.spendKey);
 
   // Store WOW keys
-  const { encrypted: wowSpendEnc } = await encryptPrivateKey(derivedKeys.wow.spendKey, password);
+  const { encrypted: wowSpendEnc, salt: wowSalt } = await encryptPrivateKey(derivedKeys.wow.spendKey, password);
   state.keys.wow = {
     asset: 'wow',
     publicKey: bytesToHex(derivedKeys.wow.viewKey),
     privateKey: wowSpendEnc,
+    privateKeySalt: wowSalt,
     viewKey: bytesToHex(derivedKeys.wow.viewKey),
     spendKey: wowSpendEnc,
     createdAt: Date.now(),
@@ -270,11 +291,12 @@ async function createWalletFromMnemonic(
   unlockedKeys.set('wow', derivedKeys.wow.spendKey);
 
   // Store Grin key
-  const { encrypted: grinEnc } = await encryptPrivateKey(derivedKeys.grin.privateKey, password);
+  const { encrypted: grinEnc, salt: grinSalt } = await encryptPrivateKey(derivedKeys.grin.privateKey, password);
   state.keys.grin = {
     asset: 'grin',
     publicKey: '', // Grin doesn't have traditional public keys
     privateKey: grinEnc,
+    privateKeySalt: grinSalt,
     createdAt: Date.now(),
   };
   unlockedKeys.set('grin', derivedKeys.grin.privateKey);
@@ -317,7 +339,7 @@ async function handleUnlockWallet(password: string): Promise<MessageResponse<{
     const key = state.keys[firstAsset]!;
     const decrypted = await decryptPrivateKey(
       key.privateKey,
-      state.encryptedSeed,
+      key.privateKeySalt,
       password
     );
 
@@ -329,7 +351,7 @@ async function handleUnlockWallet(password: string): Promise<MessageResponse<{
       if (assetKey) {
         const privateKey = await decryptPrivateKey(
           assetKey.privateKey,
-          state.encryptedSeed,
+          assetKey.privateKeySalt,
           password
         );
         unlockedKeys.set(asset, privateKey);
@@ -404,7 +426,7 @@ async function handleOpenClaimPopup(
   // Open popup (this triggers the popup to check for pending claims)
   // Note: chrome.action.openPopup() requires user gesture in MV3
   // We'll store the claim data and show a notification instead
-  chrome.notifications.create({
+  await notifications.create(undefined, {
     type: 'basic',
     iconUrl: 'icons/icon128.png',
     title: 'Tip Ready to Claim!',
@@ -515,8 +537,25 @@ async function handleClaimTip(
   };
 }
 
+async function handleGetOnboardingState(): Promise<MessageResponse<{ state: OnboardingState | null }>> {
+  const state = await getOnboardingState();
+  return { success: true, data: { state } };
+}
+
+async function handleSaveOnboardingState(
+  state: OnboardingState
+): Promise<MessageResponse<{ saved: boolean }>> {
+  await saveOnboardingState(state);
+  return { success: true, data: { saved: true } };
+}
+
+async function handleClearOnboardingState(): Promise<MessageResponse<{ cleared: boolean }>> {
+  await clearOnboardingState();
+  return { success: true, data: { cleared: true } };
+}
+
 // Listen for extension installation
-chrome.runtime.onInstalled.addListener((details) => {
+runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
     console.log('Smirk Wallet installed');
   }

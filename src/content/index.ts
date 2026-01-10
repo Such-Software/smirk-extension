@@ -7,6 +7,9 @@
  * - Communicate with background for claiming
  */
 
+import type { MessageResponse } from '@/types';
+import { runtime } from '@/lib/browser';
+
 // Check if we're on a tip claim page
 const CLAIM_URL_PATTERN = /\/claim\/([a-zA-Z0-9_-]+)/;
 
@@ -32,17 +35,11 @@ function extractClaimData(): ClaimPageData | null {
  * Sends a message to the background script.
  */
 async function sendMessage<T>(message: unknown): Promise<T> {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(message, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-      } else if (response?.success) {
-        resolve(response.data);
-      } else {
-        reject(new Error(response?.error || 'Unknown error'));
-      }
-    });
-  });
+  const response = await runtime.sendMessage<MessageResponse<T>>(message);
+  if (response?.success) {
+    return response.data as T;
+  }
+  throw new Error(response?.error || 'Unknown error');
 }
 
 /**
@@ -110,7 +107,7 @@ function injectClaimUI(claimData: ClaimPageData) {
 
       // Open popup for full claim flow
       // Note: Content scripts can't directly open popup, so we notify background
-      chrome.runtime.sendMessage({
+      runtime.sendMessage({
         type: 'OPEN_CLAIM_POPUP',
         linkId: claimData.linkId,
         fragmentKey: claimData.fragmentKey,

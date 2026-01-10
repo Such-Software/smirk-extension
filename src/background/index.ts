@@ -8,7 +8,7 @@
  * - Message passing between popup/content scripts
  */
 
-import type { MessageType, MessageResponse, WalletState, AssetType, TipInfo } from '@/types';
+import type { MessageType, MessageResponse, WalletState, AssetType, TipInfo, UserSettings } from '@/types';
 import {
   getPublicKey,
   encryptPrivateKey,
@@ -28,6 +28,13 @@ import {
   mnemonicToWords,
   getVerificationIndices,
 } from '@/lib/hd';
+import {
+  btcAddress,
+  ltcAddress,
+  xmrAddress,
+  wowAddress,
+  hexToBytes,
+} from '@/lib/address';
 import {
   getWalletState,
   saveWalletState,
@@ -51,6 +58,10 @@ let pendingMnemonic: string | null = null;
 // In-memory decrypted keys (cleared on lock)
 let unlockedKeys: Map<AssetType, Uint8Array> = new Map();
 let isUnlocked = false;
+
+// Auto-lock timer
+let autoLockTimer: ReturnType<typeof setTimeout> | null = null;
+let lastActivityTime = Date.now();
 
 /**
  * Handles messages from popup and content scripts.
@@ -95,6 +106,9 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
     case 'GET_BALANCE':
       return handleGetBalance(message.asset);
 
+    case 'GET_ADDRESSES':
+      return handleGetAddresses();
+
     case 'OPEN_CLAIM_POPUP':
       return handleOpenClaimPopup(message.linkId, message.fragmentKey);
 
@@ -119,6 +133,15 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
 
     case 'CLEAR_ONBOARDING_STATE':
       return handleClearOnboardingState();
+
+    case 'GET_SETTINGS':
+      return handleGetSettings();
+
+    case 'UPDATE_SETTINGS':
+      return handleUpdateSettings(message.settings);
+
+    case 'RESET_AUTO_LOCK_TIMER':
+      return handleResetAutoLockTimer();
 
     default:
       return { success: false, error: 'Unknown message type' };
@@ -312,6 +335,9 @@ async function createWalletFromMnemonic(
   await saveWalletState(state);
   isUnlocked = true;
 
+  // Start auto-lock timer
+  startAutoLockTimer();
+
   // Register with backend (non-blocking - wallet works offline too)
   registerWithBackend(state).catch((err) => {
     console.warn('Failed to register with backend:', err);
@@ -433,6 +459,10 @@ async function handleUnlockWallet(password: string): Promise<MessageResponse<{
     }
 
     isUnlocked = true;
+
+    // Start auto-lock timer
+    startAutoLockTimer();
+
     return { success: true, data: { unlocked: true } };
   } catch {
     return { success: false, error: 'Invalid password' };
@@ -442,6 +472,7 @@ async function handleUnlockWallet(password: string): Promise<MessageResponse<{
 async function handleLockWallet(): Promise<MessageResponse<{ locked: boolean }>> {
   unlockedKeys.clear();
   isUnlocked = false;
+  stopAutoLockTimer();
   return { success: true, data: { locked: true } };
 }
 
@@ -483,11 +514,136 @@ async function handleDecryptTip(
   }
 }
 
+/**
+ * Get balance for a specific asset via backend API.
+ */
 async function handleGetBalance(
-  _asset: AssetType
-): Promise<MessageResponse<{ balance: string }>> {
-  // TODO: Implement balance fetching from nodes
-  return { success: true, data: { balance: '0' } };
+  asset: AssetType
+): Promise<MessageResponse<{
+  asset: AssetType;
+  confirmed: number;
+  unconfirmed: number;
+  total: number;
+}>> {
+  if (!isUnlocked) {
+    return { success: false, error: 'Wallet is locked' };
+  }
+
+  const state = await getWalletState();
+  const key = state.keys[asset];
+
+  if (!key) {
+    return { success: false, error: `No ${asset} key found` };
+  }
+
+  try {
+    // Get the address for this asset
+    const address = getAddressForAsset(asset, key);
+
+    if (asset === 'btc' || asset === 'ltc') {
+      // Use Electrum endpoint for UTXO coins
+      const result = await api.getUtxoBalance(asset, address);
+
+      if (result.error) {
+        return { success: false, error: result.error };
+      }
+
+      return {
+        success: true,
+        data: {
+          asset,
+          confirmed: result.data!.confirmed,
+          unconfirmed: result.data!.unconfirmed,
+          total: result.data!.total,
+        },
+      };
+    } else if (asset === 'xmr' || asset === 'wow') {
+      // Use LWS endpoint for Cryptonote coins
+      // Note: This requires view key which we'd need to decrypt
+      // For now, return a placeholder
+      return {
+        success: true,
+        data: {
+          asset,
+          confirmed: 0,
+          unconfirmed: 0,
+          total: 0,
+        },
+      };
+    } else {
+      // Grin - not yet implemented
+      return {
+        success: true,
+        data: {
+          asset,
+          confirmed: 0,
+          unconfirmed: 0,
+          total: 0,
+        },
+      };
+    }
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Failed to fetch balance',
+    };
+  }
+}
+
+/**
+ * Get all wallet addresses.
+ */
+async function handleGetAddresses(): Promise<MessageResponse<{
+  addresses: Array<{
+    asset: AssetType;
+    address: string;
+    publicKey: string;
+  }>;
+}>> {
+  const state = await getWalletState();
+  const addresses: Array<{ asset: AssetType; address: string; publicKey: string }> = [];
+
+  for (const asset of ['btc', 'ltc', 'xmr', 'wow', 'grin'] as AssetType[]) {
+    const key = state.keys[asset];
+    if (key) {
+      const address = getAddressForAsset(asset, key);
+      addresses.push({
+        asset,
+        address,
+        publicKey: key.publicKey,
+      });
+    }
+  }
+
+  return { success: true, data: { addresses } };
+}
+
+/**
+ * Derive address from wallet key for a specific asset.
+ */
+function getAddressForAsset(asset: AssetType, key: { publicKey: string; publicSpendKey?: string; publicViewKey?: string }): string {
+  switch (asset) {
+    case 'btc':
+      return btcAddress(hexToBytes(key.publicKey));
+    case 'ltc':
+      return ltcAddress(hexToBytes(key.publicKey));
+    case 'xmr':
+      if (!key.publicSpendKey || !key.publicViewKey) {
+        return 'Address unavailable';
+      }
+      return xmrAddress(hexToBytes(key.publicSpendKey), hexToBytes(key.publicViewKey));
+    case 'wow':
+      if (!key.publicSpendKey || !key.publicViewKey) {
+        return 'Address unavailable';
+      }
+      return wowAddress(hexToBytes(key.publicSpendKey), hexToBytes(key.publicViewKey));
+    case 'grin':
+      // Grin uses slatepack addresses - but we need a key to derive from
+      // For now, Grin doesn't store a traditional public key
+      return 'Grin address pending';
+    default:
+      return 'Unknown asset';
+  }
 }
 
 async function handleOpenClaimPopup(
@@ -626,6 +782,93 @@ async function handleSaveOnboardingState(
 async function handleClearOnboardingState(): Promise<MessageResponse<{ cleared: boolean }>> {
   await clearOnboardingState();
   return { success: true, data: { cleared: true } };
+}
+
+// ============================================================================
+// Settings Handlers
+// ============================================================================
+
+async function handleGetSettings(): Promise<MessageResponse<{ settings: UserSettings }>> {
+  const state = await getWalletState();
+  return { success: true, data: { settings: state.settings } };
+}
+
+async function handleUpdateSettings(
+  updates: Partial<UserSettings>
+): Promise<MessageResponse<{ settings: UserSettings }>> {
+  const state = await getWalletState();
+
+  // Merge updates with existing settings
+  state.settings = {
+    ...state.settings,
+    ...updates,
+  };
+
+  // Validate autoLockMinutes
+  if (updates.autoLockMinutes !== undefined) {
+    const minutes = updates.autoLockMinutes;
+    if (minutes < 0 || minutes > 240) {
+      return { success: false, error: 'Auto-lock time must be between 0 and 240 minutes' };
+    }
+    state.settings.autoLockMinutes = minutes;
+
+    // Restart auto-lock timer with new setting
+    if (isUnlocked) {
+      startAutoLockTimer();
+    }
+  }
+
+  await saveWalletState(state);
+  return { success: true, data: { settings: state.settings } };
+}
+
+function handleResetAutoLockTimer(): MessageResponse<{ reset: boolean }> {
+  if (isUnlocked) {
+    lastActivityTime = Date.now();
+    startAutoLockTimer();
+  }
+  return { success: true, data: { reset: true } };
+}
+
+/**
+ * Starts or restarts the auto-lock timer based on settings.
+ */
+async function startAutoLockTimer() {
+  // Clear existing timer
+  if (autoLockTimer) {
+    clearTimeout(autoLockTimer);
+    autoLockTimer = null;
+  }
+
+  const state = await getWalletState();
+  const minutes = state.settings.autoLockMinutes;
+
+  // 0 means never auto-lock
+  if (minutes === 0 || !isUnlocked) {
+    return;
+  }
+
+  const timeoutMs = minutes * 60 * 1000;
+  lastActivityTime = Date.now();
+
+  autoLockTimer = setTimeout(async () => {
+    if (isUnlocked) {
+      console.log('Auto-locking wallet due to inactivity');
+      unlockedKeys.clear();
+      isUnlocked = false;
+      autoLockTimer = null;
+    }
+  }, timeoutMs);
+}
+
+/**
+ * Stops the auto-lock timer.
+ */
+function stopAutoLockTimer() {
+  if (autoLockTimer) {
+    clearTimeout(autoLockTimer);
+    autoLockTimer = null;
+  }
 }
 
 // Listen for extension installation

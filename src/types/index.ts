@@ -19,6 +19,15 @@ export interface WalletKey {
   label?: string;
 }
 
+// User settings
+export interface UserSettings {
+  autoSweep: boolean;
+  notifyOnTip: boolean;
+  defaultAsset: AssetType;
+  // Auto-lock timeout in minutes (1-240), 0 = never auto-lock
+  autoLockMinutes: number;
+}
+
 // Stored wallet state
 export interface WalletState {
   // Master seed (encrypted mnemonic)
@@ -32,11 +41,7 @@ export interface WalletState {
   // Derived keys per asset
   keys: Record<AssetType, WalletKey | undefined>;
   // User settings
-  settings: {
-    autoSweep: boolean;
-    notifyOnTip: boolean;
-    defaultAsset: AssetType;
-  };
+  settings: UserSettings;
 }
 
 // Tip info from backend
@@ -63,6 +68,23 @@ export interface OnboardingState {
   createdAt: number;
 }
 
+// Address info for display
+export interface AddressInfo {
+  asset: AssetType;
+  address: string;
+  publicKey: string;
+}
+
+// Balance info for display
+export interface BalanceInfo {
+  asset: AssetType;
+  confirmed: number;      // In atomic units (satoshis, piconero, etc.)
+  unconfirmed: number;
+  total: number;
+  loading?: boolean;
+  error?: string;
+}
+
 // Message types for background <-> popup/content communication
 export type MessageType =
   | { type: 'GET_WALLET_STATE' }
@@ -74,6 +96,7 @@ export type MessageType =
   | { type: 'CREATE_WALLET'; password: string }
   | { type: 'DECRYPT_TIP'; tipInfo: TipInfo }
   | { type: 'GET_BALANCE'; asset: AssetType }
+  | { type: 'GET_ADDRESSES' }
   | { type: 'SIGN_TRANSACTION'; asset: AssetType; txData: unknown }
   | { type: 'OPEN_CLAIM_POPUP'; linkId: string; fragmentKey?: string }
   | { type: 'GET_TIP_INFO'; linkId: string }
@@ -82,7 +105,10 @@ export type MessageType =
   | { type: 'CLEAR_PENDING_CLAIM' }
   | { type: 'GET_ONBOARDING_STATE' }
   | { type: 'SAVE_ONBOARDING_STATE'; state: OnboardingState }
-  | { type: 'CLEAR_ONBOARDING_STATE' };
+  | { type: 'CLEAR_ONBOARDING_STATE' }
+  | { type: 'GET_SETTINGS' }
+  | { type: 'UPDATE_SETTINGS'; settings: Partial<UserSettings> }
+  | { type: 'RESET_AUTO_LOCK_TIMER' };
 
 export type MessageResponse<T = unknown> =
   | { success: true; data: T }

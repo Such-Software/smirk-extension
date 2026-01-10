@@ -241,6 +241,51 @@ export class SmirkApi {
   }
 
   // =========================================================================
+  // Wallet Balance
+  // =========================================================================
+
+  /**
+   * Get UTXO balance for BTC or LTC address via Electrum.
+   */
+  async getUtxoBalance(
+    asset: 'btc' | 'ltc',
+    address: string
+  ): Promise<ApiResponse<{
+    asset: string;
+    address: string;
+    confirmed: number;
+    unconfirmed: number;
+    total: number;
+  }>> {
+    return this.request('/wallet/balance', {
+      method: 'POST',
+      body: JSON.stringify({ asset, address }),
+    });
+  }
+
+  /**
+   * Get LWS balance for XMR or WOW address.
+   */
+  async getLwsBalance(
+    asset: 'xmr' | 'wow',
+    address: string,
+    viewKey: string
+  ): Promise<ApiResponse<{
+    balance: number;
+    unlocked_balance: number;
+    locked_balance: number;
+    transaction_count: number;
+    blockchain_height: number;
+    start_height: number;
+    scanned_height: number;
+  }>> {
+    return this.request('/wallet/lws/balance', {
+      method: 'POST',
+      body: JSON.stringify({ asset, address, view_key: viewKey }),
+    });
+  }
+
+  // =========================================================================
   // Health
   // =========================================================================
 

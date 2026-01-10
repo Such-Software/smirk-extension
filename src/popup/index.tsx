@@ -603,16 +603,158 @@ function UnlockScreen({ onUnlock }: { onUnlock: () => void }) {
 // Main Wallet View
 // ============================================================================
 
+// Format satoshis to display string (8 decimal places for BTC/LTC)
+function formatBalance(satoshis: number, asset: AssetType): string {
+  if (asset === 'btc' || asset === 'ltc') {
+    return (satoshis / 100_000_000).toFixed(8);
+  } else if (asset === 'xmr' || asset === 'wow') {
+    // Piconero - 12 decimal places
+    return (satoshis / 1_000_000_000_000).toFixed(12);
+  } else if (asset === 'grin') {
+    // Nanogrin - 9 decimal places
+    return (satoshis / 1_000_000_000).toFixed(9);
+  }
+  return satoshis.toString();
+}
+
+// Truncate address for display
+function truncateAddress(address: string, startChars = 10, endChars = 8): string {
+  if (address.length <= startChars + endChars + 3) return address;
+  return `${address.slice(0, startChars)}...${address.slice(-endChars)}`;
+}
+
+interface AddressData {
+  asset: AssetType;
+  address: string;
+  publicKey: string;
+}
+
+interface BalanceData {
+  confirmed: number;
+  unconfirmed: number;
+  total: number;
+}
+
 function WalletView({ onLock }: { onLock: () => void }) {
   const [activeAsset, setActiveAsset] = useState<AssetType>('btc');
+  const [showReceive, setShowReceive] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [addresses, setAddresses] = useState<Record<AssetType, AddressData | null>>({
+    btc: null,
+    ltc: null,
+    xmr: null,
+    wow: null,
+    grin: null,
+  });
+  const [balances, setBalances] = useState<Record<AssetType, BalanceData | null>>({
+    btc: null,
+    ltc: null,
+    xmr: null,
+    wow: null,
+    grin: null,
+  });
+  const [loadingBalance, setLoadingBalance] = useState<AssetType | null>(null);
+  const [copied, setCopied] = useState(false);
+
   const availableAssets: AssetType[] = ['btc', 'ltc', 'xmr', 'wow', 'grin'];
+
+  // Reset auto-lock timer on user activity
+  useEffect(() => {
+    const resetTimer = () => {
+      sendMessage({ type: 'RESET_AUTO_LOCK_TIMER' }).catch(() => {});
+    };
+
+    // Reset on any user interaction
+    window.addEventListener('click', resetTimer);
+    window.addEventListener('keydown', resetTimer);
+
+    return () => {
+      window.removeEventListener('click', resetTimer);
+      window.removeEventListener('keydown', resetTimer);
+    };
+  }, []);
+
+  // Fetch addresses on mount
+  useEffect(() => {
+    fetchAddresses();
+  }, []);
+
+  // Fetch balance when asset changes
+  useEffect(() => {
+    if (addresses[activeAsset]) {
+      fetchBalance(activeAsset);
+    }
+  }, [activeAsset, addresses[activeAsset]]);
+
+  const fetchAddresses = async () => {
+    try {
+      const result = await sendMessage<{ addresses: AddressData[] }>({ type: 'GET_ADDRESSES' });
+      const newAddresses: Record<AssetType, AddressData | null> = {
+        btc: null, ltc: null, xmr: null, wow: null, grin: null,
+      };
+      for (const addr of result.addresses) {
+        newAddresses[addr.asset] = addr;
+      }
+      setAddresses(newAddresses);
+    } catch (err) {
+      console.error('Failed to fetch addresses:', err);
+    }
+  };
+
+  const fetchBalance = async (asset: AssetType) => {
+    if (loadingBalance === asset) return; // Already loading
+    setLoadingBalance(asset);
+
+    try {
+      const result = await sendMessage<{
+        asset: AssetType;
+        confirmed: number;
+        unconfirmed: number;
+        total: number;
+      }>({ type: 'GET_BALANCE', asset });
+
+      setBalances((prev) => ({
+        ...prev,
+        [asset]: {
+          confirmed: result.confirmed,
+          unconfirmed: result.unconfirmed,
+          total: result.total,
+        },
+      }));
+    } catch (err) {
+      console.error(`Failed to fetch ${asset} balance:`, err);
+    } finally {
+      setLoadingBalance(null);
+    }
+  };
+
+  const handleCopyAddress = async () => {
+    const addr = addresses[activeAsset];
+    if (!addr) return;
+
+    try {
+      await navigator.clipboard.writeText(addr.address);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
+
+  const currentAddress = addresses[activeAsset];
+  const currentBalance = balances[activeAsset];
+
+  // Show settings view
+  if (showSettings) {
+    return <SettingsView onBack={() => setShowSettings(false)} />;
+  }
 
   return (
     <>
       <header class="header">
         <h1>Smirk Wallet</h1>
         <div class="header-actions">
-          <button class="btn btn-icon" title="Settings">⚙️</button>
+          <button class="btn btn-icon" onClick={() => setShowSettings(true)} title="Settings">⚙️</button>
           <button class="btn btn-icon" onClick={onLock} title="Lock">🔒</button>
         </div>
       </header>
@@ -637,15 +779,82 @@ function WalletView({ onLock }: { onLock: () => void }) {
         </div>
 
         {/* Balance Card */}
-        <div class="balance-card">
-          <div class="balance-label">Total Balance</div>
-          <div class="balance-amount">0.00000000 {ASSETS[activeAsset].symbol}</div>
-          <div class="balance-usd">≈ $0.00 USD</div>
+        <div class="balance-card" style={{ position: 'relative' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div class="balance-label">{ASSETS[activeAsset].name} Balance</div>
+            <button
+              class="btn btn-icon"
+              style={{ fontSize: '12px', padding: '2px 6px', marginTop: '-4px' }}
+              onClick={() => fetchBalance(activeAsset)}
+              title="Refresh balance"
+              disabled={loadingBalance === activeAsset}
+            >
+              🔄
+            </button>
+          </div>
+          <div class="balance-amount">
+            {loadingBalance === activeAsset ? (
+              <span class="spinner" style={{ width: '16px', height: '16px' }} />
+            ) : currentBalance ? (
+              `${formatBalance(currentBalance.total, activeAsset)} ${ASSETS[activeAsset].symbol}`
+            ) : (
+              `0.00000000 ${ASSETS[activeAsset].symbol}`
+            )}
+          </div>
+          {currentBalance && currentBalance.unconfirmed !== 0 && (
+            <div class="balance-usd" style={{ fontSize: '11px', color: '#f59e0b' }}>
+              {currentBalance.unconfirmed > 0 ? '+' : ''}
+              {formatBalance(currentBalance.unconfirmed, activeAsset)} unconfirmed
+            </div>
+          )}
         </div>
+
+        {/* Address Display */}
+        {currentAddress && (
+          <div
+            class="address-display"
+            style={{
+              background: '#27272a',
+              borderRadius: '8px',
+              padding: '12px',
+              marginBottom: '16px',
+            }}
+          >
+            <div style={{ fontSize: '11px', color: '#a1a1aa', marginBottom: '4px' }}>
+              Your {ASSETS[activeAsset].name} Address
+            </div>
+            <div
+              style={{
+                fontFamily: 'monospace',
+                fontSize: '12px',
+                wordBreak: 'break-all',
+                marginBottom: '8px',
+              }}
+            >
+              {showReceive ? currentAddress.address : truncateAddress(currentAddress.address)}
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                class="btn btn-secondary"
+                style={{ flex: 1, fontSize: '12px', padding: '6px 12px' }}
+                onClick={handleCopyAddress}
+              >
+                {copied ? 'Copied!' : 'Copy'}
+              </button>
+              <button
+                class="btn btn-secondary"
+                style={{ flex: 1, fontSize: '12px', padding: '6px 12px' }}
+                onClick={() => setShowReceive(!showReceive)}
+              >
+                {showReceive ? 'Hide' : 'Show Full'}
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Action Buttons */}
         <div class="action-grid">
-          <button class="action-btn">
+          <button class="action-btn" onClick={() => setShowReceive(true)}>
             <span class="action-icon">📥</span>
             <span class="action-label">Receive</span>
           </button>
@@ -666,6 +875,201 @@ function WalletView({ onLock }: { onLock: () => void }) {
           <div class="empty-title">No transactions yet</div>
           <div class="empty-text">Your transaction history will appear here</div>
         </div>
+      </div>
+    </>
+  );
+}
+
+// ============================================================================
+// Settings View
+// ============================================================================
+
+const AUTO_LOCK_OPTIONS = [
+  { value: 1, label: '1 minute' },
+  { value: 5, label: '5 minutes' },
+  { value: 15, label: '15 minutes' },
+  { value: 30, label: '30 minutes' },
+  { value: 60, label: '1 hour' },
+  { value: 120, label: '2 hours' },
+  { value: 240, label: '4 hours' },
+  { value: 0, label: 'Never' },
+];
+
+interface UserSettings {
+  autoSweep: boolean;
+  notifyOnTip: boolean;
+  defaultAsset: AssetType;
+  autoLockMinutes: number;
+}
+
+function SettingsView({ onBack }: { onBack: () => void }) {
+  const [settings, setSettings] = useState<UserSettings | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
+  const loadSettings = async () => {
+    try {
+      const result = await sendMessage<{ settings: UserSettings }>({ type: 'GET_SETTINGS' });
+      setSettings(result.settings);
+    } catch (err) {
+      setError('Failed to load settings');
+    }
+  };
+
+  const updateSetting = async <K extends keyof UserSettings>(
+    key: K,
+    value: UserSettings[K]
+  ) => {
+    if (!settings) return;
+
+    setSaving(true);
+    setError('');
+
+    try {
+      const result = await sendMessage<{ settings: UserSettings }>({
+        type: 'UPDATE_SETTINGS',
+        settings: { [key]: value },
+      });
+      setSettings(result.settings);
+    } catch (err) {
+      setError('Failed to save setting');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <header class="header">
+        <button class="btn btn-icon" onClick={onBack} title="Back">←</button>
+        <h1 style={{ flex: 1, textAlign: 'center' }}>Settings</h1>
+        <div style={{ width: '32px' }} /> {/* Spacer for centering */}
+      </header>
+
+      <div class="content">
+        {error && (
+          <div class="error-box" style={{ marginBottom: '16px' }}>
+            {error}
+          </div>
+        )}
+
+        {!settings ? (
+          <div style={{ textAlign: 'center', padding: '20px' }}>
+            <span class="spinner" />
+          </div>
+        ) : (
+          <>
+            {/* Security Section */}
+            <div class="section-title">Security</div>
+            <div
+              style={{
+                background: '#27272a',
+                borderRadius: '8px',
+                padding: '12px',
+                marginBottom: '16px',
+              }}
+            >
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ display: 'block', fontSize: '13px', marginBottom: '6px' }}>
+                  Auto-lock after inactivity
+                </label>
+                <select
+                  value={settings.autoLockMinutes}
+                  onChange={(e) => updateSetting('autoLockMinutes', parseInt((e.target as HTMLSelectElement).value))}
+                  disabled={saving}
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    border: '1px solid #3f3f46',
+                    background: '#18181b',
+                    color: '#fff',
+                    fontSize: '14px',
+                  }}
+                >
+                  {AUTO_LOCK_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ fontSize: '11px', color: '#71717a', marginTop: '4px' }}>
+                  Wallet will lock automatically after this period of inactivity
+                </div>
+              </div>
+            </div>
+
+            {/* Notifications Section */}
+            <div class="section-title">Notifications</div>
+            <div
+              style={{
+                background: '#27272a',
+                borderRadius: '8px',
+                padding: '12px',
+                marginBottom: '16px',
+              }}
+            >
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  cursor: 'pointer',
+                }}
+              >
+                <span style={{ fontSize: '13px' }}>Notify on incoming tips</span>
+                <input
+                  type="checkbox"
+                  checked={settings.notifyOnTip}
+                  onChange={(e) => updateSetting('notifyOnTip', (e.target as HTMLInputElement).checked)}
+                  disabled={saving}
+                  style={{ width: '18px', height: '18px' }}
+                />
+              </label>
+            </div>
+
+            {/* Default Asset Section */}
+            <div class="section-title">Default Asset</div>
+            <div
+              style={{
+                background: '#27272a',
+                borderRadius: '8px',
+                padding: '12px',
+                marginBottom: '16px',
+              }}
+            >
+              <select
+                value={settings.defaultAsset}
+                onChange={(e) => updateSetting('defaultAsset', (e.target as HTMLSelectElement).value as AssetType)}
+                disabled={saving}
+                style={{
+                  width: '100%',
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  border: '1px solid #3f3f46',
+                  background: '#18181b',
+                  color: '#fff',
+                  fontSize: '14px',
+                }}
+              >
+                {(['btc', 'ltc', 'xmr', 'wow', 'grin'] as AssetType[]).map((asset) => (
+                  <option key={asset} value={asset}>
+                    {ASSETS[asset].name} ({ASSETS[asset].symbol})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Version Info */}
+            <div style={{ textAlign: 'center', fontSize: '11px', color: '#71717a', marginTop: '24px' }}>
+              Smirk Wallet v0.1.0
+            </div>
+          </>
+        )}
       </div>
     </>
   );

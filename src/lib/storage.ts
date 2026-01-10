@@ -31,6 +31,7 @@ export const DEFAULT_WALLET_STATE: WalletState = {
     autoSweep: true,
     notifyOnTip: true,
     defaultAsset: 'btc',
+    autoLockMinutes: 15, // Default: 15 minutes
   },
 };
 

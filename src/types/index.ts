@@ -4,12 +4,16 @@ export type AssetType = 'btc' | 'ltc' | 'xmr' | 'wow' | 'grin';
 // Wallet key pair stored in extension
 export interface WalletKey {
   asset: AssetType;
-  publicKey: string;      // Hex encoded
-  privateKey: string;     // Encrypted with user password
+  publicKey: string;      // Hex encoded (BTC/LTC: compressed pubkey, XMR/WOW: public spend key)
+  privateKey: string;     // Encrypted with user password (BTC/LTC: privkey, XMR/WOW: private spend key)
   privateKeySalt: string; // Salt used for encryption (hex encoded)
-  // For XMR/WOW: additional keys
-  viewKey?: string;
-  spendKey?: string;
+
+  // For XMR/WOW: Cryptonote keys (all hex encoded)
+  publicSpendKey?: string;   // Public spend key (part of address)
+  publicViewKey?: string;    // Public view key (part of address)
+  privateViewKey?: string;   // Private view key (encrypted) - needed for LWS registration
+  privateViewKeySalt?: string; // Salt for view key encryption
+
   // Metadata
   createdAt: number;
   label?: string;

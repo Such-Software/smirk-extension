@@ -267,30 +267,36 @@ async function createWalletFromMnemonic(
   unlockedKeys.set('ltc', derivedKeys.ltc.privateKey);
 
   // Store XMR keys
-  const { encrypted: xmrSpendEnc, salt: xmrSalt } = await encryptPrivateKey(derivedKeys.xmr.spendKey, password);
+  const { encrypted: xmrSpendEnc, salt: xmrSpendSalt } = await encryptPrivateKey(derivedKeys.xmr.privateSpendKey, password);
+  const { encrypted: xmrViewEnc, salt: xmrViewSalt } = await encryptPrivateKey(derivedKeys.xmr.privateViewKey, password);
   state.keys.xmr = {
     asset: 'xmr',
-    publicKey: bytesToHex(derivedKeys.xmr.viewKey), // View key is public
+    publicKey: bytesToHex(derivedKeys.xmr.publicSpendKey), // Primary public key
     privateKey: xmrSpendEnc,
-    privateKeySalt: xmrSalt,
-    viewKey: bytesToHex(derivedKeys.xmr.viewKey),
-    spendKey: xmrSpendEnc,
+    privateKeySalt: xmrSpendSalt,
+    publicSpendKey: bytesToHex(derivedKeys.xmr.publicSpendKey),
+    publicViewKey: bytesToHex(derivedKeys.xmr.publicViewKey),
+    privateViewKey: xmrViewEnc,
+    privateViewKeySalt: xmrViewSalt,
     createdAt: Date.now(),
   };
-  unlockedKeys.set('xmr', derivedKeys.xmr.spendKey);
+  unlockedKeys.set('xmr', derivedKeys.xmr.privateSpendKey);
 
   // Store WOW keys
-  const { encrypted: wowSpendEnc, salt: wowSalt } = await encryptPrivateKey(derivedKeys.wow.spendKey, password);
+  const { encrypted: wowSpendEnc, salt: wowSpendSalt } = await encryptPrivateKey(derivedKeys.wow.privateSpendKey, password);
+  const { encrypted: wowViewEnc, salt: wowViewSalt } = await encryptPrivateKey(derivedKeys.wow.privateViewKey, password);
   state.keys.wow = {
     asset: 'wow',
-    publicKey: bytesToHex(derivedKeys.wow.viewKey),
+    publicKey: bytesToHex(derivedKeys.wow.publicSpendKey),
     privateKey: wowSpendEnc,
-    privateKeySalt: wowSalt,
-    viewKey: bytesToHex(derivedKeys.wow.viewKey),
-    spendKey: wowSpendEnc,
+    privateKeySalt: wowSpendSalt,
+    publicSpendKey: bytesToHex(derivedKeys.wow.publicSpendKey),
+    publicViewKey: bytesToHex(derivedKeys.wow.publicViewKey),
+    privateViewKey: wowViewEnc,
+    privateViewKeySalt: wowViewSalt,
     createdAt: Date.now(),
   };
-  unlockedKeys.set('wow', derivedKeys.wow.spendKey);
+  unlockedKeys.set('wow', derivedKeys.wow.privateSpendKey);
 
   // Store Grin key
   const { encrypted: grinEnc, salt: grinSalt } = await encryptPrivateKey(derivedKeys.grin.privateKey, password);
@@ -330,18 +336,18 @@ async function registerWithBackend(state: WalletState): Promise<void> {
     keys.push({ asset: 'ltc', publicKey: state.keys.ltc.publicKey });
   }
   if (state.keys.xmr) {
-    // For Monero, publicKey is view key, need to also pass spend pubkey
-    // For now, we're storing view key as public key
+    // For XMR: send public spend key (main identity) and public view key
     keys.push({
       asset: 'xmr',
-      publicKey: state.keys.xmr.publicKey,
-      // TODO: derive and store public spend key separately
+      publicKey: state.keys.xmr.publicSpendKey || state.keys.xmr.publicKey,
+      publicSpendKey: state.keys.xmr.publicViewKey, // Backend uses this for encrypted tips
     });
   }
   if (state.keys.wow) {
     keys.push({
       asset: 'wow',
-      publicKey: state.keys.wow.publicKey,
+      publicKey: state.keys.wow.publicSpendKey || state.keys.wow.publicKey,
+      publicSpendKey: state.keys.wow.publicViewKey,
     });
   }
   // Grin doesn't have traditional public keys, skip for now

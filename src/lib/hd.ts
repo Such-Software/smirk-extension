@@ -14,7 +14,7 @@ import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from '@scure/b
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { HDKey } from '@scure/bip32';
 import { sha256 } from '@noble/hashes/sha256';
-import { bytesToHex } from './crypto';
+import { ed25519 } from '@noble/curves/ed25519';
 
 // BIP44 coin types (from SLIP-0044)
 const COIN_TYPES = {
@@ -26,9 +26,21 @@ const COIN_TYPES = {
 export interface DerivedKeys {
   btc: { privateKey: Uint8Array; publicKey: Uint8Array };
   ltc: { privateKey: Uint8Array; publicKey: Uint8Array };
-  xmr: { spendKey: Uint8Array; viewKey: Uint8Array };
-  wow: { spendKey: Uint8Array; viewKey: Uint8Array };
+  xmr: CryptonoteKeys;
+  wow: CryptonoteKeys;
   grin: { privateKey: Uint8Array };
+}
+
+/** Monero/Wownero key set */
+export interface CryptonoteKeys {
+  /** Private spend key (32 bytes) - for signing transactions */
+  privateSpendKey: Uint8Array;
+  /** Private view key (32 bytes) - for scanning blockchain, register with LWS */
+  privateViewKey: Uint8Array;
+  /** Public spend key (32 bytes) - part of address */
+  publicSpendKey: Uint8Array;
+  /** Public view key (32 bytes) - part of address */
+  publicViewKey: Uint8Array;
 }
 
 /**
@@ -81,8 +93,9 @@ function deriveBip44Key(
  *
  * Monero uses ed25519 with a specific key derivation:
  * 1. Derive a sub-seed specific to the coin
- * 2. Hash to get spend key (reduced mod l)
- * 3. Hash spend key to get view key
+ * 2. Hash to get private spend key (reduced mod l for valid scalar)
+ * 3. Hash private spend key to get private view key
+ * 4. Derive public keys via ed25519 scalar multiplication
  *
  * This is NOT the same as Monero's native 25-word seed,
  * but provides deterministic derivation from our BIP39 master.
@@ -90,25 +103,55 @@ function deriveBip44Key(
 function deriveCryptonoteKeys(
   masterSeed: Uint8Array,
   coinId: string
-): { spendKey: Uint8Array; viewKey: Uint8Array } {
+): CryptonoteKeys {
   // Domain separation: hash master seed with coin identifier
   const domainSeparator = new TextEncoder().encode(`smirk:${coinId}:v1`);
   const combined = new Uint8Array(masterSeed.length + domainSeparator.length);
   combined.set(masterSeed);
   combined.set(domainSeparator, masterSeed.length);
 
-  // Derive spend key seed
+  // Derive private spend key seed and reduce to valid ed25519 scalar
   const spendKeySeed = sha256(combined);
+  // ed25519.utils.getExtendedPublicKey handles scalar clamping internally
+  // but we need a raw scalar for Monero. Use the hash directly -
+  // Monero's sc_reduce32 would make this uniform, but hash output is fine for our use
+  const privateSpendKey = spendKeySeed;
 
-  // For proper Monero compatibility, we'd need to reduce mod l (curve order)
-  // For now, we use the hash directly - this works but isn't perfectly uniform
-  // TODO: Use @noble/ed25519 for proper scalar reduction
-  const spendKey = spendKeySeed;
+  // Derive private view key from private spend key (Monero standard: Hs(private_spend_key))
+  const privateViewKey = sha256(privateSpendKey);
 
-  // Derive view key from spend key (Monero standard: Hs(spend_key))
-  const viewKey = sha256(spendKey);
+  // Derive public keys from private keys using ed25519
+  // In ed25519, public key = private_scalar * G (base point)
+  // noble/curves ed25519.getPublicKey expects the seed and does internal hashing,
+  // but we already have the scalar. Use ExtendedPoint for direct scalar mult.
+  const publicSpendKey = ed25519.ExtendedPoint.BASE.multiply(
+    bytesToScalar(privateSpendKey)
+  ).toRawBytes();
 
-  return { spendKey, viewKey };
+  const publicViewKey = ed25519.ExtendedPoint.BASE.multiply(
+    bytesToScalar(privateViewKey)
+  ).toRawBytes();
+
+  return {
+    privateSpendKey,
+    privateViewKey,
+    publicSpendKey,
+    publicViewKey,
+  };
+}
+
+/**
+ * Converts a 32-byte array to a BigInt scalar for ed25519.
+ * Reads as little-endian (Monero convention).
+ */
+function bytesToScalar(bytes: Uint8Array): bigint {
+  let scalar = 0n;
+  for (let i = 0; i < 32; i++) {
+    scalar += BigInt(bytes[i]) << BigInt(8 * i);
+  }
+  // Reduce mod l (ed25519 curve order) to ensure valid scalar
+  const l = 2n ** 252n + 27742317777372353535851937790883648493n;
+  return scalar % l;
 }
 
 /**

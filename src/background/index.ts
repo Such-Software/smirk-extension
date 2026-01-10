@@ -10,7 +10,6 @@
 
 import type { MessageType, MessageResponse, WalletState, AssetType, TipInfo } from '@/types';
 import {
-  generatePrivateKey,
   getPublicKey,
   encryptPrivateKey,
   decryptPrivateKey,
@@ -18,17 +17,29 @@ import {
   decryptPublicTipPayload,
   decodeUrlFragmentKey,
   bytesToHex,
+  encrypt,
+  decrypt,
+  randomBytes,
 } from '@/lib/crypto';
+import {
+  generateMnemonicPhrase,
+  isValidMnemonic,
+  deriveAllKeys,
+  mnemonicToWords,
+  getVerificationIndices,
+} from '@/lib/hd';
 import { getWalletState, saveWalletState, DEFAULT_WALLET_STATE } from '@/lib/storage';
 import { api } from '@/lib/api';
 
 // Pending claim data from content script
 let pendingClaim: { linkId: string; fragmentKey?: string } | null = null;
 
+// Temporary mnemonic during wallet creation (cleared after confirmation)
+let pendingMnemonic: string | null = null;
+
 // In-memory decrypted keys (cleared on lock)
 let unlockedKeys: Map<AssetType, Uint8Array> = new Map();
 let isUnlocked = false;
-let passwordSalt: string | null = null;
 
 /**
  * Handles messages from popup and content scripts.
@@ -48,6 +59,15 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
   switch (message.type) {
     case 'GET_WALLET_STATE':
       return handleGetWalletState();
+
+    case 'GENERATE_MNEMONIC':
+      return handleGenerateMnemonic();
+
+    case 'CONFIRM_MNEMONIC':
+      return handleConfirmMnemonic(message.password, message.verifiedWords);
+
+    case 'RESTORE_WALLET':
+      return handleRestoreWallet(message.mnemonic, message.password);
 
     case 'CREATE_WALLET':
       return handleCreateWallet(message.password);
@@ -89,6 +109,7 @@ async function handleGetWalletState(): Promise<MessageResponse<{
   isUnlocked: boolean;
   hasWallet: boolean;
   assets: AssetType[];
+  needsBackup: boolean;
 }>> {
   const state = await getWalletState();
   const hasWallet = !!state.encryptedSeed;
@@ -98,49 +119,180 @@ async function handleGetWalletState(): Promise<MessageResponse<{
 
   return {
     success: true,
-    data: { isUnlocked, hasWallet, assets },
+    data: {
+      isUnlocked,
+      hasWallet,
+      assets,
+      needsBackup: hasWallet && !state.backupConfirmed,
+    },
   };
 }
 
-async function handleCreateWallet(password: string): Promise<MessageResponse<{
-  created: boolean;
-  assets: AssetType[];
+/**
+ * Step 1 of wallet creation: Generate mnemonic and return words + verification indices.
+ */
+async function handleGenerateMnemonic(): Promise<MessageResponse<{
+  words: string[];
+  verifyIndices: number[];
 }>> {
+  // Generate new mnemonic
+  pendingMnemonic = generateMnemonicPhrase();
+  const words = mnemonicToWords(pendingMnemonic);
+  const verifyIndices = getVerificationIndices(words.length, 3);
+
+  return {
+    success: true,
+    data: { words, verifyIndices },
+  };
+}
+
+/**
+ * Step 2 of wallet creation: Verify user wrote down seed and create wallet.
+ */
+async function handleConfirmMnemonic(
+  password: string,
+  verifiedWords: Record<number, string>
+): Promise<MessageResponse<{ created: boolean; assets: AssetType[] }>> {
+  if (!pendingMnemonic) {
+    return { success: false, error: 'No pending mnemonic. Start over.' };
+  }
+
   if (!password || password.length < 8) {
     return { success: false, error: 'Password must be at least 8 characters' };
   }
 
-  // Generate keys for each asset type
-  const state: WalletState = { ...DEFAULT_WALLET_STATE };
-  const assets: AssetType[] = ['btc', 'ltc']; // Start with BTC and LTC
-
-  for (const asset of assets) {
-    const privateKey = generatePrivateKey();
-    const publicKey = getPublicKey(privateKey);
-
-    const { encrypted, salt } = await encryptPrivateKey(privateKey, password);
-
-    state.keys[asset] = {
-      asset,
-      publicKey: bytesToHex(publicKey),
-      privateKey: encrypted,
-      createdAt: Date.now(),
-    };
-
-    // Store salt for unlocking
-    if (!passwordSalt) {
-      passwordSalt = salt;
-      state.encryptedSeed = salt; // Use salt as marker that wallet exists
+  // Verify the words match
+  const words = mnemonicToWords(pendingMnemonic);
+  for (const [idx, word] of Object.entries(verifiedWords)) {
+    if (words[parseInt(idx)] !== word.toLowerCase().trim()) {
+      return { success: false, error: 'Word verification failed. Please check your backup.' };
     }
-
-    // Keep unlocked in memory
-    unlockedKeys.set(asset, privateKey);
   }
+
+  // Create wallet from mnemonic
+  const result = await createWalletFromMnemonic(pendingMnemonic, password, true);
+
+  // Clear pending mnemonic
+  pendingMnemonic = null;
+
+  return result;
+}
+
+/**
+ * Restore wallet from existing mnemonic.
+ */
+async function handleRestoreWallet(
+  mnemonic: string,
+  password: string
+): Promise<MessageResponse<{ created: boolean; assets: AssetType[] }>> {
+  if (!isValidMnemonic(mnemonic)) {
+    return { success: false, error: 'Invalid recovery phrase' };
+  }
+
+  if (!password || password.length < 8) {
+    return { success: false, error: 'Password must be at least 8 characters' };
+  }
+
+  return createWalletFromMnemonic(mnemonic, password, true);
+}
+
+/**
+ * Core wallet creation from mnemonic.
+ */
+async function createWalletFromMnemonic(
+  mnemonic: string,
+  password: string,
+  backupConfirmed: boolean
+): Promise<MessageResponse<{ created: boolean; assets: AssetType[] }>> {
+  // Derive all keys from mnemonic
+  const derivedKeys = deriveAllKeys(mnemonic);
+
+  // Encrypt mnemonic for storage
+  const mnemonicBytes = new TextEncoder().encode(mnemonic);
+  const salt = randomBytes(16);
+  const { encrypted: encryptedMnemonic } = await encryptPrivateKey(mnemonicBytes, password);
+
+  // Build wallet state
+  const state: WalletState = {
+    ...DEFAULT_WALLET_STATE,
+    encryptedSeed: encryptedMnemonic,
+    seedSalt: bytesToHex(salt),
+    backupConfirmed,
+    walletBirthday: Date.now(),
+  };
+
+  const assets: AssetType[] = ['btc', 'ltc', 'xmr', 'wow', 'grin'];
+
+  // Store BTC key
+  const btcPub = getPublicKey(derivedKeys.btc.privateKey);
+  const { encrypted: btcEnc } = await encryptPrivateKey(derivedKeys.btc.privateKey, password);
+  state.keys.btc = {
+    asset: 'btc',
+    publicKey: bytesToHex(btcPub),
+    privateKey: btcEnc,
+    createdAt: Date.now(),
+  };
+  unlockedKeys.set('btc', derivedKeys.btc.privateKey);
+
+  // Store LTC key
+  const ltcPub = getPublicKey(derivedKeys.ltc.privateKey);
+  const { encrypted: ltcEnc } = await encryptPrivateKey(derivedKeys.ltc.privateKey, password);
+  state.keys.ltc = {
+    asset: 'ltc',
+    publicKey: bytesToHex(ltcPub),
+    privateKey: ltcEnc,
+    createdAt: Date.now(),
+  };
+  unlockedKeys.set('ltc', derivedKeys.ltc.privateKey);
+
+  // Store XMR keys
+  const { encrypted: xmrSpendEnc } = await encryptPrivateKey(derivedKeys.xmr.spendKey, password);
+  state.keys.xmr = {
+    asset: 'xmr',
+    publicKey: bytesToHex(derivedKeys.xmr.viewKey), // View key is public
+    privateKey: xmrSpendEnc,
+    viewKey: bytesToHex(derivedKeys.xmr.viewKey),
+    spendKey: xmrSpendEnc,
+    createdAt: Date.now(),
+  };
+  unlockedKeys.set('xmr', derivedKeys.xmr.spendKey);
+
+  // Store WOW keys
+  const { encrypted: wowSpendEnc } = await encryptPrivateKey(derivedKeys.wow.spendKey, password);
+  state.keys.wow = {
+    asset: 'wow',
+    publicKey: bytesToHex(derivedKeys.wow.viewKey),
+    privateKey: wowSpendEnc,
+    viewKey: bytesToHex(derivedKeys.wow.viewKey),
+    spendKey: wowSpendEnc,
+    createdAt: Date.now(),
+  };
+  unlockedKeys.set('wow', derivedKeys.wow.spendKey);
+
+  // Store Grin key
+  const { encrypted: grinEnc } = await encryptPrivateKey(derivedKeys.grin.privateKey, password);
+  state.keys.grin = {
+    asset: 'grin',
+    publicKey: '', // Grin doesn't have traditional public keys
+    privateKey: grinEnc,
+    createdAt: Date.now(),
+  };
+  unlockedKeys.set('grin', derivedKeys.grin.privateKey);
 
   await saveWalletState(state);
   isUnlocked = true;
 
   return { success: true, data: { created: true, assets } };
+}
+
+// Legacy create wallet (for backwards compat, redirects to mnemonic flow)
+async function handleCreateWallet(password: string): Promise<MessageResponse<{
+  created: boolean;
+  assets: AssetType[];
+}>> {
+  // Generate mnemonic and create wallet directly (skip verification for legacy)
+  const mnemonic = generateMnemonicPhrase();
+  return createWalletFromMnemonic(mnemonic, password, false);
 }
 
 async function handleUnlockWallet(password: string): Promise<MessageResponse<{

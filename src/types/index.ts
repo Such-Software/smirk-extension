@@ -16,8 +16,14 @@ export interface WalletKey {
 
 // Stored wallet state
 export interface WalletState {
-  // Master seed (encrypted)
+  // Master seed (encrypted mnemonic)
   encryptedSeed?: string;
+  // Salt used for seed encryption
+  seedSalt?: string;
+  // Whether user has confirmed backup
+  backupConfirmed?: boolean;
+  // Wallet creation timestamp (for sync optimization)
+  walletBirthday?: number;
   // Derived keys per asset
   keys: Record<AssetType, WalletKey | undefined>;
   // User settings
@@ -47,6 +53,9 @@ export interface TipInfo {
 // Message types for background <-> popup/content communication
 export type MessageType =
   | { type: 'GET_WALLET_STATE' }
+  | { type: 'GENERATE_MNEMONIC' }
+  | { type: 'CONFIRM_MNEMONIC'; password: string; verifiedWords: Record<number, string> }
+  | { type: 'RESTORE_WALLET'; mnemonic: string; password: string }
   | { type: 'UNLOCK_WALLET'; password: string }
   | { type: 'LOCK_WALLET' }
   | { type: 'CREATE_WALLET'; password: string }

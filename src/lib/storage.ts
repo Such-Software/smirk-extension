@@ -14,6 +14,10 @@ const STORAGE_KEYS = {
  * Default wallet state.
  */
 export const DEFAULT_WALLET_STATE: WalletState = {
+  encryptedSeed: undefined,
+  seedSalt: undefined,
+  backupConfirmed: false,
+  walletBirthday: undefined,
   keys: {
     btc: undefined,
     ltc: undefined,

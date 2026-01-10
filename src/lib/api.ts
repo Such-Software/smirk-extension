@@ -10,7 +10,8 @@ import type {
   ApiResponse,
 } from '@/types';
 
-const API_BASE = 'https://backend.smirk.cash/api/v1';
+// API base URL - set via environment or default to production
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8080/api/v1';
 
 /**
  * API client class with authentication support.
@@ -85,6 +86,38 @@ export class SmirkApi {
     return this.request('/auth/refresh', {
       method: 'POST',
       body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+  }
+
+  /**
+   * Register extension wallet and authenticate.
+   * Uses BTC public key hash as identity.
+   */
+  async extensionRegister(params: {
+    keys: Array<{
+      asset: string;
+      publicKey: string;
+      publicSpendKey?: string;
+    }>;
+    username?: string;
+    walletBirthday?: number;
+  }): Promise<ApiResponse<{
+    accessToken: string;
+    refreshToken: string;
+    expiresIn: number;
+    user: { id: string; username?: string; isNew: boolean };
+  }>> {
+    return this.request('/auth/extension', {
+      method: 'POST',
+      body: JSON.stringify({
+        keys: params.keys.map(k => ({
+          asset: k.asset,
+          public_key: k.publicKey,
+          public_spend_key: k.publicSpendKey,
+        })),
+        username: params.username,
+        wallet_birthday: params.walletBirthday,
+      }),
     });
   }
 

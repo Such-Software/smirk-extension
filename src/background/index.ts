@@ -35,6 +35,8 @@ import {
   getOnboardingState,
   saveOnboardingState,
   clearOnboardingState,
+  saveAuthState,
+  getAuthState,
 } from '@/lib/storage';
 import type { OnboardingState } from '@/types';
 import { api } from '@/lib/api';
@@ -304,7 +306,73 @@ async function createWalletFromMnemonic(
   await saveWalletState(state);
   isUnlocked = true;
 
+  // Register with backend (non-blocking - wallet works offline too)
+  registerWithBackend(state).catch((err) => {
+    console.warn('Failed to register with backend:', err);
+    // Continue working - we can retry later
+  });
+
   return { success: true, data: { created: true, assets } };
+}
+
+/**
+ * Register wallet with backend server.
+ * Registers public keys and creates user account.
+ */
+async function registerWithBackend(state: WalletState): Promise<void> {
+  // Collect all public keys
+  const keys: Array<{ asset: string; publicKey: string; publicSpendKey?: string }> = [];
+
+  if (state.keys.btc) {
+    keys.push({ asset: 'btc', publicKey: state.keys.btc.publicKey });
+  }
+  if (state.keys.ltc) {
+    keys.push({ asset: 'ltc', publicKey: state.keys.ltc.publicKey });
+  }
+  if (state.keys.xmr) {
+    // For Monero, publicKey is view key, need to also pass spend pubkey
+    // For now, we're storing view key as public key
+    keys.push({
+      asset: 'xmr',
+      publicKey: state.keys.xmr.publicKey,
+      // TODO: derive and store public spend key separately
+    });
+  }
+  if (state.keys.wow) {
+    keys.push({
+      asset: 'wow',
+      publicKey: state.keys.wow.publicKey,
+    });
+  }
+  // Grin doesn't have traditional public keys, skip for now
+
+  if (keys.length === 0) {
+    console.warn('No keys to register with backend');
+    return;
+  }
+
+  const result = await api.extensionRegister({
+    keys,
+    walletBirthday: state.walletBirthday,
+  });
+
+  if (result.error) {
+    throw new Error(result.error);
+  }
+
+  // Store auth tokens
+  const auth = result.data!;
+  await saveAuthState({
+    accessToken: auth.accessToken,
+    refreshToken: auth.refreshToken,
+    expiresAt: Date.now() + auth.expiresIn * 1000,
+    userId: auth.user.id,
+  });
+
+  // Set token on API client for future requests
+  api.setAccessToken(auth.accessToken);
+
+  console.log('Registered with backend:', auth.user.isNew ? 'new user' : 'existing user');
 }
 
 // Legacy create wallet (for backwards compat, redirects to mnemonic flow)
@@ -560,5 +628,34 @@ runtime.onInstalled.addListener((details) => {
     console.log('Smirk Wallet installed');
   }
 });
+
+// Initialize on startup - load auth state
+async function initializeBackground() {
+  const authState = await getAuthState();
+  if (authState) {
+    // Check if token is expired
+    if (authState.expiresAt > Date.now()) {
+      api.setAccessToken(authState.accessToken);
+      console.log('Auth state restored');
+    } else {
+      // Try to refresh
+      const result = await api.refreshToken(authState.refreshToken);
+      if (result.data) {
+        await saveAuthState({
+          accessToken: result.data.accessToken,
+          refreshToken: result.data.refreshToken,
+          expiresAt: Date.now() + result.data.expiresIn * 1000,
+          userId: authState.userId,
+        });
+        api.setAccessToken(result.data.accessToken);
+        console.log('Auth token refreshed');
+      } else {
+        console.warn('Failed to refresh auth token, user may need to re-register');
+      }
+    }
+  }
+}
+
+initializeBackground().catch(console.error);
 
 console.log('Smirk Wallet background service worker started');

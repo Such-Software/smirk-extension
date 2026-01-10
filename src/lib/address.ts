@@ -188,19 +188,24 @@ function getEncodedBlockSize(blockSize: number): number {
 }
 
 /**
- * Generates a Grin slatepack address from a public key.
+ * Generates a Grin slatepack address from an ed25519 public key.
  * Format: grin1... (bech32m encoded)
+ *
+ * Slatepack addresses are ed25519 public keys encoded with bech32m.
+ * They're used for:
+ * - Deriving Tor onion addresses for receiving transactions
+ * - Encrypting slate data during interactive tx building
+ *
+ * Note: These are NOT on-chain addresses - Grin/Mimblewimble has no
+ * on-chain addresses. Transactions are interactive.
  */
 export function grinSlatpackAddress(publicKey: Uint8Array): string {
-  // Grin slatepack addresses use bech32m with 'grin' HRP
-  // The public key is derived from the wallet's master key
-  // For simplicity, we'll use the first 32 bytes of the key material
-
-  // Hash the key to get consistent 32-byte output
-  const keyHash = sha256(publicKey);
+  if (publicKey.length !== 32) {
+    throw new Error('Grin slatepack address requires 32-byte ed25519 public key');
+  }
 
   // Convert to 5-bit words for bech32m
-  const words = bech32m.toWords(keyHash);
+  const words = bech32m.toWords(publicKey);
 
   return bech32m.encode('grin', words);
 }

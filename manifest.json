@@ -6,7 +6,8 @@
   "permissions": [
     "storage",
     "activeTab",
-    "notifications"
+    "notifications",
+    "alarms"
   ],
   "host_permissions": [
     "https://smirk.app/*",

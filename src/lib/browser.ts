@@ -136,6 +136,46 @@ export const notifications = {
 };
 
 /**
+ * Alarms API wrapper.
+ * Used for persistent timers that survive service worker restarts.
+ */
+export const alarms = {
+  async create(name: string, alarmInfo: chrome.alarms.AlarmCreateInfo): Promise<void> {
+    if (isFirefox) {
+      return browserAPI.alarms.create(name, alarmInfo);
+    }
+    return new Promise((resolve) => {
+      browserAPI.alarms.create(name, alarmInfo);
+      resolve();
+    });
+  },
+
+  async clear(name: string): Promise<boolean> {
+    if (isFirefox) {
+      return browserAPI.alarms.clear(name);
+    }
+    return new Promise((resolve) => {
+      browserAPI.alarms.clear(name, (wasCleared: boolean) => resolve(wasCleared));
+    });
+  },
+
+  async get(name: string): Promise<chrome.alarms.Alarm | undefined> {
+    if (isFirefox) {
+      return browserAPI.alarms.get(name);
+    }
+    return new Promise((resolve) => {
+      browserAPI.alarms.get(name, (alarm: chrome.alarms.Alarm | undefined) => resolve(alarm));
+    });
+  },
+
+  onAlarm: {
+    addListener(callback: (alarm: chrome.alarms.Alarm) => void): void {
+      browserAPI.alarms.onAlarm.addListener(callback);
+    },
+  },
+};
+
+/**
  * Tabs API wrapper.
  */
 export const tabs = {

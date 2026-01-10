@@ -313,6 +313,22 @@ export class SmirkApi {
     });
   }
 
+  /**
+   * Get Grin wallet balance from backend.
+   * Note: Grin uses a shared wallet on the backend due to Mimblewimble's
+   * interactive transaction nature.
+   */
+  async getGrinBalance(): Promise<ApiResponse<{
+    spendable: number;
+    awaiting_confirmation: number;
+    awaiting_finalization: number;
+    locked: number;
+    immature: number;
+    total: number;
+  }>> {
+    return this.request('/wallet/grin/balance', { method: 'GET' });
+  }
+
   // =========================================================================
   // Blockchain Info
   // =========================================================================
@@ -326,6 +342,7 @@ export class SmirkApi {
     ltc: number | null;
     xmr: number | null;
     wow: number | null;
+    grin: number | null;
   }>> {
     return this.request('/wallet/heights', { method: 'GET' });
   }

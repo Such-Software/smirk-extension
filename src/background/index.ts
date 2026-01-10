@@ -34,6 +34,7 @@ import {
   ltcAddress,
   xmrAddress,
   wowAddress,
+  grinSlatpackAddress,
   hexToBytes,
 } from '@/lib/address';
 import {
@@ -48,7 +49,7 @@ import {
 } from '@/lib/storage';
 import type { OnboardingState } from '@/types';
 import { api } from '@/lib/api';
-import { runtime, notifications } from '@/lib/browser';
+import { runtime, notifications, alarms } from '@/lib/browser';
 
 // Pending claim data from content script
 let pendingClaim: { linkId: string; fragmentKey?: string } | null = null;
@@ -62,9 +63,8 @@ let unlockedKeys: Map<AssetType, Uint8Array> = new Map();
 let unlockedViewKeys: Map<'xmr' | 'wow', Uint8Array> = new Map();
 let isUnlocked = false;
 
-// Auto-lock timer
-let autoLockTimer: ReturnType<typeof setTimeout> | null = null;
-let lastActivityTime = Date.now();
+// Auto-lock alarm name (uses chrome.alarms API for persistence across service worker restarts)
+const AUTO_LOCK_ALARM = 'smirk_auto_lock';
 let cachedAutoLockMinutes: number | null = null; // Cache to avoid reading storage on every activity
 
 /**
@@ -376,10 +376,10 @@ async function createWalletFromMnemonic(
   unlockedKeys.set('wow', derivedKeys.wow.privateSpendKey);
   unlockedViewKeys.set('wow', derivedKeys.wow.privateViewKey);
 
-  // Store Grin key
+  // Store Grin key (ed25519 for slatepack addresses)
   state.keys.grin = {
     asset: 'grin',
-    publicKey: '', // Grin doesn't have traditional public keys
+    publicKey: bytesToHex(derivedKeys.grin.publicKey),
     privateKey: encryptWithKey(derivedKeys.grin.privateKey),
     privateKeySalt: saltHex,
     createdAt: now,
@@ -437,7 +437,13 @@ async function registerWithBackend(state: WalletState): Promise<void> {
       publicSpendKey: state.keys.wow.publicViewKey,
     });
   }
-  // Grin doesn't have traditional public keys, skip for now
+  if (state.keys.grin) {
+    // Grin: ed25519 public key for slatepack address
+    keys.push({
+      asset: 'grin',
+      publicKey: state.keys.grin.publicKey,
+    });
+  }
 
   if (keys.length === 0) {
     console.warn('No keys to register with backend');
@@ -701,17 +707,25 @@ async function handleGetBalance(
           total: balance,
         },
       };
-    } else {
-      // Grin - not yet implemented
+    } else if (asset === 'grin') {
+      // Grin uses backend shared wallet
+      const result = await api.getGrinBalance();
+
+      if (result.error) {
+        return { success: false, error: result.error };
+      }
+
       return {
         success: true,
         data: {
           asset,
-          confirmed: 0,
-          unconfirmed: 0,
-          total: 0,
+          confirmed: result.data!.spendable,
+          unconfirmed: result.data!.awaiting_confirmation + result.data!.awaiting_finalization,
+          total: result.data!.total,
         },
       };
+    } else {
+      return { success: false, error: `Unknown asset: ${asset}` };
     }
   } catch (err) {
     return {
@@ -769,9 +783,8 @@ function getAddressForAsset(asset: AssetType, key: { publicKey: string; publicSp
       }
       return wowAddress(hexToBytes(key.publicSpendKey), hexToBytes(key.publicViewKey));
     case 'grin':
-      // Grin uses slatepack addresses - but we need a key to derive from
-      // For now, Grin doesn't store a traditional public key
-      return 'Grin address pending';
+      // Grin slatepack address from ed25519 public key
+      return grinSlatpackAddress(hexToBytes(key.publicKey));
     default:
       return 'Unknown asset';
   }
@@ -962,32 +975,20 @@ function handleResetAutoLockTimer(): MessageResponse<{ reset: boolean }> {
 }
 
 /**
- * Resets the auto-lock timer using cached settings (fast path for activity resets).
+ * Resets the auto-lock timer using cached settings.
+ * Uses chrome.alarms API which persists across service worker restarts.
  */
 function resetAutoLockTimer() {
-  // Clear existing timer
-  if (autoLockTimer) {
-    clearTimeout(autoLockTimer);
-    autoLockTimer = null;
-  }
-
   // Use cached value - if not set, don't start timer (will be set on unlock)
   if (cachedAutoLockMinutes === null || cachedAutoLockMinutes === 0 || !isUnlocked) {
+    alarms.clear(AUTO_LOCK_ALARM);
     return;
   }
 
-  const timeoutMs = cachedAutoLockMinutes * 60 * 1000;
-  lastActivityTime = Date.now();
-
-  autoLockTimer = setTimeout(() => {
-    if (isUnlocked) {
-      console.log(`Auto-locking wallet after ${cachedAutoLockMinutes} minutes of inactivity`);
-      unlockedKeys.clear();
-      unlockedViewKeys.clear();
-      isUnlocked = false;
-      autoLockTimer = null;
-    }
-  }, timeoutMs);
+  // Create alarm that fires after the configured minutes
+  // delayInMinutes must be at least 1 minute in Chrome
+  const delayMinutes = Math.max(1, cachedAutoLockMinutes);
+  alarms.create(AUTO_LOCK_ALARM, { delayInMinutes: delayMinutes });
 }
 
 /**
@@ -1006,11 +1007,20 @@ async function startAutoLockTimer() {
  * Stops the auto-lock timer.
  */
 function stopAutoLockTimer() {
-  if (autoLockTimer) {
-    clearTimeout(autoLockTimer);
-    autoLockTimer = null;
-  }
+  alarms.clear(AUTO_LOCK_ALARM);
 }
+
+/**
+ * Handle auto-lock alarm firing.
+ */
+alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === AUTO_LOCK_ALARM && isUnlocked) {
+    console.log(`Auto-locking wallet after ${cachedAutoLockMinutes} minutes of inactivity`);
+    unlockedKeys.clear();
+    unlockedViewKeys.clear();
+    isUnlocked = false;
+  }
+});
 
 // Listen for extension installation
 runtime.onInstalled.addListener((details) => {

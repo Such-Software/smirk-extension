@@ -23,12 +23,20 @@ const COIN_TYPES = {
   // XMR/WOW/Grin don't use standard BIP44 - we derive custom
 } as const;
 
+/** Grin key set - ed25519 for slatepack addresses */
+export interface GrinKeys {
+  /** Private key (32 bytes) - ed25519 scalar */
+  privateKey: Uint8Array;
+  /** Public key (32 bytes) - ed25519 point, used for slatepack address */
+  publicKey: Uint8Array;
+}
+
 export interface DerivedKeys {
   btc: { privateKey: Uint8Array; publicKey: Uint8Array };
   ltc: { privateKey: Uint8Array; publicKey: Uint8Array };
   xmr: CryptonoteKeys;
   wow: CryptonoteKeys;
-  grin: { privateKey: Uint8Array };
+  grin: GrinKeys;
 }
 
 /** Monero/Wownero key set */
@@ -175,16 +183,29 @@ function scalarToBytes(scalar: bigint): Uint8Array {
 
 /**
  * Derives Grin keys from master seed.
- * Grin uses secp256k1 but with a different address/commitment scheme.
+ *
+ * Grin slatepack addresses are ed25519 public keys used for:
+ * - Tor onion service addresses (for receiving transactions)
+ * - Encryption of slate data during transaction building
+ *
+ * Note: Grin has NO on-chain addresses - Mimblewimble transactions
+ * are interactive and don't contain recipient addresses.
  */
-function deriveGrinKey(masterSeed: Uint8Array): { privateKey: Uint8Array } {
+function deriveGrinKey(masterSeed: Uint8Array): GrinKeys {
   const domainSeparator = new TextEncoder().encode('smirk:grin:v1');
   const combined = new Uint8Array(masterSeed.length + domainSeparator.length);
   combined.set(masterSeed);
   combined.set(domainSeparator, masterSeed.length);
 
-  const privateKey = sha256(combined);
-  return { privateKey };
+  // Hash to get key seed, then reduce to valid ed25519 scalar
+  const keySeed = sha256(combined);
+  const keyScalar = bytesToScalar(keySeed);
+  const privateKey = scalarToBytes(keyScalar);
+
+  // Derive public key via ed25519 scalar multiplication
+  const publicKey = ed25519.ExtendedPoint.BASE.multiply(keyScalar).toRawBytes();
+
+  return { privateKey, publicKey };
 }
 
 /**

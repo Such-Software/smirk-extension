@@ -28,6 +28,17 @@ export interface UserSettings {
   autoLockMinutes: number;
 }
 
+// Block heights at wallet creation (for efficient LWS sync)
+export interface WalletBirthday {
+  timestamp: number;  // Unix timestamp (ms)
+  heights: {
+    btc?: number;
+    ltc?: number;
+    xmr?: number;
+    wow?: number;
+  };
+}
+
 // Stored wallet state
 export interface WalletState {
   // Master seed (encrypted mnemonic)
@@ -36,8 +47,8 @@ export interface WalletState {
   seedSalt?: string;
   // Whether user has confirmed backup
   backupConfirmed?: boolean;
-  // Wallet creation timestamp (for sync optimization)
-  walletBirthday?: number;
+  // Wallet creation info (timestamp + block heights for efficient sync)
+  walletBirthday?: WalletBirthday;
   // Derived keys per asset
   keys: Record<AssetType, WalletKey | undefined>;
   // User settings
@@ -62,7 +73,7 @@ export interface TipInfo {
 
 // Onboarding state for persisting wallet creation progress
 export interface OnboardingState {
-  step: 'choice' | 'generate' | 'verify' | 'password' | 'restore';
+  step: 'choice' | 'generate' | 'verify' | 'password' | 'restore' | 'creating';
   words?: string[];
   verifyIndices?: number[];
   createdAt: number;

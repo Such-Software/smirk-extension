@@ -102,7 +102,7 @@ export async function clearAllStorage(): Promise<void> {
  * Onboarding state - persists wallet creation progress across popup closes.
  */
 export interface OnboardingState {
-  step: 'choice' | 'generate' | 'verify' | 'password' | 'restore';
+  step: 'choice' | 'generate' | 'verify' | 'password' | 'restore' | 'creating';
   words?: string[];
   verifyIndices?: number[];
   createdAt: number;

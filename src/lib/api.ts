@@ -285,6 +285,51 @@ export class SmirkApi {
     });
   }
 
+  /**
+   * Register wallet with LWS for balance scanning.
+   * @param asset - 'xmr' or 'wow'
+   * @param address - Primary address
+   * @param viewKey - Private view key (hex)
+   * @param startHeight - Optional start height (for wallets created in the past)
+   */
+  async registerLws(
+    asset: 'xmr' | 'wow',
+    address: string,
+    viewKey: string,
+    startHeight?: number
+  ): Promise<ApiResponse<{
+    success: boolean;
+    message: string;
+    start_height?: number;
+  }>> {
+    return this.request('/wallet/lws/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        asset,
+        address,
+        view_key: viewKey,
+        start_height: startHeight,
+      }),
+    });
+  }
+
+  // =========================================================================
+  // Blockchain Info
+  // =========================================================================
+
+  /**
+   * Get current blockchain heights for all networks.
+   * Useful for wallet creation to determine start heights.
+   */
+  async getBlockchainHeights(): Promise<ApiResponse<{
+    btc: number | null;
+    ltc: number | null;
+    xmr: number | null;
+    wow: number | null;
+  }>> {
+    return this.request('/wallet/heights', { method: 'GET' });
+  }
+
   // =========================================================================
   // Health
   // =========================================================================

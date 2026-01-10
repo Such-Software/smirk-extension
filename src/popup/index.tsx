@@ -25,7 +25,7 @@ async function sendMessage<T>(message: unknown): Promise<T> {
 // Onboarding Flow Components
 // ============================================================================
 
-type OnboardingStep = 'choice' | 'generate' | 'verify' | 'password' | 'restore';
+type OnboardingStep = 'choice' | 'generate' | 'verify' | 'password' | 'restore' | 'creating';
 
 function OnboardingChoice({
   onCreateNew,
@@ -240,6 +240,7 @@ function PasswordSetup({
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState('');
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
@@ -256,20 +257,42 @@ function PasswordSetup({
     }
 
     setLoading(true);
+    setLoadingMessage('Creating wallet...');
 
     try {
+      // Show progress messages
+      setLoadingMessage('Deriving keys...');
+      await new Promise((r) => setTimeout(r, 100)); // Let UI update
+
+      setLoadingMessage('Encrypting wallet...');
       await sendMessage({
         type: 'CONFIRM_MNEMONIC',
         password,
         verifiedWords,
       });
+
+      setLoadingMessage('Done!');
       onComplete();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create wallet');
-    } finally {
       setLoading(false);
+      setLoadingMessage('');
     }
   };
+
+  // Show full-screen loading state when creating wallet
+  if (loading) {
+    return (
+      <div class="lock-screen">
+        <div class="spinner" style={{ width: '48px', height: '48px', marginBottom: '24px' }} />
+        <h2 class="lock-title" style={{ marginBottom: '8px' }}>Creating Wallet</h2>
+        <p class="lock-text">{loadingMessage}</p>
+        <p class="lock-text" style={{ fontSize: '12px', marginTop: '16px', color: '#71717a' }}>
+          Please wait, this may take a moment...
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div class="lock-screen">
@@ -285,7 +308,6 @@ function PasswordSetup({
             placeholder="Password (min 8 characters)"
             value={password}
             onInput={(e) => setPassword((e.target as HTMLInputElement).value)}
-            disabled={loading}
           />
         </div>
         <div class="form-group">
@@ -295,7 +317,6 @@ function PasswordSetup({
             placeholder="Confirm Password"
             value={confirmPassword}
             onInput={(e) => setConfirmPassword((e.target as HTMLInputElement).value)}
-            disabled={loading}
           />
         </div>
 
@@ -303,10 +324,61 @@ function PasswordSetup({
           <p style={{ color: '#ef4444', fontSize: '13px', marginBottom: '16px' }}>{error}</p>
         )}
 
-        <button type="submit" class="btn btn-primary" style={{ width: '100%' }} disabled={loading}>
-          {loading ? <span class="spinner" style={{ margin: '0 auto' }} /> : 'Create Wallet'}
+        <button type="submit" class="btn btn-primary" style={{ width: '100%' }}>
+          Create Wallet
         </button>
       </form>
+    </div>
+  );
+}
+
+/**
+ * Screen shown when wallet creation is in progress.
+ * This handles the case where user clicks away during creation and reopens popup.
+ */
+function WalletCreatingScreen({ onComplete }: { onComplete: () => void }) {
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    // Check if wallet was created while popup was closed
+    const checkWalletState = async () => {
+      try {
+        const result = await sendMessage<{ hasWallet: boolean; isUnlocked: boolean }>({
+          type: 'GET_WALLET_STATE',
+        });
+
+        if (result.hasWallet) {
+          // Wallet was created successfully, complete onboarding
+          onComplete();
+        } else {
+          // Still creating... keep showing this screen
+          setChecking(false);
+        }
+      } catch (err) {
+        console.error('Failed to check wallet state:', err);
+        setChecking(false);
+      }
+    };
+
+    checkWalletState();
+
+    // Poll periodically in case creation finishes
+    const interval = setInterval(checkWalletState, 1000);
+    return () => clearInterval(interval);
+  }, [onComplete]);
+
+  return (
+    <div class="lock-screen">
+      <div class="spinner" style={{ width: '48px', height: '48px', marginBottom: '24px' }} />
+      <h2 class="lock-title" style={{ marginBottom: '8px' }}>
+        {checking ? 'Checking...' : 'Creating Wallet'}
+      </h2>
+      <p class="lock-text">
+        {checking ? 'Please wait...' : 'Your wallet is being created. This may take a moment...'}
+      </p>
+      <p class="lock-text" style={{ fontSize: '12px', marginTop: '16px', color: '#71717a' }}>
+        Please keep this window open.
+      </p>
     </div>
   );
 }
@@ -542,6 +614,8 @@ function Onboarding({ onComplete }: { onComplete: () => void }) {
       );
     case 'password':
       return <PasswordSetup verifiedWords={verifiedWords} onComplete={handleComplete} />;
+    case 'creating':
+      return <WalletCreatingScreen onComplete={handleComplete} />;
   }
 }
 
@@ -633,7 +707,11 @@ interface BalanceData {
   confirmed: number;
   unconfirmed: number;
   total: number;
+  error?: string;
 }
+
+// Storage key for persisting active asset tab
+const ACTIVE_ASSET_KEY = 'smirk_activeAsset';
 
 function WalletView({ onLock }: { onLock: () => void }) {
   const [activeAsset, setActiveAsset] = useState<AssetType>('btc');
@@ -657,6 +735,20 @@ function WalletView({ onLock }: { onLock: () => void }) {
   const [copied, setCopied] = useState(false);
 
   const availableAssets: AssetType[] = ['btc', 'ltc', 'xmr', 'wow', 'grin'];
+
+  // Restore active asset from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem(ACTIVE_ASSET_KEY);
+    if (saved && availableAssets.includes(saved as AssetType)) {
+      setActiveAsset(saved as AssetType);
+    }
+  }, []);
+
+  // Persist active asset when it changes
+  const handleAssetChange = (asset: AssetType) => {
+    setActiveAsset(asset);
+    localStorage.setItem(ACTIVE_ASSET_KEY, asset);
+  };
 
   // Reset auto-lock timer on user activity
   useEffect(() => {
@@ -719,10 +811,21 @@ function WalletView({ onLock }: { onLock: () => void }) {
           confirmed: result.confirmed,
           unconfirmed: result.unconfirmed,
           total: result.total,
+          error: undefined,
         },
       }));
     } catch (err) {
       console.error(`Failed to fetch ${asset} balance:`, err);
+      // Keep previous balance if available, but mark as error
+      setBalances((prev) => ({
+        ...prev,
+        [asset]: {
+          confirmed: prev[asset]?.confirmed ?? 0,
+          unconfirmed: prev[asset]?.unconfirmed ?? 0,
+          total: prev[asset]?.total ?? 0,
+          error: err instanceof Error ? err.message : 'Offline',
+        },
+      }));
     } finally {
       setLoadingBalance(null);
     }
@@ -766,7 +869,7 @@ function WalletView({ onLock }: { onLock: () => void }) {
             <button
               key={asset}
               class={`asset-tab ${activeAsset === asset ? 'active' : ''}`}
-              onClick={() => setActiveAsset(asset)}
+              onClick={() => handleAssetChange(asset)}
               title={ASSETS[asset].name}
             >
               <img
@@ -801,7 +904,12 @@ function WalletView({ onLock }: { onLock: () => void }) {
               `0.00000000 ${ASSETS[activeAsset].symbol}`
             )}
           </div>
-          {currentBalance && currentBalance.unconfirmed !== 0 && (
+          {currentBalance?.error && (
+            <div class="balance-usd" style={{ fontSize: '11px', color: '#ef4444' }}>
+              ⚠️ {currentBalance.error === 'Offline' ? 'Offline - cached value' : currentBalance.error}
+            </div>
+          )}
+          {currentBalance && !currentBalance.error && currentBalance.unconfirmed !== 0 && (
             <div class="balance-usd" style={{ fontSize: '11px', color: '#f59e0b' }}>
               {currentBalance.unconfirmed > 0 ? '+' : ''}
               {formatBalance(currentBalance.unconfirmed, activeAsset)} unconfirmed

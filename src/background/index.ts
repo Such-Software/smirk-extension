@@ -16,6 +16,7 @@ import {
   decryptTipPayload,
   decryptPublicTipPayload,
   decodeUrlFragmentKey,
+  deriveKeyFromPassword,
   bytesToHex,
   encrypt,
   decrypt,
@@ -57,11 +58,14 @@ let pendingMnemonic: string | null = null;
 
 // In-memory decrypted keys (cleared on lock)
 let unlockedKeys: Map<AssetType, Uint8Array> = new Map();
+// View keys for XMR/WOW (needed for balance queries)
+let unlockedViewKeys: Map<'xmr' | 'wow', Uint8Array> = new Map();
 let isUnlocked = false;
 
 // Auto-lock timer
 let autoLockTimer: ReturnType<typeof setTimeout> | null = null;
 let lastActivityTime = Date.now();
+let cachedAutoLockMinutes: number | null = null; // Cache to avoid reading storage on every activity
 
 /**
  * Handles messages from popup and content scripts.
@@ -212,11 +216,19 @@ async function handleConfirmMnemonic(
     }
   }
 
+  // Set state to 'creating' so popup can show progress if reopened
+  await saveOnboardingState({ step: 'creating', createdAt: Date.now() });
+
   // Create wallet from mnemonic
   const result = await createWalletFromMnemonic(pendingMnemonic, password, true);
 
   // Clear pending mnemonic
   pendingMnemonic = null;
+
+  // Clear onboarding state on success
+  if (result.success) {
+    await clearOnboardingState();
+  }
 
   return result;
 }
@@ -236,99 +248,141 @@ async function handleRestoreWallet(
     return { success: false, error: 'Password must be at least 8 characters' };
   }
 
-  return createWalletFromMnemonic(mnemonic, password, true);
+  // Set state to 'creating' so popup can show progress if reopened
+  await saveOnboardingState({ step: 'creating', createdAt: Date.now() });
+
+  // Pass isRestore=true so LWS registration uses stored heights
+  const result = await createWalletFromMnemonic(mnemonic, password, true, true);
+
+  // Clear onboarding state on success
+  if (result.success) {
+    await clearOnboardingState();
+  }
+
+  return result;
 }
 
 /**
  * Core wallet creation from mnemonic.
+ * @param isRestore - If true, this is a wallet restore (use stored heights for LWS start)
  */
 async function createWalletFromMnemonic(
   mnemonic: string,
   password: string,
-  backupConfirmed: boolean
+  backupConfirmed: boolean,
+  isRestore: boolean = false
 ): Promise<MessageResponse<{ created: boolean; assets: AssetType[] }>> {
   // Derive all keys from mnemonic
   const derivedKeys = deriveAllKeys(mnemonic);
 
+  // Derive encryption key ONCE and reuse for all keys
+  // This is 8x faster than calling encryptPrivateKey for each key (100k PBKDF2 iterations each)
+  const masterSalt = randomBytes(16);
+  const encryptionKey = await deriveKeyFromPassword(password, masterSalt);
+  const saltHex = bytesToHex(masterSalt);
+
+  // Helper to encrypt with pre-derived key
+  const encryptWithKey = (data: Uint8Array): string => bytesToHex(encrypt(data, encryptionKey));
+
   // Encrypt mnemonic for storage
   const mnemonicBytes = new TextEncoder().encode(mnemonic);
-  const { encrypted: encryptedMnemonic, salt: mnemonicSalt } = await encryptPrivateKey(mnemonicBytes, password);
+  const encryptedMnemonic = encryptWithKey(mnemonicBytes);
+
+  // Fetch current blockchain heights for wallet birthday (run in parallel with key setup)
+  let walletBirthday: WalletState['walletBirthday'];
+  try {
+    const heightsResult = await api.getBlockchainHeights();
+    if (heightsResult.data) {
+      walletBirthday = {
+        timestamp: Date.now(),
+        heights: {
+          btc: heightsResult.data.btc ?? undefined,
+          ltc: heightsResult.data.ltc ?? undefined,
+          xmr: heightsResult.data.xmr ?? undefined,
+          wow: heightsResult.data.wow ?? undefined,
+        },
+      };
+    } else {
+      // Backend unavailable - store timestamp only, heights will be missing
+      console.warn('Could not fetch blockchain heights:', heightsResult.error);
+      walletBirthday = { timestamp: Date.now(), heights: {} };
+    }
+  } catch (err) {
+    console.warn('Failed to fetch blockchain heights:', err);
+    walletBirthday = { timestamp: Date.now(), heights: {} };
+  }
 
   // Build wallet state
   const state: WalletState = {
     ...DEFAULT_WALLET_STATE,
     encryptedSeed: encryptedMnemonic,
-    seedSalt: mnemonicSalt,
+    seedSalt: saltHex,
     backupConfirmed,
-    walletBirthday: Date.now(),
+    walletBirthday,
   };
 
   const assets: AssetType[] = ['btc', 'ltc', 'xmr', 'wow', 'grin'];
+  const now = Date.now();
 
   // Store BTC key
   const btcPub = getPublicKey(derivedKeys.btc.privateKey);
-  const { encrypted: btcEnc, salt: btcSalt } = await encryptPrivateKey(derivedKeys.btc.privateKey, password);
   state.keys.btc = {
     asset: 'btc',
     publicKey: bytesToHex(btcPub),
-    privateKey: btcEnc,
-    privateKeySalt: btcSalt,
-    createdAt: Date.now(),
+    privateKey: encryptWithKey(derivedKeys.btc.privateKey),
+    privateKeySalt: saltHex,
+    createdAt: now,
   };
   unlockedKeys.set('btc', derivedKeys.btc.privateKey);
 
   // Store LTC key
   const ltcPub = getPublicKey(derivedKeys.ltc.privateKey);
-  const { encrypted: ltcEnc, salt: ltcSalt } = await encryptPrivateKey(derivedKeys.ltc.privateKey, password);
   state.keys.ltc = {
     asset: 'ltc',
     publicKey: bytesToHex(ltcPub),
-    privateKey: ltcEnc,
-    privateKeySalt: ltcSalt,
-    createdAt: Date.now(),
+    privateKey: encryptWithKey(derivedKeys.ltc.privateKey),
+    privateKeySalt: saltHex,
+    createdAt: now,
   };
   unlockedKeys.set('ltc', derivedKeys.ltc.privateKey);
 
   // Store XMR keys
-  const { encrypted: xmrSpendEnc, salt: xmrSpendSalt } = await encryptPrivateKey(derivedKeys.xmr.privateSpendKey, password);
-  const { encrypted: xmrViewEnc, salt: xmrViewSalt } = await encryptPrivateKey(derivedKeys.xmr.privateViewKey, password);
   state.keys.xmr = {
     asset: 'xmr',
     publicKey: bytesToHex(derivedKeys.xmr.publicSpendKey), // Primary public key
-    privateKey: xmrSpendEnc,
-    privateKeySalt: xmrSpendSalt,
+    privateKey: encryptWithKey(derivedKeys.xmr.privateSpendKey),
+    privateKeySalt: saltHex,
     publicSpendKey: bytesToHex(derivedKeys.xmr.publicSpendKey),
     publicViewKey: bytesToHex(derivedKeys.xmr.publicViewKey),
-    privateViewKey: xmrViewEnc,
-    privateViewKeySalt: xmrViewSalt,
-    createdAt: Date.now(),
+    privateViewKey: encryptWithKey(derivedKeys.xmr.privateViewKey),
+    privateViewKeySalt: saltHex,
+    createdAt: now,
   };
   unlockedKeys.set('xmr', derivedKeys.xmr.privateSpendKey);
+  unlockedViewKeys.set('xmr', derivedKeys.xmr.privateViewKey);
 
   // Store WOW keys
-  const { encrypted: wowSpendEnc, salt: wowSpendSalt } = await encryptPrivateKey(derivedKeys.wow.privateSpendKey, password);
-  const { encrypted: wowViewEnc, salt: wowViewSalt } = await encryptPrivateKey(derivedKeys.wow.privateViewKey, password);
   state.keys.wow = {
     asset: 'wow',
     publicKey: bytesToHex(derivedKeys.wow.publicSpendKey),
-    privateKey: wowSpendEnc,
-    privateKeySalt: wowSpendSalt,
+    privateKey: encryptWithKey(derivedKeys.wow.privateSpendKey),
+    privateKeySalt: saltHex,
     publicSpendKey: bytesToHex(derivedKeys.wow.publicSpendKey),
     publicViewKey: bytesToHex(derivedKeys.wow.publicViewKey),
-    privateViewKey: wowViewEnc,
-    privateViewKeySalt: wowViewSalt,
-    createdAt: Date.now(),
+    privateViewKey: encryptWithKey(derivedKeys.wow.privateViewKey),
+    privateViewKeySalt: saltHex,
+    createdAt: now,
   };
   unlockedKeys.set('wow', derivedKeys.wow.privateSpendKey);
+  unlockedViewKeys.set('wow', derivedKeys.wow.privateViewKey);
 
   // Store Grin key
-  const { encrypted: grinEnc, salt: grinSalt } = await encryptPrivateKey(derivedKeys.grin.privateKey, password);
   state.keys.grin = {
     asset: 'grin',
     publicKey: '', // Grin doesn't have traditional public keys
-    privateKey: grinEnc,
-    privateKeySalt: grinSalt,
-    createdAt: Date.now(),
+    privateKey: encryptWithKey(derivedKeys.grin.privateKey),
+    privateKeySalt: saltHex,
+    createdAt: now,
   };
   unlockedKeys.set('grin', derivedKeys.grin.privateKey);
 
@@ -342,6 +396,13 @@ async function createWalletFromMnemonic(
   registerWithBackend(state).catch((err) => {
     console.warn('Failed to register with backend:', err);
     // Continue working - we can retry later
+  });
+
+  // Register XMR/WOW with LWS for balance scanning (non-blocking)
+  // For new wallets: LWS starts from current block
+  // For restored wallets: use wallet birthday heights to avoid scanning from genesis
+  registerWithLws(state, derivedKeys, isRestore).catch((err) => {
+    console.warn('Failed to register with LWS:', err);
   });
 
   return { success: true, data: { created: true, assets } };
@@ -385,7 +446,7 @@ async function registerWithBackend(state: WalletState): Promise<void> {
 
   const result = await api.extensionRegister({
     keys,
-    walletBirthday: state.walletBirthday,
+    walletBirthday: state.walletBirthday?.timestamp,
   });
 
   if (result.error) {
@@ -405,6 +466,48 @@ async function registerWithBackend(state: WalletState): Promise<void> {
   api.setAccessToken(auth.accessToken);
 
   console.log('Registered with backend:', auth.user.isNew ? 'new user' : 'existing user');
+}
+
+/**
+ * Register XMR/WOW wallets with LWS for balance scanning.
+ * Uses the private view key to register with the Light Wallet Server.
+ *
+ * @param isRestore - If true, use wallet birthday heights as start_height to avoid scanning from genesis
+ */
+async function registerWithLws(
+  state: WalletState,
+  derivedKeys: { xmr: { privateViewKey: Uint8Array; publicSpendKey: Uint8Array; publicViewKey: Uint8Array }; wow: { privateViewKey: Uint8Array; publicSpendKey: Uint8Array; publicViewKey: Uint8Array } },
+  isRestore: boolean = false
+): Promise<void> {
+  // Get start heights from wallet birthday (for restore scenarios)
+  const xmrStartHeight = isRestore ? state.walletBirthday?.heights?.xmr : undefined;
+  const wowStartHeight = isRestore ? state.walletBirthday?.heights?.wow : undefined;
+
+  // Register XMR with LWS
+  if (state.keys.xmr?.publicSpendKey && state.keys.xmr?.publicViewKey) {
+    const xmrAddress = getAddressForAsset('xmr', state.keys.xmr);
+    const xmrViewKey = bytesToHex(derivedKeys.xmr.privateViewKey);
+
+    const xmrResult = await api.registerLws('xmr', xmrAddress, xmrViewKey, xmrStartHeight);
+    if (xmrResult.error) {
+      console.warn('Failed to register XMR with LWS:', xmrResult.error);
+    } else {
+      console.log('XMR registered with LWS:', xmrResult.data?.message, xmrStartHeight ? `(start_height: ${xmrStartHeight})` : '(from current)');
+    }
+  }
+
+  // Register WOW with LWS
+  if (state.keys.wow?.publicSpendKey && state.keys.wow?.publicViewKey) {
+    const wowAddress = getAddressForAsset('wow', state.keys.wow);
+    const wowViewKey = bytesToHex(derivedKeys.wow.privateViewKey);
+
+    const wowResult = await api.registerLws('wow', wowAddress, wowViewKey, wowStartHeight);
+    if (wowResult.error) {
+      console.warn('Failed to register WOW with LWS:', wowResult.error);
+    } else {
+      console.log('WOW registered with LWS:', wowResult.data?.message, wowStartHeight ? `(start_height: ${wowStartHeight})` : '(from current)');
+    }
+  }
 }
 
 // Legacy create wallet (for backwards compat, redirects to mnemonic flow)
@@ -445,6 +548,7 @@ async function handleUnlockWallet(password: string): Promise<MessageResponse<{
 
     // Password correct - decrypt all keys
     unlockedKeys.clear();
+    unlockedViewKeys.clear();
 
     for (const asset of Object.keys(state.keys) as AssetType[]) {
       const assetKey = state.keys[asset];
@@ -455,6 +559,16 @@ async function handleUnlockWallet(password: string): Promise<MessageResponse<{
           password
         );
         unlockedKeys.set(asset, privateKey);
+
+        // Also decrypt view keys for XMR/WOW (needed for balance queries)
+        if ((asset === 'xmr' || asset === 'wow') && assetKey.privateViewKey && assetKey.privateViewKeySalt) {
+          const viewKey = await decryptPrivateKey(
+            assetKey.privateViewKey,
+            assetKey.privateViewKeySalt,
+            password
+          );
+          unlockedViewKeys.set(asset, viewKey);
+        }
       }
     }
 
@@ -471,6 +585,7 @@ async function handleUnlockWallet(password: string): Promise<MessageResponse<{
 
 async function handleLockWallet(): Promise<MessageResponse<{ locked: boolean }>> {
   unlockedKeys.clear();
+  unlockedViewKeys.clear();
   isUnlocked = false;
   stopAutoLockTimer();
   return { success: true, data: { locked: true } };
@@ -559,15 +674,31 @@ async function handleGetBalance(
       };
     } else if (asset === 'xmr' || asset === 'wow') {
       // Use LWS endpoint for Cryptonote coins
-      // Note: This requires view key which we'd need to decrypt
-      // For now, return a placeholder
+      const viewKey = unlockedViewKeys.get(asset);
+      if (!viewKey) {
+        return { success: false, error: `No ${asset} view key available` };
+      }
+
+      const viewKeyHex = bytesToHex(viewKey);
+      const result = await api.getLwsBalance(asset, address, viewKeyHex);
+
+      if (result.error) {
+        return { success: false, error: result.error };
+      }
+
+      // LWS returns balance and unlocked_balance
+      // locked = balance - unlocked
+      const balance = result.data!.balance;
+      const unlockedBalance = result.data!.unlocked_balance;
+      const lockedBalance = result.data!.locked_balance;
+
       return {
         success: true,
         data: {
           asset,
-          confirmed: 0,
-          unconfirmed: 0,
-          total: 0,
+          confirmed: unlockedBalance,
+          unconfirmed: lockedBalance, // Locked funds shown as "unconfirmed"
+          total: balance,
         },
       };
     } else {
@@ -812,9 +943,10 @@ async function handleUpdateSettings(
     }
     state.settings.autoLockMinutes = minutes;
 
-    // Restart auto-lock timer with new setting
+    // Update cache and restart auto-lock timer with new setting
+    cachedAutoLockMinutes = minutes;
     if (isUnlocked) {
-      startAutoLockTimer();
+      resetAutoLockTimer();
     }
   }
 
@@ -824,41 +956,50 @@ async function handleUpdateSettings(
 
 function handleResetAutoLockTimer(): MessageResponse<{ reset: boolean }> {
   if (isUnlocked) {
-    lastActivityTime = Date.now();
-    startAutoLockTimer();
+    resetAutoLockTimer();
   }
   return { success: true, data: { reset: true } };
 }
 
 /**
- * Starts or restarts the auto-lock timer based on settings.
+ * Resets the auto-lock timer using cached settings (fast path for activity resets).
  */
-async function startAutoLockTimer() {
+function resetAutoLockTimer() {
   // Clear existing timer
   if (autoLockTimer) {
     clearTimeout(autoLockTimer);
     autoLockTimer = null;
   }
 
-  const state = await getWalletState();
-  const minutes = state.settings.autoLockMinutes;
-
-  // 0 means never auto-lock
-  if (minutes === 0 || !isUnlocked) {
+  // Use cached value - if not set, don't start timer (will be set on unlock)
+  if (cachedAutoLockMinutes === null || cachedAutoLockMinutes === 0 || !isUnlocked) {
     return;
   }
 
-  const timeoutMs = minutes * 60 * 1000;
+  const timeoutMs = cachedAutoLockMinutes * 60 * 1000;
   lastActivityTime = Date.now();
 
-  autoLockTimer = setTimeout(async () => {
+  autoLockTimer = setTimeout(() => {
     if (isUnlocked) {
-      console.log('Auto-locking wallet due to inactivity');
+      console.log(`Auto-locking wallet after ${cachedAutoLockMinutes} minutes of inactivity`);
       unlockedKeys.clear();
+      unlockedViewKeys.clear();
       isUnlocked = false;
       autoLockTimer = null;
     }
   }, timeoutMs);
+}
+
+/**
+ * Starts the auto-lock timer, loading settings from storage.
+ * Call this on unlock or when settings change.
+ */
+async function startAutoLockTimer() {
+  const state = await getWalletState();
+  cachedAutoLockMinutes = state.settings.autoLockMinutes;
+
+  // Now use the fast path
+  resetAutoLockTimer();
 }
 
 /**

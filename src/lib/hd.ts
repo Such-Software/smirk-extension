@@ -94,8 +94,12 @@ function deriveBip44Key(
  * Monero uses ed25519 with a specific key derivation:
  * 1. Derive a sub-seed specific to the coin
  * 2. Hash to get private spend key (reduced mod l for valid scalar)
- * 3. Hash private spend key to get private view key
+ * 3. Hash private spend key to get private view key (also reduced)
  * 4. Derive public keys via ed25519 scalar multiplication
+ *
+ * IMPORTANT: Private keys must be stored as reduced scalars (mod l),
+ * not raw hash bytes. This ensures the stored private key matches
+ * the one used to derive the public key in the address.
  *
  * This is NOT the same as Monero's native 25-word seed,
  * but provides deterministic derivation from our BIP39 master.
@@ -110,26 +114,26 @@ function deriveCryptonoteKeys(
   combined.set(masterSeed);
   combined.set(domainSeparator, masterSeed.length);
 
-  // Derive private spend key seed and reduce to valid ed25519 scalar
+  // Derive private spend key seed
   const spendKeySeed = sha256(combined);
-  // ed25519.utils.getExtendedPublicKey handles scalar clamping internally
-  // but we need a raw scalar for Monero. Use the hash directly -
-  // Monero's sc_reduce32 would make this uniform, but hash output is fine for our use
-  const privateSpendKey = spendKeySeed;
+  // Reduce to valid ed25519 scalar - this is Monero's sc_reduce32
+  const spendKeyScalar = bytesToScalar(spendKeySeed);
+  const privateSpendKey = scalarToBytes(spendKeyScalar);
 
   // Derive private view key from private spend key (Monero standard: Hs(private_spend_key))
-  const privateViewKey = sha256(privateSpendKey);
+  // Hash the REDUCED private spend key, then reduce the result
+  const viewKeySeed = sha256(privateSpendKey);
+  const viewKeyScalar = bytesToScalar(viewKeySeed);
+  const privateViewKey = scalarToBytes(viewKeyScalar);
 
   // Derive public keys from private keys using ed25519
-  // In ed25519, public key = private_scalar * G (base point)
-  // noble/curves ed25519.getPublicKey expects the seed and does internal hashing,
-  // but we already have the scalar. Use ExtendedPoint for direct scalar mult.
+  // public key = private_scalar * G (base point)
   const publicSpendKey = ed25519.ExtendedPoint.BASE.multiply(
-    bytesToScalar(privateSpendKey)
+    spendKeyScalar
   ).toRawBytes();
 
   const publicViewKey = ed25519.ExtendedPoint.BASE.multiply(
-    bytesToScalar(privateViewKey)
+    viewKeyScalar
   ).toRawBytes();
 
   return {
@@ -143,6 +147,7 @@ function deriveCryptonoteKeys(
 /**
  * Converts a 32-byte array to a BigInt scalar for ed25519.
  * Reads as little-endian (Monero convention).
+ * Reduces mod l to ensure valid scalar.
  */
 function bytesToScalar(bytes: Uint8Array): bigint {
   let scalar = 0n;
@@ -152,6 +157,20 @@ function bytesToScalar(bytes: Uint8Array): bigint {
   // Reduce mod l (ed25519 curve order) to ensure valid scalar
   const l = 2n ** 252n + 27742317777372353535851937790883648493n;
   return scalar % l;
+}
+
+/**
+ * Converts a BigInt scalar to a 32-byte array.
+ * Writes as little-endian (Monero convention).
+ */
+function scalarToBytes(scalar: bigint): Uint8Array {
+  const bytes = new Uint8Array(32);
+  let remaining = scalar;
+  for (let i = 0; i < 32; i++) {
+    bytes[i] = Number(remaining & 0xffn);
+    remaining >>= 8n;
+  }
+  return bytes;
 }
 
 /**

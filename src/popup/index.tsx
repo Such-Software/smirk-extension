@@ -1,7 +1,9 @@
 import { render } from 'preact';
 import { useState, useEffect } from 'preact/hooks';
-import type { AssetType, TipInfo, MessageResponse, OnboardingState } from '@/types';
+import type { AssetType, TipInfo, MessageResponse, OnboardingState, BalanceResponse } from '@/types';
+import { isLwsRawResponse } from '@/types';
 import { runtime } from '@/lib/browser';
+import { calculateVerifiedBalance } from '@/lib/monero-crypto';
 
 // Asset display info with SVG icon paths
 const ASSETS: Record<AssetType, { name: string; symbol: string; iconPath: string }> = {
@@ -677,18 +679,45 @@ function UnlockScreen({ onUnlock }: { onUnlock: () => void }) {
 // Main Wallet View
 // ============================================================================
 
-// Format satoshis to display string (8 decimal places for BTC/LTC)
-function formatBalance(satoshis: number, asset: AssetType): string {
-  if (asset === 'btc' || asset === 'ltc') {
-    return (satoshis / 100_000_000).toFixed(8);
-  } else if (asset === 'xmr' || asset === 'wow') {
-    // Piconero - 12 decimal places
-    return (satoshis / 1_000_000_000_000).toFixed(12);
-  } else if (asset === 'grin') {
-    // Nanogrin - 9 decimal places
-    return (satoshis / 1_000_000_000).toFixed(9);
-  }
-  return satoshis.toString();
+// Atomic unit divisors per asset
+const ATOMIC_DIVISORS: Record<AssetType, number> = {
+  btc: 100_000_000,      // 8 decimals (satoshis)
+  ltc: 100_000_000,      // 8 decimals (litoshis)
+  xmr: 1_000_000_000_000, // 12 decimals (piconero)
+  wow: 100_000_000_000,   // 11 decimals (wowoshi) - NOT 12 like XMR!
+  grin: 1_000_000_000,    // 9 decimals (nanogrin)
+};
+
+// Display decimals (shortened) - hover shows full
+const DISPLAY_DECIMALS: Record<AssetType, number> = {
+  btc: 8,    // Keep full precision for BTC (high value per unit)
+  ltc: 4,    // 4 decimals for LTC
+  xmr: 4,    // 4 decimals for XMR
+  wow: 2,    // 2 decimals for WOW (low value)
+  grin: 2,   // 2 decimals for GRIN (low value)
+};
+
+// Full precision decimals per asset
+const FULL_DECIMALS: Record<AssetType, number> = {
+  btc: 8,
+  ltc: 8,
+  xmr: 12,
+  wow: 11,
+  grin: 9,
+};
+
+// Format atomic units to display string (shortened decimals)
+function formatBalance(atomicUnits: number, asset: AssetType): string {
+  const divisor = ATOMIC_DIVISORS[asset];
+  const displayDecimals = DISPLAY_DECIMALS[asset];
+  return (atomicUnits / divisor).toFixed(displayDecimals);
+}
+
+// Format atomic units to full precision string (for hover/copy)
+function formatBalanceFull(atomicUnits: number, asset: AssetType): string {
+  const divisor = ATOMIC_DIVISORS[asset];
+  const fullDecimals = FULL_DECIMALS[asset];
+  return (atomicUnits / divisor).toFixed(fullDecimals);
 }
 
 // Truncate address for display
@@ -713,10 +742,118 @@ interface BalanceData {
 // Storage key for persisting active asset tab
 const ACTIVE_ASSET_KEY = 'smirk_activeAsset';
 
+type WalletScreen = 'main' | 'receive' | 'send' | 'settings';
+
+// ============================================================================
+// Receive View
+// ============================================================================
+
+function ReceiveView({
+  asset,
+  address,
+  onBack,
+}: {
+  asset: AssetType;
+  address: AddressData | null;
+  onBack: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    if (!address) return;
+    try {
+      await navigator.clipboard.writeText(address.address);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
+
+  return (
+    <>
+      <header class="header">
+        <button class="btn btn-icon" onClick={onBack} title="Back">←</button>
+        <h1 style={{ flex: 1, textAlign: 'center' }}>Receive {ASSETS[asset].symbol}</h1>
+        <div style={{ width: '32px' }} />
+      </header>
+
+      <div class="content">
+        <div style={{ textAlign: 'center', marginBottom: '16px' }}>
+          <img
+            src={ASSETS[asset].iconPath}
+            alt={ASSETS[asset].symbol}
+            style={{ width: '48px', height: '48px', marginBottom: '8px' }}
+          />
+          <div style={{ fontSize: '14px', color: '#a1a1aa' }}>
+            Your {ASSETS[asset].name} Address
+          </div>
+        </div>
+
+        {address ? (
+          <div
+            style={{
+              background: '#27272a',
+              borderRadius: '8px',
+              padding: '16px',
+              marginBottom: '16px',
+            }}
+          >
+            <div
+              style={{
+                fontFamily: 'monospace',
+                fontSize: '12px',
+                wordBreak: 'break-all',
+                textAlign: 'center',
+                lineHeight: '1.6',
+                marginBottom: '16px',
+              }}
+            >
+              {address.address}
+            </div>
+
+            <button
+              class="btn btn-primary"
+              style={{ width: '100%' }}
+              onClick={handleCopy}
+            >
+              {copied ? 'Copied!' : 'Copy Address'}
+            </button>
+          </div>
+        ) : (
+          <div style={{ textAlign: 'center', color: '#ef4444' }}>
+            Address not available
+          </div>
+        )}
+
+        <div
+          style={{
+            fontSize: '12px',
+            color: '#71717a',
+            textAlign: 'center',
+            padding: '0 16px',
+          }}
+        >
+          {asset === 'grin' ? (
+            <>
+              Grin uses interactive transactions. Share this slatepack address
+              with the sender, or use it to generate a Tor address for receiving.
+            </>
+          ) : (
+            <>
+              Send only {ASSETS[asset].name} ({ASSETS[asset].symbol}) to this address.
+              Sending other assets may result in permanent loss.
+            </>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
 function WalletView({ onLock }: { onLock: () => void }) {
   const [activeAsset, setActiveAsset] = useState<AssetType>('btc');
-  const [showReceive, setShowReceive] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
+  const [screen, setScreen] = useState<WalletScreen>('main');
   const [addresses, setAddresses] = useState<Record<AssetType, AddressData | null>>({
     btc: null,
     ltc: null,
@@ -732,7 +869,6 @@ function WalletView({ onLock }: { onLock: () => void }) {
     grin: null,
   });
   const [loadingBalance, setLoadingBalance] = useState<AssetType | null>(null);
-  const [copied, setCopied] = useState(false);
 
   const availableAssets: AssetType[] = ['btc', 'ltc', 'xmr', 'wow', 'grin'];
 
@@ -798,22 +934,49 @@ function WalletView({ onLock }: { onLock: () => void }) {
     setLoadingBalance(asset);
 
     try {
-      const result = await sendMessage<{
-        asset: AssetType;
-        confirmed: number;
-        unconfirmed: number;
-        total: number;
-      }>({ type: 'GET_BALANCE', asset });
+      const result = await sendMessage<BalanceResponse>({ type: 'GET_BALANCE', asset });
 
-      setBalances((prev) => ({
-        ...prev,
-        [asset]: {
-          confirmed: result.confirmed,
-          unconfirmed: result.unconfirmed,
-          total: result.total,
-          error: undefined,
-        },
-      }));
+      // Check if this is LWS raw data that needs client-side verification
+      if (isLwsRawResponse(result)) {
+        // Run WASM verification for XMR/WOW spent outputs
+        console.log(`[Balance] Verifying ${asset} spent outputs with WASM...`);
+        const verified = await calculateVerifiedBalance(
+          result.total_received,
+          result.spent_outputs,
+          result.viewKeyHex,
+          result.publicSpendKey,
+          result.spendKeyHex
+        );
+
+        console.log(`[Balance] ${asset} verified:`, {
+          totalReceived: result.total_received,
+          verifiedSpentAmount: verified.verifiedSpentAmount,
+          verifiedSpentCount: verified.verifiedSpentCount,
+          balance: verified.balance,
+          wasmAvailable: verified.wasmAvailable,
+        });
+
+        setBalances((prev) => ({
+          ...prev,
+          [asset]: {
+            confirmed: verified.balance,
+            unconfirmed: result.locked_balance + result.pending_balance,
+            total: verified.balance + result.locked_balance + result.pending_balance,
+            error: verified.wasmAvailable ? undefined : 'View-only (WASM unavailable)',
+          },
+        }));
+      } else {
+        // UTXO format (BTC/LTC/Grin) - use directly
+        setBalances((prev) => ({
+          ...prev,
+          [asset]: {
+            confirmed: result.confirmed,
+            unconfirmed: result.unconfirmed,
+            total: result.total,
+            error: undefined,
+          },
+        }));
+      }
     } catch (err) {
       console.error(`Failed to fetch ${asset} balance:`, err);
       // Keep previous balance if available, but mark as error
@@ -831,25 +994,23 @@ function WalletView({ onLock }: { onLock: () => void }) {
     }
   };
 
-  const handleCopyAddress = async () => {
-    const addr = addresses[activeAsset];
-    if (!addr) return;
-
-    try {
-      await navigator.clipboard.writeText(addr.address);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
-    }
-  };
-
   const currentAddress = addresses[activeAsset];
   const currentBalance = balances[activeAsset];
 
   // Show settings view
-  if (showSettings) {
-    return <SettingsView onBack={() => setShowSettings(false)} />;
+  if (screen === 'settings') {
+    return <SettingsView onBack={() => setScreen('main')} />;
+  }
+
+  // Show receive view
+  if (screen === 'receive') {
+    return (
+      <ReceiveView
+        asset={activeAsset}
+        address={currentAddress}
+        onBack={() => setScreen('main')}
+      />
+    );
   }
 
   return (
@@ -857,7 +1018,7 @@ function WalletView({ onLock }: { onLock: () => void }) {
       <header class="header">
         <h1>Smirk Wallet</h1>
         <div class="header-actions">
-          <button class="btn btn-icon" onClick={() => setShowSettings(true)} title="Settings">⚙️</button>
+          <button class="btn btn-icon" onClick={() => setScreen('settings')} title="Settings">⚙️</button>
           <button class="btn btn-icon" onClick={onLock} title="Lock">🔒</button>
         </div>
       </header>
@@ -895,74 +1056,39 @@ function WalletView({ onLock }: { onLock: () => void }) {
               🔄
             </button>
           </div>
-          <div class="balance-amount">
+          <div
+            class="balance-amount"
+            title={currentBalance ? `${formatBalanceFull(currentBalance.total, activeAsset)} ${ASSETS[activeAsset].symbol}` : undefined}
+            style={{ cursor: currentBalance ? 'help' : 'default' }}
+          >
             {loadingBalance === activeAsset ? (
               <span class="spinner" style={{ width: '16px', height: '16px' }} />
             ) : currentBalance ? (
               `${formatBalance(currentBalance.total, activeAsset)} ${ASSETS[activeAsset].symbol}`
             ) : (
-              `0.00000000 ${ASSETS[activeAsset].symbol}`
+              `0.${'0'.repeat(DISPLAY_DECIMALS[activeAsset])} ${ASSETS[activeAsset].symbol}`
             )}
           </div>
           {currentBalance?.error && (
             <div class="balance-usd" style={{ fontSize: '11px', color: '#ef4444' }}>
-              ⚠️ {currentBalance.error === 'Offline' ? 'Offline - cached value' : currentBalance.error}
+              {currentBalance.error === 'Offline' ? 'Offline - cached value' : currentBalance.error}
             </div>
           )}
           {currentBalance && !currentBalance.error && currentBalance.unconfirmed !== 0 && (
-            <div class="balance-usd" style={{ fontSize: '11px', color: '#f59e0b' }}>
+            <div
+              class="balance-usd"
+              style={{ fontSize: '11px', color: '#f59e0b' }}
+              title={`${formatBalanceFull(currentBalance.unconfirmed, activeAsset)} ${ASSETS[activeAsset].symbol}`}
+            >
               {currentBalance.unconfirmed > 0 ? '+' : ''}
-              {formatBalance(currentBalance.unconfirmed, activeAsset)} unconfirmed
+              {formatBalance(currentBalance.unconfirmed, activeAsset)} pending
             </div>
           )}
         </div>
 
-        {/* Address Display */}
-        {currentAddress && (
-          <div
-            class="address-display"
-            style={{
-              background: '#27272a',
-              borderRadius: '8px',
-              padding: '12px',
-              marginBottom: '16px',
-            }}
-          >
-            <div style={{ fontSize: '11px', color: '#a1a1aa', marginBottom: '4px' }}>
-              Your {ASSETS[activeAsset].name} Address
-            </div>
-            <div
-              style={{
-                fontFamily: 'monospace',
-                fontSize: '12px',
-                wordBreak: 'break-all',
-                marginBottom: '8px',
-              }}
-            >
-              {showReceive ? currentAddress.address : truncateAddress(currentAddress.address)}
-            </div>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button
-                class="btn btn-secondary"
-                style={{ flex: 1, fontSize: '12px', padding: '6px 12px' }}
-                onClick={handleCopyAddress}
-              >
-                {copied ? 'Copied!' : 'Copy'}
-              </button>
-              <button
-                class="btn btn-secondary"
-                style={{ flex: 1, fontSize: '12px', padding: '6px 12px' }}
-                onClick={() => setShowReceive(!showReceive)}
-              >
-                {showReceive ? 'Hide' : 'Show Full'}
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* Action Buttons */}
         <div class="action-grid">
-          <button class="action-btn" onClick={() => setShowReceive(true)}>
+          <button class="action-btn" onClick={() => setScreen('receive')}>
             <span class="action-icon">📥</span>
             <span class="action-label">Receive</span>
           </button>

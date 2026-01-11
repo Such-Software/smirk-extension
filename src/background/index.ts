@@ -8,6 +8,12 @@
  * - Message passing between popup/content scripts
  */
 
+// Polyfill window for WASM modules that expect browser context
+// Service workers don't have window, but some WASM modules require it
+if (typeof globalThis.window === 'undefined') {
+  (globalThis as unknown as { window: typeof globalThis }).window = globalThis;
+}
+
 import type { MessageType, MessageResponse, WalletState, AssetType, TipInfo, UserSettings } from '@/types';
 import {
   getPublicKey,
@@ -22,7 +28,8 @@ import {
   decrypt,
   randomBytes,
 } from '@/lib/crypto';
-import { calculateVerifiedBalance } from '@/lib/monero-crypto';
+// Note: WASM crypto (calculateVerifiedBalance) runs in popup, not service worker
+// Service workers don't support WASM import()
 import {
   generateMnemonicPhrase,
   isValidMnemonic,
@@ -744,15 +751,25 @@ async function handleDecryptTip(
 
 /**
  * Get balance for a specific asset via backend API.
+ * Returns UTXO format for BTC/LTC/Grin, or LWS raw format for XMR/WOW.
+ * XMR/WOW balances require client-side WASM verification in the popup.
  */
 async function handleGetBalance(
   asset: AssetType
-): Promise<MessageResponse<{
-  asset: AssetType;
-  confirmed: number;
-  unconfirmed: number;
-  total: number;
-}>> {
+): Promise<MessageResponse<
+  | { asset: AssetType; confirmed: number; unconfirmed: number; total: number }
+  | {
+      asset: 'xmr' | 'wow';
+      total_received: number;
+      locked_balance: number;
+      pending_balance: number;
+      spent_outputs: Array<{ amount: number; key_image: string; tx_pub_key: string; out_index: number }>;
+      viewKeyHex: string;
+      publicSpendKey: string;
+      spendKeyHex: string;
+      needsVerification: true;
+    }
+>> {
   if (!isUnlocked) {
     return { success: false, error: 'Wallet is locked' };
   }
@@ -787,6 +804,7 @@ async function handleGetBalance(
       };
     } else if (asset === 'xmr' || asset === 'wow') {
       // Use LWS endpoint for Cryptonote coins
+      // Return raw data + keys so popup can verify spent outputs with WASM
       const viewKey = unlockedViewKeys.get(asset);
       if (!viewKey) {
         return { success: false, error: `No ${asset} view key available` };
@@ -811,37 +829,23 @@ async function handleGetBalance(
         return { success: false, error: result.error };
       }
 
-      // Verify spent outputs using spend key to compute true balance
-      // This ensures we only count outputs WE actually spent, not false positives
-      const { balance, verifiedSpentAmount, verifiedSpentCount } = await calculateVerifiedBalance(
-        result.data!.total_received,
-        result.data!.spent_outputs,
-        viewKeyHex,
-        publicSpendKey,
-        spendKeyHex
-      );
-
-      console.log(`[balance] ${asset.toUpperCase()} verified balance:`, {
-        totalReceived: result.data!.total_received,
-        spentCandidates: result.data!.spent_outputs.length,
-        verifiedSpent: verifiedSpentCount,
-        verifiedSpentAmount,
-        finalBalance: balance,
-      });
-
-      // locked_balance = funds locked by 10-block rule
-      // pending_balance = 0-conf mempool transactions
-      const lockedBalance = result.data!.locked_balance;
-      const pendingBalance = result.data!.pending_balance;
-      const unlockedBalance = Math.max(0, balance - lockedBalance);
-
+      // Return raw LWS data + keys for popup to verify with WASM
+      // WASM can't run in service worker, so popup does the verification
       return {
         success: true,
         data: {
           asset,
-          confirmed: unlockedBalance,
-          unconfirmed: lockedBalance + pendingBalance, // Locked + pending shown as "unconfirmed"
-          total: balance + pendingBalance,
+          // Raw LWS data
+          total_received: result.data!.total_received,
+          locked_balance: result.data!.locked_balance,
+          pending_balance: result.data!.pending_balance,
+          spent_outputs: result.data!.spent_outputs,
+          // Keys needed for verification (popup will use these with WASM)
+          viewKeyHex,
+          publicSpendKey,
+          spendKeyHex,
+          // Flag to indicate this needs client-side verification
+          needsVerification: true,
         },
       };
     } else if (asset === 'grin') {

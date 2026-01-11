@@ -96,6 +96,44 @@ export interface BalanceInfo {
   error?: string;
 }
 
+// Spent output candidate from LWS (for client-side verification)
+export interface SpentOutputCandidate {
+  amount: number;
+  key_image: string;
+  tx_pub_key: string;
+  out_index: number;
+}
+
+// Balance response from background - UTXO format (BTC/LTC/Grin)
+export interface UtxoBalanceResponse {
+  asset: AssetType;
+  confirmed: number;
+  unconfirmed: number;
+  total: number;
+}
+
+// Balance response from background - LWS raw format (XMR/WOW)
+// Requires client-side WASM verification of spent outputs
+export interface LwsRawBalanceResponse {
+  asset: 'xmr' | 'wow';
+  total_received: number;
+  locked_balance: number;
+  pending_balance: number;
+  spent_outputs: SpentOutputCandidate[];
+  viewKeyHex: string;
+  publicSpendKey: string;
+  spendKeyHex: string;
+  needsVerification: true;
+}
+
+// Union type for balance response
+export type BalanceResponse = UtxoBalanceResponse | LwsRawBalanceResponse;
+
+// Type guard for LWS raw response
+export function isLwsRawResponse(response: BalanceResponse): response is LwsRawBalanceResponse {
+  return 'needsVerification' in response && response.needsVerification === true;
+}
+
 // Message types for background <-> popup/content communication
 export type MessageType =
   | { type: 'GET_WALLET_STATE' }

@@ -22,6 +22,7 @@ import {
   decrypt,
   randomBytes,
 } from '@/lib/crypto';
+import { calculateVerifiedBalance } from '@/lib/monero-crypto';
 import {
   generateMnemonicPhrase,
   isValidMnemonic,
@@ -578,6 +579,36 @@ async function handleUnlockWallet(password: string): Promise<MessageResponse<{
       }
     }
 
+    // Migration: derive Grin key if missing (for wallets created before Grin support)
+    if (!state.keys.grin && state.encryptedSeed && state.seedSalt) {
+      try {
+        const mnemonic = await decryptPrivateKey(state.encryptedSeed, state.seedSalt, password);
+        const mnemonicStr = new TextDecoder().decode(mnemonic);
+        const derivedKeys = deriveAllKeys(mnemonicStr);
+
+        // Derive encryption key from password
+        const saltBytes = hexToBytes(state.seedSalt);
+        const encKey = await deriveKeyFromPassword(password, saltBytes);
+        const encryptWithKey = (data: Uint8Array) => bytesToHex(encrypt(data, encKey));
+
+        // Store Grin key
+        state.keys.grin = {
+          asset: 'grin',
+          publicKey: bytesToHex(derivedKeys.grin.publicKey),
+          privateKey: encryptWithKey(derivedKeys.grin.privateKey),
+          privateKeySalt: state.seedSalt,
+          createdAt: Date.now(),
+        };
+        unlockedKeys.set('grin', derivedKeys.grin.privateKey);
+
+        // Save updated state
+        await saveWalletState(state);
+        console.log('Migrated wallet: added Grin key');
+      } catch (err) {
+        console.warn('Failed to derive Grin key during migration:', err);
+      }
+    }
+
     isUnlocked = true;
 
     // Start auto-lock timer
@@ -685,26 +716,56 @@ async function handleGetBalance(
         return { success: false, error: `No ${asset} view key available` };
       }
 
+      const spendKey = unlockedKeys.get(asset);
+      if (!spendKey) {
+        return { success: false, error: `No ${asset} spend key available` };
+      }
+
       const viewKeyHex = bytesToHex(viewKey);
+      const spendKeyHex = bytesToHex(spendKey);
+      const publicSpendKey = key.publicSpendKey;
+
+      if (!publicSpendKey) {
+        return { success: false, error: `No ${asset} public spend key found` };
+      }
+
       const result = await api.getLwsBalance(asset, address, viewKeyHex);
 
       if (result.error) {
         return { success: false, error: result.error };
       }
 
-      // LWS returns balance and unlocked_balance
-      // locked = balance - unlocked
-      const balance = result.data!.balance;
-      const unlockedBalance = result.data!.unlocked_balance;
+      // Verify spent outputs using spend key to compute true balance
+      // This ensures we only count outputs WE actually spent, not false positives
+      const { balance, verifiedSpentAmount, verifiedSpentCount } = await calculateVerifiedBalance(
+        result.data!.total_received,
+        result.data!.spent_outputs,
+        viewKeyHex,
+        publicSpendKey,
+        spendKeyHex
+      );
+
+      console.log(`[balance] ${asset.toUpperCase()} verified balance:`, {
+        totalReceived: result.data!.total_received,
+        spentCandidates: result.data!.spent_outputs.length,
+        verifiedSpent: verifiedSpentCount,
+        verifiedSpentAmount,
+        finalBalance: balance,
+      });
+
+      // locked_balance = funds locked by 10-block rule
+      // pending_balance = 0-conf mempool transactions
       const lockedBalance = result.data!.locked_balance;
+      const pendingBalance = result.data!.pending_balance;
+      const unlockedBalance = Math.max(0, balance - lockedBalance);
 
       return {
         success: true,
         data: {
           asset,
           confirmed: unlockedBalance,
-          unconfirmed: lockedBalance, // Locked funds shown as "unconfirmed"
-          total: balance,
+          unconfirmed: lockedBalance + pendingBalance, // Locked + pending shown as "unconfirmed"
+          total: balance + pendingBalance,
         },
       };
     } else if (asset === 'grin') {
@@ -784,6 +845,10 @@ function getAddressForAsset(asset: AssetType, key: { publicKey: string; publicSp
       return wowAddress(hexToBytes(key.publicSpendKey), hexToBytes(key.publicViewKey));
     case 'grin':
       // Grin slatepack address from ed25519 public key
+      // Must be 64 hex chars (32 bytes)
+      if (!key.publicKey || key.publicKey.length !== 64) {
+        return 'Address unavailable';
+      }
       return grinSlatpackAddress(hexToBytes(key.publicKey));
     default:
       return 'Unknown asset';
@@ -967,8 +1032,15 @@ async function handleUpdateSettings(
   return { success: true, data: { settings: state.settings } };
 }
 
-function handleResetAutoLockTimer(): MessageResponse<{ reset: boolean }> {
+async function handleResetAutoLockTimer(): Promise<MessageResponse<{ reset: boolean }>> {
+  console.log('[AutoLock] handleResetAutoLockTimer called, isUnlocked:', isUnlocked, 'cachedAutoLockMinutes:', cachedAutoLockMinutes);
   if (isUnlocked) {
+    // If cache is null (service worker restarted), load from storage first
+    if (cachedAutoLockMinutes === null) {
+      const state = await getWalletState();
+      cachedAutoLockMinutes = state.settings.autoLockMinutes;
+      console.log('[AutoLock] Loaded from storage:', cachedAutoLockMinutes);
+    }
     resetAutoLockTimer();
   }
   return { success: true, data: { reset: true } };
@@ -979,8 +1051,10 @@ function handleResetAutoLockTimer(): MessageResponse<{ reset: boolean }> {
  * Uses chrome.alarms API which persists across service worker restarts.
  */
 function resetAutoLockTimer() {
+  console.log('[AutoLock] resetAutoLockTimer called, cachedAutoLockMinutes:', cachedAutoLockMinutes, 'isUnlocked:', isUnlocked);
   // Use cached value - if not set, don't start timer (will be set on unlock)
   if (cachedAutoLockMinutes === null || cachedAutoLockMinutes === 0 || !isUnlocked) {
+    console.log('[AutoLock] Clearing alarm (cache null, 0, or locked)');
     alarms.clear(AUTO_LOCK_ALARM);
     return;
   }
@@ -988,6 +1062,7 @@ function resetAutoLockTimer() {
   // Create alarm that fires after the configured minutes
   // delayInMinutes must be at least 1 minute in Chrome
   const delayMinutes = Math.max(1, cachedAutoLockMinutes);
+  console.log('[AutoLock] Creating alarm with delayMinutes:', delayMinutes);
   alarms.create(AUTO_LOCK_ALARM, { delayInMinutes: delayMinutes });
 }
 
@@ -998,6 +1073,7 @@ function resetAutoLockTimer() {
 async function startAutoLockTimer() {
   const state = await getWalletState();
   cachedAutoLockMinutes = state.settings.autoLockMinutes;
+  console.log('[AutoLock] startAutoLockTimer loaded cachedAutoLockMinutes:', cachedAutoLockMinutes);
 
   // Now use the fast path
   resetAutoLockTimer();
@@ -1014,8 +1090,9 @@ function stopAutoLockTimer() {
  * Handle auto-lock alarm firing.
  */
 alarms.onAlarm.addListener((alarm) => {
+  console.log('[AutoLock] Alarm fired:', alarm.name, 'isUnlocked:', isUnlocked);
   if (alarm.name === AUTO_LOCK_ALARM && isUnlocked) {
-    console.log(`Auto-locking wallet after ${cachedAutoLockMinutes} minutes of inactivity`);
+    console.log(`[AutoLock] Auto-locking wallet after ${cachedAutoLockMinutes} minutes of inactivity`);
     unlockedKeys.clear();
     unlockedViewKeys.clear();
     isUnlocked = false;
@@ -1031,6 +1108,10 @@ runtime.onInstalled.addListener((details) => {
 
 // Initialize on startup - load auth state
 async function initializeBackground() {
+  // Debug: Log stored auto-lock setting on startup
+  const walletState = await getWalletState();
+  console.log('[AutoLock] Stored autoLockMinutes on startup:', walletState.settings.autoLockMinutes);
+
   const authState = await getAuthState();
   if (authState) {
     // Check if token is expired

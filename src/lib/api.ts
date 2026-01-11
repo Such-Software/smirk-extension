@@ -10,8 +10,11 @@ import type {
   ApiResponse,
 } from '@/types';
 
+// Vite environment variable type
+declare const import_meta_env: { VITE_API_BASE?: string };
+
 // API base URL - set via environment or default to production
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8080/api/v1';
+const API_BASE = (import.meta as unknown as { env: typeof import_meta_env }).env.VITE_API_BASE || 'http://127.0.0.1:8080/api/v1';
 
 /**
  * API client class with authentication support.
@@ -265,19 +268,29 @@ export class SmirkApi {
 
   /**
    * Get LWS balance for XMR or WOW address.
+   *
+   * Returns total_received (view-only) and spent_outputs (candidate spends).
+   * Client must verify spent_outputs using spend key to compute true balance:
+   *   true_balance = total_received - sum(verified_spent_amounts)
    */
   async getLwsBalance(
     asset: 'xmr' | 'wow',
     address: string,
     viewKey: string
   ): Promise<ApiResponse<{
-    balance: number;
-    unlocked_balance: number;
+    total_received: number;
     locked_balance: number;
+    pending_balance: number;
     transaction_count: number;
     blockchain_height: number;
     start_height: number;
     scanned_height: number;
+    spent_outputs: Array<{
+      amount: number;
+      key_image: string;
+      tx_pub_key: string;
+      out_index: number;
+    }>;
   }>> {
     return this.request('/wallet/lws/balance', {
       method: 'POST',

@@ -37,10 +37,24 @@ export const DEFAULT_WALLET_STATE: WalletState = {
 
 /**
  * Gets the wallet state from storage.
+ * Merges with defaults to ensure all settings fields exist (handles migrations).
  */
 export async function getWalletState(): Promise<WalletState> {
   const result = await storage.local.get<Record<string, WalletState>>(STORAGE_KEYS.WALLET_STATE);
-  return result[STORAGE_KEYS.WALLET_STATE] ?? DEFAULT_WALLET_STATE;
+  const stored = result[STORAGE_KEYS.WALLET_STATE];
+
+  if (!stored) {
+    return DEFAULT_WALLET_STATE;
+  }
+
+  // Deep merge settings to handle new fields added in updates
+  return {
+    ...stored,
+    settings: {
+      ...DEFAULT_WALLET_STATE.settings,
+      ...stored.settings,
+    },
+  };
 }
 
 /**

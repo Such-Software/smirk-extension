@@ -215,7 +215,10 @@ export function grinSlatpackAddress(publicKey: Uint8Array): string {
  */
 export function isValidBtcAddress(address: string): boolean {
   try {
-    const decoded = bech32.decode(address);
+    // bech32.decode expects a template literal type with '1' separator
+    // All valid bech32 addresses contain '1' as separator
+    if (!address.includes('1')) return false;
+    const decoded = bech32.decode(address as `${string}1${string}`);
     return decoded.prefix === 'bc' && decoded.words.length > 0;
   } catch {
     return false;
@@ -227,7 +230,8 @@ export function isValidBtcAddress(address: string): boolean {
  */
 export function isValidLtcAddress(address: string): boolean {
   try {
-    const decoded = bech32.decode(address);
+    if (!address.includes('1')) return false;
+    const decoded = bech32.decode(address as `${string}1${string}`);
     return decoded.prefix === 'ltc' && decoded.words.length > 0;
   } catch {
     return false;

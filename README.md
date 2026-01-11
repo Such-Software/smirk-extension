@@ -37,12 +37,13 @@ npm run typecheck
 
 ```
 src/
-├── background/     # Service worker - handles crypto, storage, API
+├── background/     # Service worker - handles crypto, storage, API, auto-lock
 ├── content/        # Content script - detects claim pages
 ├── popup/          # Main UI (Preact)
 ├── lib/
-│   ├── crypto.ts   # Cryptographic utilities
+│   ├── crypto.ts   # Cryptographic utilities (BIP39, key derivation)
 │   ├── api.ts      # Backend API client
+│   ├── browser.ts  # Cross-browser API abstraction (Chrome/Firefox)
 │   └── storage.ts  # Chrome storage helpers
 └── types/          # TypeScript types
 ```
@@ -58,8 +59,8 @@ src/
 
 | Chain | Key Type | Notes |
 |-------|----------|-------|
-| BTC | secp256k1 | Watch-only addresses via pruned node |
-| LTC | secp256k1 | Same as BTC |
+| BTC | secp256k1 (BIP44) | Balance via Electrum |
+| LTC | secp256k1 (BIP44) | Balance via Electrum |
 | XMR | ed25519 | View key registered with LWS |
 | WOW | ed25519 | Same as XMR |
-| GRIN | ed25519 | Slatepack addresses |
+| GRIN | ed25519 | Slatepack addresses, balance via Owner API |

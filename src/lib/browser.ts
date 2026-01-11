@@ -6,9 +6,15 @@
  * This wrapper normalizes the API to always use Promises.
  */
 
+// Type declarations for browser globals
+declare const globalThis: typeof global & {
+  browser?: typeof chrome;
+  chrome?: typeof chrome;
+};
+
 // Detect browser environment
 const isFirefox = typeof globalThis.browser !== 'undefined';
-const browserAPI = isFirefox ? globalThis.browser : globalThis.chrome;
+const browserAPI = (isFirefox ? globalThis.browser : globalThis.chrome) as typeof chrome;
 
 /**
  * Storage API wrapper.
@@ -48,6 +54,50 @@ export const storage = {
       }
       return new Promise((resolve) => {
         browserAPI.storage.local.clear(() => resolve());
+      });
+    },
+  },
+
+  /**
+   * Session storage - persists across service worker restarts but clears on browser close.
+   * Useful for keeping unlock state without storing sensitive data permanently.
+   * Note: Firefox doesn't support storage.session, falls back to local storage.
+   */
+  session: {
+    async get<T = Record<string, unknown>>(keys: string | string[]): Promise<T> {
+      // Firefox doesn't have storage.session, fall back to in-memory behavior
+      if (isFirefox || !browserAPI.storage.session) {
+        return {} as T;
+      }
+      return new Promise((resolve) => {
+        browserAPI.storage.session.get(keys, (result: T) => resolve(result));
+      });
+    },
+
+    async set(items: Record<string, unknown>): Promise<void> {
+      if (isFirefox || !browserAPI.storage.session) {
+        return;
+      }
+      return new Promise((resolve) => {
+        browserAPI.storage.session.set(items, () => resolve());
+      });
+    },
+
+    async remove(keys: string | string[]): Promise<void> {
+      if (isFirefox || !browserAPI.storage.session) {
+        return;
+      }
+      return new Promise((resolve) => {
+        browserAPI.storage.session.remove(keys, () => resolve());
+      });
+    },
+
+    async clear(): Promise<void> {
+      if (isFirefox || !browserAPI.storage.session) {
+        return;
+      }
+      return new Promise((resolve) => {
+        browserAPI.storage.session.clear(() => resolve());
       });
     },
   },

@@ -50,7 +50,7 @@ import {
 } from '@/lib/storage';
 import type { OnboardingState } from '@/types';
 import { api } from '@/lib/api';
-import { runtime, notifications, alarms } from '@/lib/browser';
+import { runtime, notifications, alarms, storage } from '@/lib/browser';
 
 // Pending claim data from content script
 let pendingClaim: { linkId: string; fragmentKey?: string } | null = null;
@@ -67,6 +67,75 @@ let isUnlocked = false;
 // Auto-lock alarm name (uses chrome.alarms API for persistence across service worker restarts)
 const AUTO_LOCK_ALARM = 'smirk_auto_lock';
 let cachedAutoLockMinutes: number | null = null; // Cache to avoid reading storage on every activity
+
+// Session storage key for persisting unlock state across service worker restarts
+const SESSION_KEYS_KEY = 'smirk_session_keys';
+
+interface SessionKeysData {
+  unlockedKeys: Record<string, string>; // asset -> hex-encoded key
+  unlockedViewKeys: Record<string, string>; // 'xmr' | 'wow' -> hex-encoded key
+}
+
+/**
+ * Persist decrypted keys to session storage.
+ * Session storage survives service worker restarts but clears on browser close.
+ */
+async function persistSessionKeys(): Promise<void> {
+  const keysData: Record<string, string> = {};
+  const viewKeysData: Record<string, string> = {};
+
+  for (const [asset, key] of unlockedKeys) {
+    keysData[asset] = bytesToHex(key);
+  }
+  for (const [asset, key] of unlockedViewKeys) {
+    viewKeysData[asset] = bytesToHex(key);
+  }
+
+  await storage.session.set({
+    [SESSION_KEYS_KEY]: { unlockedKeys: keysData, unlockedViewKeys: viewKeysData } as SessionKeysData,
+  });
+  console.log('[Session] Persisted keys to session storage');
+}
+
+/**
+ * Restore decrypted keys from session storage after service worker restart.
+ * Returns true if keys were restored, false otherwise.
+ */
+async function restoreSessionKeys(): Promise<boolean> {
+  const data = await storage.session.get<{ [SESSION_KEYS_KEY]?: SessionKeysData }>([SESSION_KEYS_KEY]);
+  const sessionData = data[SESSION_KEYS_KEY];
+
+  if (!sessionData) {
+    console.log('[Session] No session keys found');
+    return false;
+  }
+
+  // Restore unlocked keys
+  for (const [asset, hexKey] of Object.entries(sessionData.unlockedKeys)) {
+    unlockedKeys.set(asset as AssetType, hexToBytes(hexKey));
+  }
+
+  // Restore view keys
+  for (const [asset, hexKey] of Object.entries(sessionData.unlockedViewKeys)) {
+    unlockedViewKeys.set(asset as 'xmr' | 'wow', hexToBytes(hexKey));
+  }
+
+  if (unlockedKeys.size > 0) {
+    isUnlocked = true;
+    console.log('[Session] Restored keys from session storage, assets:', Array.from(unlockedKeys.keys()));
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Clear session keys on lock.
+ */
+async function clearSessionKeys(): Promise<void> {
+  await storage.session.remove([SESSION_KEYS_KEY]);
+  console.log('[Session] Cleared session keys');
+}
 
 /**
  * Handles messages from popup and content scripts.
@@ -390,6 +459,9 @@ async function createWalletFromMnemonic(
   await saveWalletState(state);
   isUnlocked = true;
 
+  // Persist keys to session storage (survives service worker restarts)
+  await persistSessionKeys();
+
   // Start auto-lock timer
   startAutoLockTimer();
 
@@ -611,6 +683,9 @@ async function handleUnlockWallet(password: string): Promise<MessageResponse<{
 
     isUnlocked = true;
 
+    // Persist keys to session storage (survives service worker restarts)
+    await persistSessionKeys();
+
     // Start auto-lock timer
     startAutoLockTimer();
 
@@ -624,6 +699,7 @@ async function handleLockWallet(): Promise<MessageResponse<{ locked: boolean }>>
   unlockedKeys.clear();
   unlockedViewKeys.clear();
   isUnlocked = false;
+  await clearSessionKeys();
   stopAutoLockTimer();
   return { success: true, data: { locked: true } };
 }
@@ -1096,6 +1172,7 @@ alarms.onAlarm.addListener((alarm) => {
     unlockedKeys.clear();
     unlockedViewKeys.clear();
     isUnlocked = false;
+    clearSessionKeys(); // Clear persisted keys on auto-lock
   }
 });
 
@@ -1106,11 +1183,19 @@ runtime.onInstalled.addListener((details) => {
   }
 });
 
-// Initialize on startup - load auth state
+// Initialize on startup - load auth state and restore session
 async function initializeBackground() {
   // Debug: Log stored auto-lock setting on startup
   const walletState = await getWalletState();
   console.log('[AutoLock] Stored autoLockMinutes on startup:', walletState.settings.autoLockMinutes);
+
+  // Try to restore unlock state from session storage (survives service worker restarts)
+  const restored = await restoreSessionKeys();
+  if (restored) {
+    // Also restore cached auto-lock minutes so timer works correctly
+    cachedAutoLockMinutes = walletState.settings.autoLockMinutes;
+    console.log('[Session] Restored unlock state, cachedAutoLockMinutes:', cachedAutoLockMinutes);
+  }
 
   const authState = await getAuthState();
   if (authState) {

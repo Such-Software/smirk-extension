@@ -938,8 +938,8 @@ function WalletView({ onLock }: { onLock: () => void }) {
 
       // Check if this is LWS raw data that needs client-side verification
       if (isLwsRawResponse(result)) {
-        // Run WASM verification for XMR/WOW spent outputs
-        console.log(`[Balance] Verifying ${asset} spent outputs with WASM...`);
+        // Run client-side key image verification for XMR/WOW spent outputs
+        console.log(`[Balance] Verifying ${asset} spent outputs...`);
         const verified = await calculateVerifiedBalance(
           result.total_received,
           result.spent_outputs,

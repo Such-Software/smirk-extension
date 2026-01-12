@@ -327,6 +327,48 @@ export class SmirkApi {
   }
 
   /**
+   * Get UTXOs for a BTC or LTC address.
+   * Used for constructing transactions client-side.
+   */
+  async getUtxos(
+    asset: 'btc' | 'ltc',
+    address: string
+  ): Promise<ApiResponse<{
+    asset: string;
+    address: string;
+    utxos: Array<{
+      txid: string;
+      vout: number;
+      value: number;
+      height: number;
+    }>;
+  }>> {
+    return this.request('/wallet/utxos', {
+      method: 'POST',
+      body: JSON.stringify({ asset, address }),
+    });
+  }
+
+  /**
+   * Broadcast a signed BTC or LTC transaction.
+   * @param asset - 'btc' or 'ltc'
+   * @param txHex - The fully signed raw transaction hex
+   * @returns Transaction ID (hash) if successful
+   */
+  async broadcastTx(
+    asset: 'btc' | 'ltc',
+    txHex: string
+  ): Promise<ApiResponse<{
+    asset: string;
+    txid: string;
+  }>> {
+    return this.request('/wallet/broadcast', {
+      method: 'POST',
+      body: JSON.stringify({ asset, tx_hex: txHex }),
+    });
+  }
+
+  /**
    * Get Grin wallet balance from backend.
    * Note: Grin uses a shared wallet on the backend due to Mimblewimble's
    * interactive transaction nature.

@@ -28,8 +28,7 @@ import {
   decrypt,
   randomBytes,
 } from '@/lib/crypto';
-// Note: WASM crypto (calculateVerifiedBalance) runs in popup, not service worker
-// Service workers don't support WASM import()
+// Note: monero-crypto (calculateVerifiedBalance) runs in popup for UI responsiveness
 import {
   generateMnemonicPhrase,
   isValidMnemonic,

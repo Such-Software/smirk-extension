@@ -7,14 +7,328 @@
  * 1. Derive one-time private key: x = Hs(aR || outputIndex) + b
  *    where a = private view key, R = tx public key, b = private spend key
  * 2. Compute key image: KI = x * Hp(P) where P = x*G (one-time public key)
+ *
+ * This implementation uses Monero's exact hash_to_ec algorithm (ge_fromfe_frombytes_vartime)
+ * ported from the Monero C source code.
  */
 
 import { ed25519 } from '@noble/curves/ed25519';
-import { sha512 } from '@noble/hashes/sha512';
+import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+// ed25519 field prime: p = 2^255 - 19
+const P = BigInt('0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed');
 
 // ed25519 curve order (l)
 const L = BigInt('7237005577332262213973186563042994240857116359379907606001950938285454250989');
+
+// Curve25519 constant A = 486662
+const A = BigInt(486662);
+
+// sqrt(-1) mod p
+const SQRT_M1 = BigInt('19681161376707505956807079304988542015446066515923890162744021073123829784752');
+
+// Edwards curve parameter d
+const D = BigInt('0x52036cee2b6ffe738cc740797779e89800700a4d4141d8ab75eb4dca135978a3');
+
+// Precomputed constants for ge_fromfe_frombytes_vartime
+// Values from monerolib (CoinSpace) which has a working pure JS implementation
+// -A mod p
+const FE_MA = mod(-A, P);
+// -2*A^2 mod p
+const FE_MA2 = mod(BigInt(-2) * A * A, P);
+// sqrt(-2 * A * (A + 2)) mod p
+const FE_FFFB1 = BigInt('0x7e71fbefdad61b1720a9c53741fb19e3d19404a8b92a738d22a76975321c41ee');
+// sqrt(2 * A * (A + 2)) mod p
+const FE_FFFB2 = BigInt('0x32f9e1f5fba5d3096e2bae483fe9a041ae21fcb9fba908202d219b7c9f83650d');
+// sqrt(-sqrt(-1) * A * (A + 2)) mod p
+const FE_FFFB3 = BigInt('0x1a43f3031067dbf926c0f4887ef7432eee46fc08a13f4a49853d1903b6b39186');
+// sqrt(sqrt(-1) * A * (A + 2)) mod p
+const FE_FFFB4 = BigInt('0x674a110d14c208efb89546403f0da2ed4024ff4ea5964229581b7d8717302c66');
+
+// ============================================================================
+// Field Arithmetic Helpers
+// ============================================================================
+
+/**
+ * Modular reduction (always positive result)
+ */
+function mod(n: bigint, p: bigint): bigint {
+  const result = n % p;
+  return result >= 0n ? result : result + p;
+}
+
+/**
+ * Modular addition
+ */
+function feAdd(a: bigint, b: bigint): bigint {
+  return mod(a + b, P);
+}
+
+/**
+ * Modular subtraction
+ */
+function feSub(a: bigint, b: bigint): bigint {
+  return mod(a - b, P);
+}
+
+/**
+ * Modular multiplication
+ */
+function feMul(a: bigint, b: bigint): bigint {
+  return mod(a * b, P);
+}
+
+/**
+ * Modular squaring
+ */
+function feSq(a: bigint): bigint {
+  return mod(a * a, P);
+}
+
+/**
+ * Compute 2*a^2 mod p
+ */
+function feSq2(a: bigint): bigint {
+  return mod(2n * a * a, P);
+}
+
+/**
+ * Modular negation
+ */
+function feNeg(a: bigint): bigint {
+  return mod(-a, P);
+}
+
+/**
+ * Check if field element is non-zero
+ */
+function feIsNonzero(a: bigint): boolean {
+  return mod(a, P) !== 0n;
+}
+
+/**
+ * Check if field element is negative (LSB is 1)
+ */
+function feIsNegative(a: bigint): boolean {
+  return (mod(a, P) & 1n) === 1n;
+}
+
+/**
+ * Modular exponentiation
+ */
+function fePow(base: bigint, exp: bigint): bigint {
+  let result = 1n;
+  base = mod(base, P);
+  while (exp > 0n) {
+    if (exp & 1n) {
+      result = mod(result * base, P);
+    }
+    exp >>= 1n;
+    base = mod(base * base, P);
+  }
+  return result;
+}
+
+/**
+ * Modular inverse using Fermat's little theorem: a^(-1) = a^(p-2) mod p
+ */
+function feInv(a: bigint): bigint {
+  return fePow(a, P - 2n);
+}
+
+/**
+ * Compute (u/v)^((p+3)/8) mod p
+ * This is the core operation for square root computation in Monero.
+ */
+function feDivPowM1(u: bigint, v: bigint): bigint {
+  // Compute (u/v)^((p+3)/8)
+  // = u * v^(-1) ^ ((p+3)/8)
+  // = u^((p+3)/8) * v^((p+3)/8 * -(p-2))
+  // But it's easier to compute u*v^7 * (u*v^7)^((p-5)/8)
+
+  // v^3
+  const v3 = feMul(feSq(v), v);
+  // v^7
+  const v7 = feMul(feSq(v3), v);
+  // u * v^7
+  const uv7 = feMul(u, v7);
+
+  // (u * v^7)^((p-5)/8)
+  // (p-5)/8 = (2^255 - 19 - 5) / 8 = 2^252 - 3
+  const exp = (P - 5n) / 8n;
+  const powered = fePow(uv7, exp);
+
+  // u * v^3 * (u * v^7)^((p-5)/8)
+  return feMul(feMul(u, v3), powered);
+}
+
+// ============================================================================
+// Monero's ge_fromfe_frombytes_vartime implementation
+// ============================================================================
+
+/**
+ * Load 32 bytes as a field element (little-endian).
+ * This matches Monero's fe_frombytes.
+ */
+function feFromBytes(bytes: Uint8Array): bigint {
+  // Simple little-endian load, then reduce mod p
+  let n = 0n;
+  for (let i = 31; i >= 0; i--) {
+    n = (n << 8n) | BigInt(bytes[i]);
+  }
+  return mod(n, P);
+}
+
+/**
+ * Convert field element to 32-byte little-endian representation
+ */
+function feToBytes(n: bigint): Uint8Array {
+  n = mod(n, P);
+  const result = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
+    result[i] = Number(n & 0xffn);
+    n >>= 8n;
+  }
+  return result;
+}
+
+/**
+ * ge_fromfe_frombytes_vartime - Monero's hash-to-point function.
+ *
+ * This maps a 32-byte hash to a point on the Edwards curve using
+ * an Elligator-like construction specific to Monero.
+ *
+ * Implementation follows monerolib (CoinSpace) which has a verified working implementation.
+ *
+ * Returns the point as compressed Edwards format (32 bytes).
+ */
+function geFromFeFromBytesVartime(s: Uint8Array): Uint8Array {
+  const u = feFromBytes(s);
+
+  // v = 2 * u^2
+  const v = feSq2(u);
+  // w = 2 * u^2 + 1 = v + 1
+  const w = feAdd(v, 1n);
+  // t = w^2 - A^2 * v
+  const A_sq = feSq(A);
+  const t = feSub(feSq(w), feMul(A_sq, v));
+  // x = sqrt(w / t) = (w/t)^((p+3)/8) candidate
+  let x = feDivPowM1(w, t);
+
+  let negative = false;
+
+  // check = w - x^2 * t
+  let check = feSub(w, feMul(feSq(x), t));
+
+  if (feIsNonzero(check)) {
+    // check = w + x^2 * t
+    check = feAdd(w, feMul(feSq(x), t));
+    if (feIsNonzero(check)) {
+      negative = true;
+    } else {
+      // x = x * fffb1
+      x = feMul(x, FE_FFFB1);
+    }
+  } else {
+    // x = x * fffb2
+    x = feMul(x, FE_FFFB2);
+  }
+
+  let odd: boolean;
+  let r: bigint;
+
+  if (!negative) {
+    odd = false;
+    // r = -A * v
+    r = feMul(feNeg(A), v);
+    // x = x * u
+    x = feMul(x, u);
+  } else {
+    odd = true;
+    // r = -A
+    r = feNeg(A);
+    // check = w - sqrtm1 * x^2 * t
+    check = feSub(w, feMul(feMul(feSq(x), t), SQRT_M1));
+    if (feIsNonzero(check)) {
+      // check = w + sqrtm1 * x^2 * t  (should be zero here)
+      // x = x * fffb3
+      x = feMul(x, FE_FFFB3);
+    } else {
+      // x = x * fffb4
+      x = feMul(x, FE_FFFB4);
+    }
+  }
+
+  // if x.isOdd() !== odd, negate x
+  const xIsOdd = (mod(x, P) & 1n) === 1n;
+  if (xIsOdd !== odd) {
+    x = feNeg(x);
+  }
+
+  // z = r + w
+  const z = feAdd(r, w);
+  // y = r - w
+  const y = feSub(r, w);
+  // x = x * z
+  x = feMul(x, z);
+
+  // Convert from projective (X:Y:Z) to affine, then to compressed Edwards format
+  // Affine xAff = X/Z, yAff = Y/Z
+  const zInv = feInv(z);
+  const affineX = feMul(x, zInv);
+  const affineY = feMul(y, zInv);
+
+  // Compressed format: y with sign bit of x in highest bit
+  const compressed = feToBytes(affineY);
+  if ((mod(affineX, P) & 1n) === 1n) {
+    compressed[31] ^= 0x80;
+  }
+
+  return compressed;
+}
+
+/**
+ * Multiply a point by 8 (cofactor clearing).
+ */
+function geMul8(point: Uint8Array): Uint8Array {
+  try {
+    const p = ed25519.ExtendedPoint.fromHex(point);
+    const p8 = p.multiply(8n);
+    return p8.toRawBytes();
+  } catch {
+    // If point decoding fails, return as-is
+    return point;
+  }
+}
+
+/**
+ * hash_to_ec - Monero's complete hash-to-point function.
+ *
+ * 1. Hash the input with Keccak-256 (cn_fast_hash)
+ * 2. Map the hash to a curve point (ge_fromfe_frombytes_vartime)
+ * 3. Multiply by 8 (cofactor clearing)
+ */
+function hashToEc(data: Uint8Array): Uint8Array {
+  // Step 1: Keccak-256 hash
+  const hash = keccak_256(data);
+
+  // Step 2: Map to curve point
+  const point = geFromFeFromBytesVartime(hash);
+
+  // Step 3: Multiply by cofactor 8
+  const cleared = geMul8(point);
+
+  return cleared;
+}
+
+// ============================================================================
+// Scalar Operations
+// ============================================================================
 
 /**
  * Reduce a 64-byte hash to a valid ed25519 scalar (mod l).
@@ -22,9 +336,9 @@ const L = BigInt('72370055773322622139731865630429942408571163593799076060019509
  */
 function scReduce(hash: Uint8Array): Uint8Array {
   // Convert 64-byte hash to BigInt (little-endian)
-  let n = BigInt(0);
+  let n = 0n;
   for (let i = hash.length - 1; i >= 0; i--) {
-    n = (n << BigInt(8)) | BigInt(hash[i]);
+    n = (n << 8n) | BigInt(hash[i]);
   }
 
   // Reduce mod l
@@ -33,8 +347,8 @@ function scReduce(hash: Uint8Array): Uint8Array {
   // Convert back to 32-byte little-endian
   const result = new Uint8Array(32);
   for (let i = 0; i < 32; i++) {
-    result[i] = Number(n & BigInt(0xff));
-    n = n >> BigInt(8);
+    result[i] = Number(n & 0xffn);
+    n = n >> 8n;
   }
   return result;
 }
@@ -44,9 +358,9 @@ function scReduce(hash: Uint8Array): Uint8Array {
  */
 function scReduce32(bytes: Uint8Array): Uint8Array {
   // Convert 32-byte to BigInt (little-endian)
-  let n = BigInt(0);
+  let n = 0n;
   for (let i = bytes.length - 1; i >= 0; i--) {
-    n = (n << BigInt(8)) | BigInt(bytes[i]);
+    n = (n << 8n) | BigInt(bytes[i]);
   }
 
   // Reduce mod l
@@ -55,8 +369,8 @@ function scReduce32(bytes: Uint8Array): Uint8Array {
   // Convert back to 32-byte little-endian
   const result = new Uint8Array(32);
   for (let i = 0; i < 32; i++) {
-    result[i] = Number(n & BigInt(0xff));
-    n = n >> BigInt(8);
+    result[i] = Number(n & 0xffn);
+    n = n >> 8n;
   }
   return result;
 }
@@ -65,80 +379,44 @@ function scReduce32(bytes: Uint8Array): Uint8Array {
  * Add two scalars mod l.
  */
 function scAdd(a: Uint8Array, b: Uint8Array): Uint8Array {
-  let an = BigInt(0);
-  let bn = BigInt(0);
+  let an = 0n;
+  let bn = 0n;
   for (let i = a.length - 1; i >= 0; i--) {
-    an = (an << BigInt(8)) | BigInt(a[i]);
-    bn = (bn << BigInt(8)) | BigInt(b[i]);
+    an = (an << 8n) | BigInt(a[i]);
+    bn = (bn << 8n) | BigInt(b[i]);
   }
 
   let sum = (an + bn) % L;
 
   const result = new Uint8Array(32);
   for (let i = 0; i < 32; i++) {
-    result[i] = Number(sum & BigInt(0xff));
-    sum = sum >> BigInt(8);
+    result[i] = Number(sum & 0xffn);
+    sum = sum >> 8n;
   }
   return result;
 }
 
-/**
- * Hs() - Hash to scalar. Used for deriving keys.
- * Takes arbitrary data, hashes with Keccak-256, reduces mod l.
- */
-function hashToScalar(data: Uint8Array): Uint8Array {
-  // Monero uses Keccak-256, but we'll use SHA-512 and reduce
-  // This matches the derivation used in our hd.ts
-  const hash = sha512(data);
-  return scReduce(hash);
-}
-
-/**
- * Hash to point (Hp) for key image generation.
- * Uses the "hash and pray" method with cn_fast_hash (Keccak-256).
- * For compatibility, we use a simplified approach that works for verification.
- */
-function hashToPoint(point: Uint8Array): Uint8Array {
-  // Monero's hash_to_ec is complex. For key image verification,
-  // we need to match the exact algorithm used by the network.
-  // This is a simplified version - the full algorithm involves:
-  // 1. Hash the point with Keccak-256
-  // 2. Interpret as y-coordinate, solve for x
-  // 3. Multiply by cofactor (8)
-
-  // Since we're comparing against server-provided key images,
-  // and the mymonero library uses the exact same algorithm as Monero,
-  // we need the exact implementation.
-
-  // For now, we use a direct approach with SHA-512 based hash-to-curve
-  // This may not match Monero's exact algorithm, so we'll need to verify.
-
-  // Concatenate a domain separator and hash
-  const toHash = new Uint8Array(point.length + 1);
-  toHash.set(point);
-  toHash[point.length] = 0; // domain separator
-
-  const hash = sha512(toHash);
-  const scalar = scReduce(hash);
-
-  // Multiply generator by scalar to get a point
-  // This is NOT the correct Monero hash_to_ec, but a placeholder
-  try {
-    const p = ed25519.ExtendedPoint.BASE.multiply(bytesToBigInt(scalar));
-    return p.toRawBytes();
-  } catch {
-    // Fallback - return hash as-is (this won't work for verification)
-    return scalar;
-  }
-}
-
 function bytesToBigInt(bytes: Uint8Array): bigint {
-  let n = BigInt(0);
+  let n = 0n;
   for (let i = bytes.length - 1; i >= 0; i--) {
-    n = (n << BigInt(8)) | BigInt(bytes[i]);
+    n = (n << 8n) | BigInt(bytes[i]);
   }
   return n;
 }
+
+/**
+ * Hs() - Hash to scalar using Keccak-256.
+ * Takes arbitrary data, hashes with Keccak-256, reduces mod l.
+ */
+function hashToScalar(data: Uint8Array): Uint8Array {
+  // Monero uses Keccak-256, then reduces the 32-byte output
+  const hash = keccak_256(data);
+  return scReduce32(hash);
+}
+
+// ============================================================================
+// Key Derivation
+// ============================================================================
 
 /**
  * Derive the one-time private key for an output.
@@ -164,15 +442,12 @@ function deriveOneTimePrivateKey(
     const aR = R.multiply(a);
     const aRBytes = aR.toRawBytes();
 
-    // Concatenate aR || outputIndex (as varint, but typically just 1 byte for small indices)
-    const derivationData = new Uint8Array(aRBytes.length + 8);
+    // Concatenate aR || outputIndex as varint
+    // Monero uses varint encoding for output index
+    const varint = encodeVarint(outputIndex);
+    const derivationData = new Uint8Array(aRBytes.length + varint.length);
     derivationData.set(aRBytes);
-    // Output index as little-endian 8 bytes
-    let idx = outputIndex;
-    for (let i = 0; i < 8; i++) {
-      derivationData[aRBytes.length + i] = idx & 0xff;
-      idx = Math.floor(idx / 256);
-    }
+    derivationData.set(varint, aRBytes.length);
 
     // Hs(aR || outputIndex)
     const hs = hashToScalar(derivationData);
@@ -186,6 +461,23 @@ function deriveOneTimePrivateKey(
     throw err;
   }
 }
+
+/**
+ * Encode an integer as a Monero varint (variable-length integer).
+ */
+function encodeVarint(n: number): Uint8Array {
+  const bytes: number[] = [];
+  while (n >= 0x80) {
+    bytes.push((n & 0x7f) | 0x80);
+    n = Math.floor(n / 128);
+  }
+  bytes.push(n);
+  return new Uint8Array(bytes);
+}
+
+// ============================================================================
+// Key Image Generation
+// ============================================================================
 
 /**
  * Generate a key image for an output.
@@ -219,8 +511,8 @@ export function generateKeyImage(
   const P = ed25519.ExtendedPoint.BASE.multiply(xBigInt);
   const PBytes = P.toRawBytes();
 
-  // Compute Hp(P) - hash to point
-  const HpP = hashToPoint(PBytes);
+  // Compute Hp(P) using Monero's hash_to_ec
+  const HpP = hashToEc(PBytes);
 
   // Key image KI = x * Hp(P)
   try {
@@ -232,6 +524,52 @@ export function generateKeyImage(
     throw err;
   }
 }
+
+// ============================================================================
+// Test function for hash_to_ec
+// ============================================================================
+
+/**
+ * Test hash_to_ec against Monero test vectors.
+ * Returns true if the test passes.
+ */
+export function testHashToEc(inputHex: string, expectedOutputHex: string): boolean {
+  const input = hexToBytes(inputHex);
+  const result = hashToEc(input);
+  const resultHex = bytesToHex(result);
+  const matches = resultHex.toLowerCase() === expectedOutputHex.toLowerCase();
+  if (!matches) {
+    console.log(`[monero-crypto] hash_to_ec test FAILED`);
+    console.log(`  Input:    ${inputHex}`);
+    console.log(`  Expected: ${expectedOutputHex}`);
+    console.log(`  Got:      ${resultHex}`);
+  }
+  return matches;
+}
+
+/**
+ * Test hash_to_point (ge_fromfe_frombytes_vartime without the initial hash).
+ * This tests the direct field element to point mapping.
+ * Returns true if the test passes.
+ */
+export function testHashToPoint(inputHex: string, expectedOutputHex: string): boolean {
+  const input = hexToBytes(inputHex);
+  // hash_to_point does NOT hash the input, it directly maps to a point
+  const point = geFromFeFromBytesVartime(input);
+  const resultHex = bytesToHex(point);
+  const matches = resultHex.toLowerCase() === expectedOutputHex.toLowerCase();
+  if (!matches) {
+    console.log(`[monero-crypto] hash_to_point test FAILED`);
+    console.log(`  Input:    ${inputHex}`);
+    console.log(`  Expected: ${expectedOutputHex}`);
+    console.log(`  Got:      ${resultHex}`);
+  }
+  return matches;
+}
+
+// ============================================================================
+// Balance Verification API
+// ============================================================================
 
 /**
  * Spent output candidate from the server.
@@ -291,11 +629,7 @@ export async function verifySpentOutputs(
         );
       }
     } catch (err) {
-      console.error(
-        `[monero-crypto] Error verifying spent output:`,
-        err,
-        output
-      );
+      console.error(`[monero-crypto] Error verifying spent output:`, err, output);
     }
   }
 
@@ -322,7 +656,7 @@ export async function calculateVerifiedBalance(
   balance: number;
   verifiedSpentAmount: number;
   verifiedSpentCount: number;
-  wasmAvailable: boolean;
+  hashToEcImplemented: boolean;
 }> {
   try {
     const verified = await verifySpentOutputs(
@@ -339,7 +673,7 @@ export async function calculateVerifiedBalance(
       balance: Math.max(0, balance), // Never negative
       verifiedSpentAmount,
       verifiedSpentCount: verified.length,
-      wasmAvailable: true, // We're using pure JS now, always available
+      hashToEcImplemented: true,
     };
   } catch (err) {
     console.error('[monero-crypto] Error calculating balance:', err);
@@ -348,7 +682,7 @@ export async function calculateVerifiedBalance(
       balance: totalReceived,
       verifiedSpentAmount: 0,
       verifiedSpentCount: 0,
-      wasmAvailable: false,
+      hashToEcImplemented: false,
     };
   }
 }

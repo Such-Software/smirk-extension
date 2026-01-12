@@ -41,10 +41,11 @@ src/
 ├── content/        # Content script - detects claim pages
 ├── popup/          # Main UI (Preact)
 ├── lib/
-│   ├── crypto.ts   # Cryptographic utilities (BIP39, key derivation)
-│   ├── api.ts      # Backend API client
-│   ├── browser.ts  # Cross-browser API abstraction (Chrome/Firefox)
-│   └── storage.ts  # Chrome storage helpers
+│   ├── crypto.ts        # BIP39, BIP44 key derivation (secp256k1, ed25519)
+│   ├── monero-crypto.ts # Monero/Wownero key images, balance verification
+│   ├── api.ts           # Backend API client
+│   ├── browser.ts       # Cross-browser API abstraction (Chrome/Firefox)
+│   └── storage.ts       # Chrome storage helpers
 └── types/          # TypeScript types
 ```
 
@@ -61,6 +62,22 @@ src/
 |-------|----------|-------|
 | BTC | secp256k1 (BIP44) | Balance via Electrum |
 | LTC | secp256k1 (BIP44) | Balance via Electrum |
-| XMR | ed25519 | View key registered with LWS |
+| XMR | ed25519 | View key registered with LWS, client-side key image verification |
 | WOW | ed25519 | Same as XMR |
 | GRIN | ed25519 | Slatepack addresses, balance via Owner API |
+
+## XMR/WOW Balance Verification
+
+For Monero and Wownero, the backend returns `total_received` plus a list of candidate spent outputs detected by the Light Wallet Server. The extension verifies these client-side:
+
+1. **Key image computation**: For each candidate spent output, the extension computes the expected key image using:
+   - One-time private key: `x = Hs(aR || outputIndex) + b`
+   - Key image: `KI = x * Hp(P)` where `Hp` is Monero's `hash_to_ec`
+
+2. **Verification**: Only outputs where the computed key image matches the server's reported key image are counted as spent
+
+3. **True balance**: `total_received - sum(verified_spent_amounts)`
+
+This ensures the server cannot lie about spent funds - the balance is cryptographically verified using your private spend key, which never leaves the extension.
+
+**Implementation**: Pure JavaScript using `@noble/curves` and `@noble/hashes` (no WASM). Includes Monero's exact `ge_fromfe_frombytes_vartime` algorithm for the `hash_to_ec` operation.

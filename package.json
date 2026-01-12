@@ -22,6 +22,7 @@
     "@scure/base": "^2.0.0",
     "@scure/bip32": "^2.0.1",
     "@scure/bip39": "^2.0.1",
+    "@scure/btc-signer": "^2.0.1",
     "preact": "^10.19.0"
   }
 }

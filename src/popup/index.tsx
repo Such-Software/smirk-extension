@@ -953,7 +953,7 @@ function WalletView({ onLock }: { onLock: () => void }) {
           verifiedSpentAmount: verified.verifiedSpentAmount,
           verifiedSpentCount: verified.verifiedSpentCount,
           balance: verified.balance,
-          wasmAvailable: verified.wasmAvailable,
+          hashToEcImplemented: verified.hashToEcImplemented,
         });
 
         setBalances((prev) => ({
@@ -962,7 +962,7 @@ function WalletView({ onLock }: { onLock: () => void }) {
             confirmed: verified.balance,
             unconfirmed: result.locked_balance + result.pending_balance,
             total: verified.balance + result.locked_balance + result.pending_balance,
-            error: verified.wasmAvailable ? undefined : 'View-only (WASM unavailable)',
+            error: verified.hashToEcImplemented ? undefined : 'Key image verification failed',
           },
         }));
       } else {

@@ -44,6 +44,7 @@ import {
   grinSlatpackAddress,
   hexToBytes,
 } from '@/lib/address';
+import { createSignedTransaction, type Utxo } from '@/lib/btc-tx';
 import {
   getWalletState,
   saveWalletState,
@@ -222,6 +223,12 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
 
     case 'RESET_AUTO_LOCK_TIMER':
       return handleResetAutoLockTimer();
+
+    case 'GET_UTXOS':
+      return handleGetUtxos(message.asset, message.address);
+
+    case 'SEND_TX':
+      return handleSendTx(message.asset, message.recipientAddress, message.amount, message.feeRate);
 
     default:
       return { success: false, error: 'Unknown message type' };
@@ -1167,17 +1174,112 @@ function stopAutoLockTimer() {
 
 /**
  * Handle auto-lock alarm firing.
+ * Note: This runs when service worker wakes from the alarm, potentially before
+ * initializeBackground() restores session state. We must clear session storage
+ * directly to ensure the wallet stays locked even if the handler runs early.
  */
-alarms.onAlarm.addListener((alarm) => {
-  console.log('[AutoLock] Alarm fired:', alarm.name, 'isUnlocked:', isUnlocked);
-  if (alarm.name === AUTO_LOCK_ALARM && isUnlocked) {
-    console.log(`[AutoLock] Auto-locking wallet after ${cachedAutoLockMinutes} minutes of inactivity`);
+alarms.onAlarm.addListener(async (alarm) => {
+  console.log('[AutoLock] Alarm fired:', alarm.name);
+  if (alarm.name === AUTO_LOCK_ALARM) {
+    console.log(`[AutoLock] Auto-locking wallet due to inactivity`);
+    // Clear in-memory state
     unlockedKeys.clear();
     unlockedViewKeys.clear();
     isUnlocked = false;
-    clearSessionKeys(); // Clear persisted keys on auto-lock
+    // Clear session storage directly - this is the source of truth across restarts
+    // Must await to ensure it completes before service worker sleeps again
+    await clearSessionKeys();
+    console.log('[AutoLock] Wallet locked and session cleared');
   }
 });
+
+// ============================================================================
+// UTXO / Send Handlers (BTC/LTC)
+// ============================================================================
+
+/**
+ * Get UTXOs for a BTC or LTC address.
+ */
+async function handleGetUtxos(
+  asset: 'btc' | 'ltc',
+  address: string
+): Promise<MessageResponse<{ utxos: Utxo[] }>> {
+  const result = await api.getUtxos(asset, address);
+
+  if (result.error) {
+    return { success: false, error: result.error };
+  }
+
+  return { success: true, data: { utxos: result.data!.utxos } };
+}
+
+/**
+ * Send BTC or LTC transaction.
+ * Builds, signs, and broadcasts a transaction to the given recipient.
+ */
+async function handleSendTx(
+  asset: 'btc' | 'ltc',
+  recipientAddress: string,
+  amount: number,
+  feeRate: number
+): Promise<MessageResponse<{ txid: string; fee: number }>> {
+  if (!isUnlocked) {
+    return { success: false, error: 'Wallet is locked' };
+  }
+
+  const privateKey = unlockedKeys.get(asset);
+  if (!privateKey) {
+    return { success: false, error: `No ${asset} key available` };
+  }
+
+  const state = await getWalletState();
+  const key = state.keys[asset];
+  if (!key) {
+    return { success: false, error: `No ${asset} key found` };
+  }
+
+  // Get our address (for change output)
+  const changeAddress = getAddressForAsset(asset, key);
+
+  // Fetch UTXOs
+  const utxoResult = await api.getUtxos(asset, changeAddress);
+  if (utxoResult.error || !utxoResult.data) {
+    return { success: false, error: utxoResult.error || 'Failed to fetch UTXOs' };
+  }
+
+  const utxos = utxoResult.data.utxos;
+  if (utxos.length === 0) {
+    return { success: false, error: 'No UTXOs available' };
+  }
+
+  try {
+    // Build and sign transaction
+    const { txHex, fee } = createSignedTransaction(
+      asset,
+      utxos,
+      recipientAddress,
+      amount,
+      changeAddress,
+      privateKey,
+      feeRate
+    );
+
+    // Broadcast transaction
+    const broadcastResult = await api.broadcastTx(asset, txHex);
+    if (broadcastResult.error) {
+      return { success: false, error: broadcastResult.error };
+    }
+
+    console.log(`[Send] ${asset.toUpperCase()} tx broadcast:`, broadcastResult.data!.txid);
+
+    return { success: true, data: { txid: broadcastResult.data!.txid, fee } };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Failed to create transaction',
+    };
+  }
+}
 
 // Listen for extension installation
 runtime.onInstalled.addListener((details) => {
@@ -1198,6 +1300,16 @@ async function initializeBackground() {
     // Also restore cached auto-lock minutes so timer works correctly
     cachedAutoLockMinutes = walletState.settings.autoLockMinutes;
     console.log('[Session] Restored unlock state, cachedAutoLockMinutes:', cachedAutoLockMinutes);
+
+    // Check if there's already an alarm set; if not, create one
+    // This handles the case where the service worker restarted but wasn't triggered by the alarm
+    const existingAlarm = await alarms.get(AUTO_LOCK_ALARM);
+    if (!existingAlarm && cachedAutoLockMinutes && cachedAutoLockMinutes > 0) {
+      console.log('[AutoLock] No existing alarm found after restore, creating new one');
+      resetAutoLockTimer();
+    } else if (existingAlarm) {
+      console.log('[AutoLock] Existing alarm found, scheduled for:', new Date(existingAlarm.scheduledTime));
+    }
   }
 
   const authState = await getAuthState();

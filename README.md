@@ -37,7 +37,7 @@ npm run typecheck
 
 ```
 src/
-├── background/     # Service worker - handles crypto, storage, API, auto-lock
+├── background/     # Service worker - crypto, storage, API, auto-lock (chrome.alarms)
 ├── content/        # Content script - detects claim pages
 ├── popup/          # Main UI (Preact)
 ├── lib/
@@ -64,7 +64,7 @@ src/
 | LTC | secp256k1 (BIP44) | Balance via Electrum |
 | XMR | ed25519 | View key registered with LWS, client-side key image verification |
 | WOW | ed25519 | Same as XMR |
-| GRIN | ed25519 | Slatepack addresses, balance via Owner API |
+| GRIN | ed25519 | Slatepack addresses, balance via Owner API v3 |
 
 ## XMR/WOW Balance Verification
 

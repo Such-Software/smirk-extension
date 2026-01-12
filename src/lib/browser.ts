@@ -26,7 +26,7 @@ export const storage = {
         return browserAPI.storage.local.get(keys) as Promise<T>;
       }
       return new Promise((resolve) => {
-        browserAPI.storage.local.get(keys, (result: T) => resolve(result));
+        browserAPI.storage.local.get(keys, (result) => resolve(result as T));
       });
     },
 
@@ -70,7 +70,7 @@ export const storage = {
         return {} as T;
       }
       return new Promise((resolve) => {
-        browserAPI.storage.session.get(keys, (result: T) => resolve(result));
+        browserAPI.storage.session.get(keys, (result) => resolve(result as T));
       });
     },
 
@@ -161,24 +161,20 @@ export const runtime = {
 export const notifications = {
   create(
     notificationId: string | undefined,
-    options: chrome.notifications.NotificationOptions
+    options: chrome.notifications.NotificationOptions<true>
   ): Promise<string> {
-    if (isFirefox) {
-      return browserAPI.notifications.create(notificationId, options);
-    }
     return new Promise((resolve) => {
-      browserAPI.notifications.create(notificationId ?? '', options, (id: string) =>
-        resolve(id)
-      );
+      if (notificationId) {
+        browserAPI.notifications.create(notificationId, options, (id) => resolve(id));
+      } else {
+        browserAPI.notifications.create(options, (id) => resolve(id));
+      }
     });
   },
 
   clear(notificationId: string): Promise<boolean> {
-    if (isFirefox) {
-      return browserAPI.notifications.clear(notificationId);
-    }
     return new Promise((resolve) => {
-      browserAPI.notifications.clear(notificationId, (wasCleared: boolean) =>
+      browserAPI.notifications.clear(notificationId, (wasCleared) =>
         resolve(wasCleared)
       );
     });

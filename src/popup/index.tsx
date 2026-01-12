@@ -940,8 +940,13 @@ function WalletView({ onLock }: { onLock: () => void }) {
       if (isLwsRawResponse(result)) {
         // Run client-side key image verification for XMR/WOW spent outputs
         console.log(`[Balance] Verifying ${asset} spent outputs...`);
+
+        // NOTE: total_received from LWS includes mempool transactions!
+        // We need to subtract pending_balance to get confirmed-only for verification
+        const confirmedReceived = result.total_received - result.pending_balance;
+
         const verified = await calculateVerifiedBalance(
-          result.total_received,
+          confirmedReceived,
           result.spent_outputs,
           result.viewKeyHex,
           result.publicSpendKey,
@@ -950,9 +955,11 @@ function WalletView({ onLock }: { onLock: () => void }) {
 
         console.log(`[Balance] ${asset} verified:`, {
           totalReceived: result.total_received,
+          confirmedReceived,
+          pendingBalance: result.pending_balance,
           verifiedSpentAmount: verified.verifiedSpentAmount,
           verifiedSpentCount: verified.verifiedSpentCount,
-          balance: verified.balance,
+          confirmedBalance: verified.balance,
           hashToEcImplemented: verified.hashToEcImplemented,
         });
 
@@ -960,8 +967,8 @@ function WalletView({ onLock }: { onLock: () => void }) {
           ...prev,
           [asset]: {
             confirmed: verified.balance,
-            unconfirmed: result.locked_balance + result.pending_balance,
-            total: verified.balance + result.locked_balance + result.pending_balance,
+            unconfirmed: result.pending_balance,
+            total: verified.balance + result.pending_balance,
             error: verified.hashToEcImplemented ? undefined : 'Key image verification failed',
           },
         }));

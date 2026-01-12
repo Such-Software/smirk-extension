@@ -299,6 +299,74 @@ export class SmirkApi {
   }
 
   /**
+   * Get unspent outputs for transaction construction (XMR/WOW).
+   * Returns spendable outputs with their details for tx building.
+   */
+  async getUnspentOuts(
+    asset: 'xmr' | 'wow',
+    address: string,
+    viewKey: string
+  ): Promise<ApiResponse<{
+    outputs: Array<{
+      amount: number;
+      public_key: string;
+      tx_pub_key: string;
+      index: number;
+      global_index: number;
+      height: number;
+      rct: string;
+      spend_key_images: string[];
+    }>;
+    per_byte_fee: number;
+    fee_mask: number;
+  }>> {
+    return this.request('/wallet/lws/unspent', {
+      method: 'POST',
+      body: JSON.stringify({ asset, address, view_key: viewKey }),
+    });
+  }
+
+  /**
+   * Get random outputs for decoy selection in ring signatures (XMR/WOW).
+   * @param count - Number of decoys needed (typically 15 for ring size 16)
+   */
+  async getRandomOuts(
+    asset: 'xmr' | 'wow',
+    count: number
+  ): Promise<ApiResponse<{
+    amount_outs: Array<{
+      amount: number;
+      outputs: Array<{
+        global_index: number;
+        public_key: string;
+        rct: string;
+      }>;
+    }>;
+  }>> {
+    return this.request('/wallet/lws/decoys', {
+      method: 'POST',
+      body: JSON.stringify({ asset, count }),
+    });
+  }
+
+  /**
+   * Submit a signed XMR/WOW transaction for broadcast.
+   * @param txHex - The fully signed transaction hex from smirk-wasm
+   */
+  async submitLwsTx(
+    asset: 'xmr' | 'wow',
+    txHex: string
+  ): Promise<ApiResponse<{
+    success: boolean;
+    status: string;
+  }>> {
+    return this.request('/wallet/lws/submit', {
+      method: 'POST',
+      body: JSON.stringify({ asset, tx_hex: txHex }),
+    });
+  }
+
+  /**
    * Register wallet with LWS for balance scanning.
    * @param asset - 'xmr' or 'wow'
    * @param address - Primary address

@@ -159,7 +159,9 @@ export type MessageType =
   | { type: 'CLEAR_ONBOARDING_STATE' }
   | { type: 'GET_SETTINGS' }
   | { type: 'UPDATE_SETTINGS'; settings: Partial<UserSettings> }
-  | { type: 'RESET_AUTO_LOCK_TIMER' };
+  | { type: 'RESET_AUTO_LOCK_TIMER' }
+  | { type: 'GET_HISTORY'; asset: 'btc' | 'ltc' }
+  | { type: 'ESTIMATE_FEE'; asset: 'btc' | 'ltc' };
 
 export type MessageResponse<T = unknown> =
   | { success: true; data: T }

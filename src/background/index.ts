@@ -230,6 +230,12 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
     case 'SEND_TX':
       return handleSendTx(message.asset, message.recipientAddress, message.amount, message.feeRate);
 
+    case 'GET_HISTORY':
+      return handleGetHistory(message.asset);
+
+    case 'ESTIMATE_FEE':
+      return handleEstimateFee(message.asset);
+
     default:
       return { success: false, error: 'Unknown message type' };
   }
@@ -1279,6 +1285,54 @@ async function handleSendTx(
       error: err instanceof Error ? err.message : 'Failed to create transaction',
     };
   }
+}
+
+/**
+ * Get transaction history for a BTC or LTC address.
+ */
+async function handleGetHistory(
+  asset: 'btc' | 'ltc'
+): Promise<MessageResponse<{ transactions: Array<{ txid: string; height: number; fee?: number }> }>> {
+  if (!isUnlocked) {
+    return { success: false, error: 'Wallet is locked' };
+  }
+
+  const state = await getWalletState();
+  const key = state.keys[asset];
+  if (!key) {
+    return { success: false, error: `No ${asset} key found` };
+  }
+
+  const address = getAddressForAsset(asset, key);
+  const result = await api.getHistory(asset, address);
+
+  if (result.error) {
+    return { success: false, error: result.error };
+  }
+
+  return { success: true, data: { transactions: result.data!.transactions } };
+}
+
+/**
+ * Estimate fee rates for BTC or LTC.
+ */
+async function handleEstimateFee(
+  asset: 'btc' | 'ltc'
+): Promise<MessageResponse<{ fast: number | null; normal: number | null; slow: number | null }>> {
+  const result = await api.estimateFee(asset);
+
+  if (result.error) {
+    return { success: false, error: result.error };
+  }
+
+  return {
+    success: true,
+    data: {
+      fast: result.data!.fast,
+      normal: result.data!.normal,
+      slow: result.data!.slow,
+    },
+  };
 }
 
 // Listen for extension installation

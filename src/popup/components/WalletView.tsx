@@ -19,6 +19,13 @@ import { SettingsView } from './SettingsView';
 // Storage key for persisting active asset tab
 const ACTIVE_ASSET_KEY = 'smirk_activeAsset';
 
+// Transaction history entry
+interface TxHistoryEntry {
+  txid: string;
+  height: number;
+  fee?: number;
+}
+
 export function WalletView({ onLock }: { onLock: () => void }) {
   const [activeAsset, setActiveAsset] = useState<AssetType>('btc');
   const [screen, setScreen] = useState<WalletScreen>('main');
@@ -37,6 +44,14 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     grin: null,
   });
   const [loadingBalance, setLoadingBalance] = useState<AssetType | null>(null);
+  const [history, setHistory] = useState<Record<AssetType, TxHistoryEntry[] | null>>({
+    btc: null,
+    ltc: null,
+    xmr: null,
+    wow: null,
+    grin: null,
+  });
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
   const availableAssets: AssetType[] = ['btc', 'ltc', 'xmr', 'wow', 'grin'];
 
@@ -75,10 +90,14 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     fetchAddresses();
   }, []);
 
-  // Fetch balance when asset changes
+  // Fetch balance and history when asset changes
   useEffect(() => {
     if (addresses[activeAsset]) {
       fetchBalance(activeAsset);
+      // Only fetch history for BTC/LTC (supported assets)
+      if (activeAsset === 'btc' || activeAsset === 'ltc') {
+        fetchHistory(activeAsset);
+      }
     }
   }, [activeAsset, addresses[activeAsset]]);
 
@@ -169,6 +188,27 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     }
   };
 
+  const fetchHistory = async (asset: 'btc' | 'ltc') => {
+    if (loadingHistory) return;
+    setLoadingHistory(true);
+
+    try {
+      const result = await sendMessage<{ transactions: TxHistoryEntry[] }>({
+        type: 'GET_HISTORY',
+        asset,
+      });
+
+      setHistory((prev) => ({
+        ...prev,
+        [asset]: result.transactions,
+      }));
+    } catch (err) {
+      console.error(`Failed to fetch ${asset} history:`, err);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
   const currentAddress = addresses[activeAsset];
   const currentBalance = balances[activeAsset];
 
@@ -235,7 +275,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
         {/* Balance Card */}
         <div class="balance-card" style={{ position: 'relative' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div class="balance-label">{ASSETS[activeAsset].name} (Confirmed)</div>
+            <div class="balance-label">{ASSETS[activeAsset].name}</div>
             <button
               class="btn btn-icon"
               style={{ fontSize: '12px', padding: '2px 6px', marginTop: '-4px' }}
@@ -294,11 +334,64 @@ export function WalletView({ onLock }: { onLock: () => void }) {
 
         {/* Recent Activity */}
         <div class="section-title">Recent Activity</div>
-        <div class="empty-state">
-          <div class="empty-icon">📭</div>
-          <div class="empty-title">No transactions yet</div>
-          <div class="empty-text">Your transaction history will appear here</div>
-        </div>
+        {loadingHistory ? (
+          <div style={{ textAlign: 'center', padding: '16px' }}>
+            <span class="spinner" style={{ width: '16px', height: '16px' }} />
+          </div>
+        ) : history[activeAsset] && history[activeAsset]!.length > 0 ? (
+          <div class="tx-list">
+            {history[activeAsset]!.slice(0, 10).map((tx) => (
+              <div
+                key={tx.txid}
+                class="tx-item"
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  padding: '8px 12px',
+                  background: '#27272a',
+                  borderRadius: '6px',
+                  marginBottom: '6px',
+                  cursor: 'pointer',
+                }}
+                onClick={() => {
+                  // Copy txid to clipboard
+                  navigator.clipboard.writeText(tx.txid);
+                }}
+                title={`Click to copy\n${tx.txid}`}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontFamily: 'monospace',
+                      fontSize: '11px',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    {tx.txid.substring(0, 12)}...{tx.txid.substring(tx.txid.length - 8)}
+                  </div>
+                  <div style={{ fontSize: '10px', color: '#71717a' }}>
+                    {tx.height > 0 ? `Block ${tx.height}` : 'Pending'}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (activeAsset === 'btc' || activeAsset === 'ltc') ? (
+          <div class="empty-state">
+            <div class="empty-icon">📭</div>
+            <div class="empty-title">No transactions yet</div>
+            <div class="empty-text">Your transaction history will appear here</div>
+          </div>
+        ) : (
+          <div class="empty-state">
+            <div class="empty-icon">🔧</div>
+            <div class="empty-title">History coming soon</div>
+            <div class="empty-text">{ASSETS[activeAsset].name} transaction history not yet supported</div>
+          </div>
+        )}
       </div>
     </>
   );

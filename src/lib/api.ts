@@ -369,6 +369,44 @@ export class SmirkApi {
   }
 
   /**
+   * Get transaction history for a BTC or LTC address.
+   * Returns transactions touching this address, newest first.
+   */
+  async getHistory(
+    asset: 'btc' | 'ltc',
+    address: string
+  ): Promise<ApiResponse<{
+    asset: string;
+    address: string;
+    transactions: Array<{
+      txid: string;
+      height: number;
+      fee?: number;
+    }>;
+  }>> {
+    return this.request('/wallet/history', {
+      method: 'POST',
+      body: JSON.stringify({ asset, address }),
+    });
+  }
+
+  /**
+   * Estimate fee rates for BTC or LTC.
+   * Returns rates in sat/vB for different confirmation speeds.
+   */
+  async estimateFee(asset: 'btc' | 'ltc'): Promise<ApiResponse<{
+    asset: string;
+    fast: number | null; // 1-2 blocks
+    normal: number | null; // 3-6 blocks
+    slow: number | null; // 12-24 blocks
+  }>> {
+    return this.request('/wallet/fees', {
+      method: 'POST',
+      body: JSON.stringify({ asset }),
+    });
+  }
+
+  /**
    * Get Grin wallet balance from backend.
    * Note: Grin uses a shared wallet on the backend due to Mimblewimble's
    * interactive transaction nature.

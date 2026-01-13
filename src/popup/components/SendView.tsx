@@ -159,9 +159,16 @@ export function SendView({
 
         setTxid(result.txHash);
 
-        // Note: No need to record pending tx locally - the backend now includes mempool
-        // spent_outputs in the balance response, so the next balance refresh will show
-        // the correct amount automatically.
+        // Record pending tx locally for immediate UI feedback.
+        // LWS may take a few seconds to see the tx in mempool, so we track it
+        // locally to show the correct balance immediately after send.
+        await sendMessage({
+          type: 'ADD_PENDING_TX',
+          txHash: result.txHash,
+          asset,
+          amount: amountAtomic,
+          fee: result.fee,
+        });
       } else {
         // BTC/LTC: Use backend signing
         const feeRateNum = parseInt(feeRate);
@@ -254,7 +261,7 @@ export function SendView({
               >
                 Copy TXID
               </button>
-              <button class="btn btn-primary" style={{ flex: 1 }} onClick={onBack}>
+              <button class="btn btn-primary" style={{ flex: 1 }} onClick={onSent}>
                 Done
               </button>
             </div>

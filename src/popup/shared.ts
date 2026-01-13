@@ -73,9 +73,10 @@ export interface AddressData {
 
 // Balance data interface
 export interface BalanceData {
-  confirmed: number;
-  unconfirmed: number;
-  total: number;
+  confirmed: number;   // Available (unlocked) balance
+  unconfirmed: number; // Pending balance (can be negative for outgoing)
+  total: number;       // Total including locked
+  locked?: number;     // Locked balance (outputs waiting for confirmations)
   error?: string;
 }
 

@@ -137,17 +137,19 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     if (loadingBalance === asset) return; // Already loading
     setLoadingBalance(asset);
 
-    // Note: For XMR/WOW, the backend now includes mempool spent_outputs in balance response,
-    // so we don't need local pending tx tracking. Keep this for future BTC/LTC use.
-    // if (asset === 'btc' || asset === 'ltc') {
-    //   try {
-    //     const pendingTxs = await sendMessage<PendingTx[]>({ type: 'GET_PENDING_TXS', asset });
-    //     const totalPending = pendingTxs.reduce((sum, tx) => sum + tx.amount + tx.fee, 0);
-    //     setPendingOutgoing((prev) => ({ ...prev, [asset]: totalPending }));
-    //   } catch (err) {
-    //     console.error(`Failed to fetch pending txs for ${asset}:`, err);
-    //   }
-    // }
+    // Track locally-recorded pending outgoing transactions.
+    // For XMR/WOW, LWS may take a few seconds to see the tx in mempool after broadcast,
+    // so we track pending txs locally to show correct balance immediately after send.
+    try {
+      const pendingResult = await sendMessage<{ pending: Array<{ amount: number; fee: number }> }>({
+        type: 'GET_PENDING_TXS',
+        asset,
+      });
+      const totalPending = pendingResult.pending.reduce((sum, tx) => sum + tx.amount + tx.fee, 0);
+      setPendingOutgoing((prev) => ({ ...prev, [asset]: totalPending }));
+    } catch (err) {
+      console.error(`Failed to fetch pending txs for ${asset}:`, err);
+    }
 
     try {
       const result = await sendMessage<BalanceResponse>({ type: 'GET_BALANCE', asset });
@@ -193,9 +195,10 @@ export function WalletView({ onLock }: { onLock: () => void }) {
         });
 
         // The verified.balance is the true spendable balance (total_received - verified_spends)
-        // locked_balance from LWS represents outputs still in unlock period (10 blocks)
+        // locked_balance from LWS represents outputs still in unlock period (10 blocks XMR, 4 blocks WOW)
         // For cleaner UX, show:
         // - confirmed: unlocked balance (verified - locked)
+        // - locked: outputs waiting for confirmations
         // - unconfirmed: pending net change from mempool
         const unlockedBalance = Math.max(0, verified.balance - result.locked_balance);
 
@@ -205,6 +208,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
             confirmed: unlockedBalance,
             unconfirmed: result.pending_balance,
             total: verified.balance,
+            locked: result.locked_balance,
             error: verified.hashToEcImplemented ? undefined : 'Key image verification failed',
           },
         }));
@@ -260,11 +264,10 @@ export function WalletView({ onLock }: { onLock: () => void }) {
 
   const currentAddress = addresses[activeAsset];
   const currentBalance = balances[activeAsset];
-  // Note: For XMR/WOW, the backend now includes mempool spent_outputs, so the confirmed
-  // balance already accounts for pending outgoing transactions.
-  // The local pendingOutgoing tracking is kept for future BTC/LTC use but not applied to XMR/WOW.
-  const isXmrWow = activeAsset === 'xmr' || activeAsset === 'wow';
-  const currentPendingOutgoing = isXmrWow ? 0 : (pendingOutgoing[activeAsset] || 0);
+  // Track locally-recorded pending outgoing (not yet seen by LWS/backend).
+  // For XMR/WOW, LWS may take a few seconds to detect the tx in mempool,
+  // so we subtract local pending from confirmed to show correct available balance.
+  const currentPendingOutgoing = pendingOutgoing[activeAsset] || 0;
   const adjustedConfirmed = Math.max(0, (currentBalance?.confirmed ?? 0) - currentPendingOutgoing);
 
   // Show settings view
@@ -368,7 +371,27 @@ export function WalletView({ onLock }: { onLock: () => void }) {
               {currentBalance.error === 'Offline' ? 'Offline - cached value' : currentBalance.error}
             </div>
           )}
-          {/* Show pending balance (can be positive for incoming or negative for outgoing) */}
+          {/* Show locked balance (outputs waiting for confirmations) */}
+          {currentBalance && !currentBalance.error && (currentBalance.locked ?? 0) > 0 && (
+            <div
+              class="balance-usd"
+              style={{ fontSize: '11px', color: '#f59e0b' }}
+              title={`${formatBalanceFull(currentBalance.locked!, activeAsset)} ${ASSETS[activeAsset].symbol} waiting for confirmations`}
+            >
+              {formatBalance(currentBalance.locked!, activeAsset)} locked
+            </div>
+          )}
+          {/* Show local pending outgoing (tx sent but not yet seen by LWS) */}
+          {currentPendingOutgoing > 0 && (
+            <div
+              class="balance-usd"
+              style={{ fontSize: '11px', color: '#f59e0b' }}
+              title={`${formatBalanceFull(currentPendingOutgoing, activeAsset)} ${ASSETS[activeAsset].symbol} sending`}
+            >
+              -{formatBalance(currentPendingOutgoing, activeAsset)} sending
+            </div>
+          )}
+          {/* Show pending balance from LWS (can be positive for incoming or negative for outgoing) */}
           {currentBalance && !currentBalance.error && currentBalance.unconfirmed !== 0 && (
             <div
               class="balance-usd"

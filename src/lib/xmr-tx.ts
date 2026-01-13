@@ -40,6 +40,65 @@ interface SmirkWasmExports {
 let wasmExports: SmirkWasmExports | null = null;
 let wasmInitPromise: Promise<SmirkWasmExports> | null = null;
 
+// Track locally spent key images (outputs we've used in transactions but LWS hasn't seen yet)
+// This prevents double-spend attempts when sending multiple transactions in quick succession
+// Key: key_image (hex lowercase), Value: timestamp when spent
+const locallySpentKeyImages: Map<string, number> = new Map();
+
+// How long to keep locally spent key images as a safety fallback
+// 2 hours handles slow block times (WOW blocks can take 10+ min sometimes)
+// Entries are also cleared when LWS confirms the spend (see clearConfirmedSpentKeyImage)
+const LOCAL_SPENT_TTL_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Mark a key image as spent locally.
+ * This is called after successfully sending a transaction.
+ */
+export function markKeyImageSpent(keyImage: string): void {
+  locallySpentKeyImages.set(keyImage.toLowerCase(), Date.now());
+  console.log(`[xmr-tx] Marked key image as locally spent: ${keyImage.substring(0, 16)}...`);
+}
+
+/**
+ * Clear a key image from local tracking when LWS confirms it's spent.
+ * This is called when we see the key image in LWS's spend_key_images list.
+ */
+function clearConfirmedSpentKeyImage(keyImage: string): void {
+  const key = keyImage.toLowerCase();
+  if (locallySpentKeyImages.has(key)) {
+    locallySpentKeyImages.delete(key);
+    console.log(`[xmr-tx] Cleared confirmed spent key image from local tracking: ${keyImage.substring(0, 16)}...`);
+  }
+}
+
+/**
+ * Check if a key image is in our local spent list.
+ */
+function isLocallySpent(keyImage: string): boolean {
+  const spentTime = locallySpentKeyImages.get(keyImage.toLowerCase());
+  if (!spentTime) return false;
+
+  // Check if expired (safety fallback)
+  if (Date.now() - spentTime > LOCAL_SPENT_TTL_MS) {
+    locallySpentKeyImages.delete(keyImage.toLowerCase());
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Clean up expired locally spent key images.
+ */
+function cleanupLocalSpentKeyImages(): void {
+  const now = Date.now();
+  for (const [keyImage, spentTime] of locallySpentKeyImages.entries()) {
+    if (now - spentTime > LOCAL_SPENT_TTL_MS) {
+      locallySpentKeyImages.delete(keyImage);
+    }
+  }
+}
+
 export type XmrAsset = 'xmr' | 'wow';
 
 export interface XmrOutput {
@@ -50,6 +109,8 @@ export interface XmrOutput {
   global_index: number;
   height: number;
   rct: string;
+  /** Key images from LWS that might indicate this output is spent */
+  spend_key_images?: string[];
 }
 
 export interface Decoy {
@@ -90,7 +151,7 @@ export async function initWasm(): Promise<SmirkWasmExports> {
       await wasm.default(wasmBinaryUrl);
 
       wasmExports = wasm as SmirkWasmExports;
-      console.log('[xmr-tx] WASM initialized:', wasmExports.test());
+      console.log('[xmr-tx] WASM initialized:', wasmExports.test(), 'version:', wasmExports.version());
       return wasmExports;
     } catch (err) {
       wasmInitPromise = null;
@@ -160,6 +221,82 @@ export async function estimateFee(
 }
 
 /**
+ * Filter out spent outputs by computing key images and checking against LWS spend_key_images.
+ *
+ * LWS returns outputs with a list of key images it has seen on-chain that MIGHT
+ * correspond to this output being spent. We compute the actual key image using
+ * the wallet's spend key and check if it's in that list.
+ *
+ * @param outputs - Outputs from get_unspent_outs
+ * @param viewKey - Private view key (hex)
+ * @param spendKey - Private spend key (hex)
+ * @returns Only the unspent outputs
+ */
+export async function filterUnspentOutputs(
+  outputs: XmrOutput[],
+  viewKey: string,
+  spendKey: string
+): Promise<XmrOutput[]> {
+  const wasm = await initWasm();
+  const unspent: XmrOutput[] = [];
+
+  // Clean up expired local spent tracking
+  cleanupLocalSpentKeyImages();
+
+  for (const output of outputs) {
+    // Compute the actual key image for this output (we need it for both checks)
+    const resultJson = wasm.compute_key_image(viewKey, spendKey, output.tx_pub_key, output.index);
+    const result = JSON.parse(resultJson);
+
+    if (!result.success) {
+      console.error('[xmr-tx] Failed to compute key image:', result.error, output);
+      // Skip this output if we can't compute key image (safer than including potentially spent)
+      continue;
+    }
+
+    const computedKeyImage = result.data.toLowerCase();
+
+    // Check 1: Is this output in our local "recently spent" list?
+    // This catches outputs we've spent but LWS hasn't seen yet
+    if (isLocallySpent(computedKeyImage)) {
+      console.log(
+        `[xmr-tx] Filtering out locally spent output: amount=${output.amount}, ` +
+          `key_image=${computedKeyImage.substring(0, 16)}...`
+      );
+      continue;
+    }
+
+    // Check 2: Is the computed key image in LWS's spend_key_images list?
+    if (output.spend_key_images && output.spend_key_images.length > 0) {
+      const isSpentOnChain = output.spend_key_images.some(
+        (ki) => ki.toLowerCase() === computedKeyImage
+      );
+
+      if (isSpentOnChain) {
+        // LWS has confirmed this spend - clear from local tracking if present
+        clearConfirmedSpentKeyImage(computedKeyImage);
+
+        console.log(
+          `[xmr-tx] Filtering out on-chain spent output: amount=${output.amount}, ` +
+            `tx=${output.tx_pub_key.substring(0, 16)}..., key_image=${computedKeyImage.substring(0, 16)}...`
+        );
+        continue;
+      }
+    }
+
+    // Output is unspent - include it
+    unspent.push(output);
+  }
+
+  console.log(
+    `[xmr-tx] Filtered outputs: ${outputs.length} total, ${unspent.length} unspent, ` +
+      `${outputs.length - unspent.length} spent`
+  );
+
+  return unspent;
+}
+
+/**
  * Select outputs for a transaction.
  *
  * Uses simple "largest first" strategy.
@@ -214,8 +351,10 @@ async function buildInputsWithDecoys(
     decoys: Decoy[];
   }>
 > {
-  // Get 15 decoys per input (for ring size 16)
-  const decoyCount = 15;
+  // Decoy count depends on coin:
+  // - XMR: 15 decoys (ring size 16)
+  // - WOW: 21 decoys (ring size 22) - required since HF v9
+  const decoyCount = asset === 'wow' ? 21 : 15;
 
   // Fetch decoys from backend
   const response = await api.getRandomOuts(asset, decoyCount * outputs.length);
@@ -289,6 +428,7 @@ export async function signTransaction(
     view_key: viewKey,
     spend_key: spendKey,
     network,
+    coin: asset, // Pass asset type for coin-specific RCT type encoding
   };
 
   const result = JSON.parse(wasm.sign_transaction(JSON.stringify(params)));
@@ -325,20 +465,29 @@ export async function createSignedTransaction(
   recipientAddress: string,
   amount: number,
   network: 'mainnet' | 'testnet' | 'stagenet' = 'mainnet'
-): Promise<{ txHex: string; txHash: string; fee: number }> {
+): Promise<{ txHex: string; txHash: string; fee: number; spentKeyImages: string[] }> {
   // 1. Get unspent outputs
   const unspentResponse = await api.getUnspentOuts(asset, address, viewKey);
   if (unspentResponse.error || !unspentResponse.data) {
     throw new Error(unspentResponse.error || 'Failed to get unspent outputs');
   }
 
-  const { outputs, per_byte_fee, fee_mask } = unspentResponse.data;
+  const { outputs: rawOutputs, per_byte_fee, fee_mask } = unspentResponse.data;
 
-  if (outputs.length === 0) {
+  if (rawOutputs.length === 0) {
     throw new Error('No unspent outputs available');
   }
 
-  // 2. Select outputs for this transaction
+  // 2. Filter out spent outputs using key image verification
+  // LWS returns spend_key_images for each output - we compute actual key image
+  // and check if it's in that list to know if the output is truly spent
+  const outputs = await filterUnspentOutputs(rawOutputs, viewKey, spendKey);
+
+  if (outputs.length === 0) {
+    throw new Error('No unspent outputs available (all outputs have been spent)');
+  }
+
+  // 3. Select outputs for this transaction
   const { selected, estimatedFee, change } = await selectOutputs(
     outputs,
     amount,
@@ -350,10 +499,21 @@ export async function createSignedTransaction(
     `[xmr-tx] Selected ${selected.length} outputs, estimated fee: ${estimatedFee}, change: ${change}`
   );
 
-  // 3. Build inputs with decoys
+  // 4. Compute key images for selected outputs (for local spent tracking)
+  const wasm = await initWasm();
+  const spentKeyImages: string[] = [];
+  for (const output of selected) {
+    const resultJson = wasm.compute_key_image(viewKey, spendKey, output.tx_pub_key, output.index);
+    const result = JSON.parse(resultJson);
+    if (result.success) {
+      spentKeyImages.push(result.data.toLowerCase());
+    }
+  }
+
+  // 5. Build inputs with decoys
   const inputsWithDecoys = await buildInputsWithDecoys(asset, selected);
 
-  // 4. Sign transaction
+  // 6. Sign transaction
   const destinations: XmrDestination[] = [{ address: recipientAddress, amount }];
 
   const result = await signTransaction(
@@ -370,7 +530,7 @@ export async function createSignedTransaction(
 
   console.log(`[xmr-tx] Transaction signed: ${result.txHash}, fee: ${result.fee}`);
 
-  return result;
+  return { ...result, spentKeyImages };
 }
 
 /**
@@ -394,7 +554,7 @@ export async function sendTransaction(
   network: 'mainnet' | 'testnet' | 'stagenet' = 'mainnet'
 ): Promise<{ txHash: string; fee: number }> {
   // Create and sign
-  const { txHex, txHash, fee } = await createSignedTransaction(
+  const { txHex, txHash, fee, spentKeyImages } = await createSignedTransaction(
     asset,
     address,
     viewKey,
@@ -414,7 +574,13 @@ export async function sendTransaction(
     );
   }
 
-  console.log(`[xmr-tx] Transaction broadcast: ${txHash}`);
+  // Mark the used outputs as locally spent to prevent double-spend attempts
+  // before LWS catches up and sees the key images on-chain
+  for (const keyImage of spentKeyImages) {
+    markKeyImageSpent(keyImage);
+  }
+
+  console.log(`[xmr-tx] Transaction broadcast: ${txHash}, marked ${spentKeyImages.length} outputs as spent`);
 
   return { txHash, fee };
 }
@@ -425,18 +591,27 @@ export async function sendTransaction(
  * @param asset - 'xmr' or 'wow'
  * @param address - Sender's address
  * @param viewKey - Sender's private view key (hex)
+ * @param spendKey - Sender's private spend key (hex) - needed for key image verification
  */
 export async function maxSendable(
   asset: XmrAsset,
   address: string,
-  viewKey: string
+  viewKey: string,
+  spendKey: string
 ): Promise<number> {
   const unspentResponse = await api.getUnspentOuts(asset, address, viewKey);
   if (unspentResponse.error || !unspentResponse.data) {
     throw new Error(unspentResponse.error || 'Failed to get unspent outputs');
   }
 
-  const { outputs, per_byte_fee, fee_mask } = unspentResponse.data;
+  const { outputs: rawOutputs, per_byte_fee, fee_mask } = unspentResponse.data;
+
+  if (rawOutputs.length === 0) {
+    return 0;
+  }
+
+  // Filter out spent outputs using key image verification
+  const outputs = await filterUnspentOutputs(rawOutputs, viewKey, spendKey);
 
   if (outputs.length === 0) {
     return 0;

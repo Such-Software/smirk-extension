@@ -78,9 +78,100 @@ let cachedAutoLockMinutes: number | null = null; // Cache to avoid reading stora
 // Session storage key for persisting unlock state across service worker restarts
 const SESSION_KEYS_KEY = 'smirk_session_keys';
 
+// Storage key for pending outgoing transactions (not yet confirmed)
+const PENDING_TXS_KEY = 'smirk_pending_txs';
+
 interface SessionKeysData {
   unlockedKeys: Record<string, string>; // asset -> hex-encoded key
   unlockedViewKeys: Record<string, string>; // 'xmr' | 'wow' -> hex-encoded key
+}
+
+interface PendingTx {
+  txHash: string;
+  asset: AssetType;
+  amount: number; // atomic units sent (including fee)
+  fee: number;
+  timestamp: number; // when sent
+}
+
+/**
+ * Add a pending outgoing transaction.
+ * This is subtracted from displayed balance until confirmed.
+ */
+async function addPendingTx(tx: PendingTx): Promise<void> {
+  const result = await storage.local.get(PENDING_TXS_KEY) as Record<string, PendingTx[] | undefined>;
+  const pending: PendingTx[] = result[PENDING_TXS_KEY] || [];
+  pending.push(tx);
+  await storage.local.set({ [PENDING_TXS_KEY]: pending });
+  console.log(`[PendingTx] Added pending tx: ${tx.txHash} (${tx.amount} ${tx.asset})`);
+}
+
+/**
+ * Clean up old pending transactions.
+ * After the confirmation time passes, LWS should reflect the spend,
+ * so we can remove from our pending list.
+ *
+ * XMR: ~20 minutes for 10 confirmations
+ * WOW: ~2 minutes for 10 confirmations (12s blocks)
+ */
+async function cleanupOldPendingTxs(): Promise<void> {
+  const now = Date.now();
+  const result = await storage.local.get(PENDING_TXS_KEY) as Record<string, PendingTx[] | undefined>;
+  const pending: PendingTx[] = result[PENDING_TXS_KEY] || [];
+
+  // Age thresholds in ms (conservative to avoid removing too early)
+  const ageThresholds: Record<string, number> = {
+    xmr: 30 * 60 * 1000, // 30 minutes for XMR
+    wow: 5 * 60 * 1000,  // 5 minutes for WOW
+  };
+
+  const updated = pending.filter(tx => {
+    const threshold = ageThresholds[tx.asset] || 30 * 60 * 1000;
+    const age = now - tx.timestamp;
+    if (age > threshold) {
+      console.log(`[PendingTx] Removing old pending tx ${tx.txHash} (age: ${Math.round(age / 60000)}min)`);
+      return false;
+    }
+    return true;
+  });
+
+  if (updated.length < pending.length) {
+    await storage.local.set({ [PENDING_TXS_KEY]: updated });
+  }
+}
+
+/**
+ * Get pending outgoing transactions for an asset.
+ * Also cleans up old pending transactions that should be confirmed by now.
+ */
+async function getPendingTxs(asset: AssetType): Promise<PendingTx[]> {
+  // Clean up old pending txs first
+  await cleanupOldPendingTxs();
+
+  const result = await storage.local.get(PENDING_TXS_KEY) as Record<string, PendingTx[] | undefined>;
+  const pending: PendingTx[] = result[PENDING_TXS_KEY] || [];
+  return pending.filter(tx => tx.asset === asset);
+}
+
+/**
+ * Remove a pending transaction by hash (when confirmed).
+ */
+async function removePendingTx(txHash: string): Promise<void> {
+  const result = await storage.local.get(PENDING_TXS_KEY) as Record<string, PendingTx[] | undefined>;
+  const pending: PendingTx[] = result[PENDING_TXS_KEY] || [];
+  const updated = pending.filter(tx => tx.txHash !== txHash);
+  await storage.local.set({ [PENDING_TXS_KEY]: updated });
+  if (updated.length < pending.length) {
+    console.log(`[PendingTx] Removed confirmed tx: ${txHash}`);
+  }
+}
+
+/**
+ * Get total pending outgoing amount for an asset.
+ */
+async function getPendingOutgoingAmount(asset: AssetType): Promise<number> {
+  const pending = await getPendingTxs(asset);
+  return pending.reduce((sum, tx) => sum + tx.amount + tx.fee, 0);
 }
 
 /**
@@ -235,6 +326,15 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
 
     case 'ESTIMATE_FEE':
       return handleEstimateFee(message.asset);
+
+    case 'GET_WALLET_KEYS':
+      return handleGetWalletKeys(message.asset);
+
+    case 'ADD_PENDING_TX':
+      return handleAddPendingTx(message.txHash, message.asset, message.amount, message.fee);
+
+    case 'GET_PENDING_TXS':
+      return handleGetPendingTxs(message.asset);
 
     default:
       return { success: false, error: 'Unknown message type' };
@@ -1331,6 +1431,82 @@ async function handleEstimateFee(
       fast: result.data!.fast,
       normal: result.data!.normal,
       slow: result.data!.slow,
+    },
+  };
+}
+
+/**
+ * Get wallet keys for XMR/WOW (needed for client-side tx signing).
+ * Returns address, view key, and spend key.
+ */
+async function handleGetWalletKeys(
+  asset: 'xmr' | 'wow'
+): Promise<MessageResponse<{ address: string; viewKey: string; spendKey: string }>> {
+  if (!isUnlocked) {
+    return { success: false, error: 'Wallet is locked' };
+  }
+
+  const spendKey = unlockedKeys.get(asset);
+  const viewKey = unlockedViewKeys.get(asset);
+
+  if (!spendKey || !viewKey) {
+    return { success: false, error: `No ${asset} keys available` };
+  }
+
+  const state = await getWalletState();
+  const key = state.keys[asset];
+  if (!key) {
+    return { success: false, error: `No ${asset} key found` };
+  }
+
+  // Get address
+  const address = getAddressForAsset(asset, key);
+
+  return {
+    success: true,
+    data: {
+      address,
+      viewKey: bytesToHex(viewKey),
+      spendKey: bytesToHex(spendKey),
+    },
+  };
+}
+
+/**
+ * Add a pending outgoing transaction to track.
+ */
+async function handleAddPendingTx(
+  txHash: string,
+  asset: AssetType,
+  amount: number,
+  fee: number
+): Promise<MessageResponse<{ added: boolean }>> {
+  await addPendingTx({
+    txHash,
+    asset,
+    amount,
+    fee,
+    timestamp: Date.now(),
+  });
+  return { success: true, data: { added: true } };
+}
+
+/**
+ * Get pending outgoing transactions for an asset.
+ */
+async function handleGetPendingTxs(
+  asset: AssetType
+): Promise<MessageResponse<{ pending: Array<{ txHash: string; amount: number; fee: number; timestamp: number }> }>> {
+  const pending = await getPendingTxs(asset);
+  return {
+    success: true,
+    data: {
+      pending: pending.map(tx => ({
+        txHash: tx.txHash,
+        amount: tx.amount,
+        fee: tx.fee,
+        timestamp: tx.timestamp,
+      })),
     },
   };
 }

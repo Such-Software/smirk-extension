@@ -26,6 +26,15 @@ interface TxHistoryEntry {
   fee?: number;
 }
 
+// Pending outgoing transaction (not yet confirmed)
+interface PendingTx {
+  txHash: string;
+  asset: AssetType;
+  amount: number;
+  fee: number;
+  timestamp: number;
+}
+
 export function WalletView({ onLock }: { onLock: () => void }) {
   const [activeAsset, setActiveAsset] = useState<AssetType>('btc');
   const [screen, setScreen] = useState<WalletScreen>('main');
@@ -52,6 +61,14 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     grin: null,
   });
   const [loadingHistory, setLoadingHistory] = useState(false);
+  // Pending outgoing amounts (for XMR/WOW - not yet confirmed txs)
+  const [pendingOutgoing, setPendingOutgoing] = useState<Record<AssetType, number>>({
+    btc: 0,
+    ltc: 0,
+    xmr: 0,
+    wow: 0,
+    grin: 0,
+  });
 
   const availableAssets: AssetType[] = ['btc', 'ltc', 'xmr', 'wow', 'grin'];
 
@@ -120,6 +137,18 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     if (loadingBalance === asset) return; // Already loading
     setLoadingBalance(asset);
 
+    // Note: For XMR/WOW, the backend now includes mempool spent_outputs in balance response,
+    // so we don't need local pending tx tracking. Keep this for future BTC/LTC use.
+    // if (asset === 'btc' || asset === 'ltc') {
+    //   try {
+    //     const pendingTxs = await sendMessage<PendingTx[]>({ type: 'GET_PENDING_TXS', asset });
+    //     const totalPending = pendingTxs.reduce((sum, tx) => sum + tx.amount + tx.fee, 0);
+    //     setPendingOutgoing((prev) => ({ ...prev, [asset]: totalPending }));
+    //   } catch (err) {
+    //     console.error(`Failed to fetch pending txs for ${asset}:`, err);
+    //   }
+    // }
+
     try {
       const result = await sendMessage<BalanceResponse>({ type: 'GET_BALANCE', asset });
 
@@ -128,34 +157,54 @@ export function WalletView({ onLock }: { onLock: () => void }) {
         // Run client-side key image verification for XMR/WOW spent outputs
         console.log(`[Balance] Verifying ${asset} spent outputs...`);
 
-        // NOTE: total_received from LWS includes mempool transactions!
-        // We need to subtract pending_balance to get confirmed-only for verification
-        const confirmedReceived = result.total_received - result.pending_balance;
-
+        // Calculate true balance:
+        // total_received includes ALL receives (confirmed + mempool, including change)
+        // spent_outputs includes ALL spends (confirmed + mempool)
+        // verified_balance = total_received - verified_spent_amount
         const verified = await calculateVerifiedBalance(
-          confirmedReceived,
+          result.total_received,
           result.spent_outputs,
           result.viewKeyHex,
           result.publicSpendKey,
           result.spendKeyHex
         );
 
+        // pending_balance from LWS is the NET change from mempool txs
+        // Can be negative for outgoing (spent > change received)
+        // Can be positive for incoming (received > 0)
+        // For display, we show:
+        // - confirmed = verified_balance - max(0, pending_balance) (exclude pending incoming)
+        // - unconfirmed = pending_balance (can be negative for outgoing)
+        //
+        // Actually simpler: verified_balance already accounts for mempool spends,
+        // so we just need to show the verified balance directly.
+        // The pending_balance shows the net change that's still unconfirmed.
+
         console.log(`[Balance] ${asset} verified:`, {
           totalReceived: result.total_received,
-          confirmedReceived,
           pendingBalance: result.pending_balance,
+          lockedBalance: result.locked_balance,
+          spentOutputsCount: result.spent_outputs.length,
+          spentOutputsAmounts: result.spent_outputs.map(o => o.amount),
           verifiedSpentAmount: verified.verifiedSpentAmount,
           verifiedSpentCount: verified.verifiedSpentCount,
-          confirmedBalance: verified.balance,
+          verifiedBalance: verified.balance,
           hashToEcImplemented: verified.hashToEcImplemented,
         });
+
+        // The verified.balance is the true spendable balance (total_received - verified_spends)
+        // locked_balance from LWS represents outputs still in unlock period (10 blocks)
+        // For cleaner UX, show:
+        // - confirmed: unlocked balance (verified - locked)
+        // - unconfirmed: pending net change from mempool
+        const unlockedBalance = Math.max(0, verified.balance - result.locked_balance);
 
         setBalances((prev) => ({
           ...prev,
           [asset]: {
-            confirmed: verified.balance,
+            confirmed: unlockedBalance,
             unconfirmed: result.pending_balance,
-            total: verified.balance + result.pending_balance,
+            total: verified.balance,
             error: verified.hashToEcImplemented ? undefined : 'Key image verification failed',
           },
         }));
@@ -211,6 +260,12 @@ export function WalletView({ onLock }: { onLock: () => void }) {
 
   const currentAddress = addresses[activeAsset];
   const currentBalance = balances[activeAsset];
+  // Note: For XMR/WOW, the backend now includes mempool spent_outputs, so the confirmed
+  // balance already accounts for pending outgoing transactions.
+  // The local pendingOutgoing tracking is kept for future BTC/LTC use but not applied to XMR/WOW.
+  const isXmrWow = activeAsset === 'xmr' || activeAsset === 'wow';
+  const currentPendingOutgoing = isXmrWow ? 0 : (pendingOutgoing[activeAsset] || 0);
+  const adjustedConfirmed = Math.max(0, (currentBalance?.confirmed ?? 0) - currentPendingOutgoing);
 
   // Show settings view
   if (screen === 'settings') {
@@ -230,10 +285,19 @@ export function WalletView({ onLock }: { onLock: () => void }) {
 
   // Show send view
   if (screen === 'send') {
+    // Pass adjusted balance (accounting for pending outgoing) to SendView
+    const adjustedBalance: BalanceData | null = currentBalance
+      ? {
+          confirmed: adjustedConfirmed,
+          unconfirmed: currentBalance.unconfirmed,
+          total: adjustedConfirmed + currentBalance.unconfirmed,
+          error: currentBalance.error,
+        }
+      : null;
     return (
       <SendView
         asset={activeAsset}
-        balance={currentBalance}
+        balance={adjustedBalance}
         onBack={() => setScreen('main')}
         onSent={() => {
           setScreen('main');
@@ -288,13 +352,13 @@ export function WalletView({ onLock }: { onLock: () => void }) {
           </div>
           <div
             class="balance-amount"
-            title={currentBalance ? `Total: ${formatBalanceFull(currentBalance.total, activeAsset)} ${ASSETS[activeAsset].symbol}\nConfirmed: ${formatBalanceFull(currentBalance.confirmed, activeAsset)}` : undefined}
+            title={currentBalance ? `Total: ${formatBalanceFull(currentBalance.total, activeAsset)} ${ASSETS[activeAsset].symbol}\nConfirmed: ${formatBalanceFull(currentBalance.confirmed, activeAsset)}${currentPendingOutgoing > 0 ? `\nPending send: -${formatBalanceFull(currentPendingOutgoing, activeAsset)}` : ''}` : undefined}
             style={{ cursor: currentBalance ? 'help' : 'default' }}
           >
             {loadingBalance === activeAsset ? (
               <span class="spinner" style={{ width: '16px', height: '16px' }} />
             ) : currentBalance ? (
-              `${formatBalance(currentBalance.confirmed, activeAsset)} ${ASSETS[activeAsset].symbol}`
+              `${formatBalance(adjustedConfirmed, activeAsset)} ${ASSETS[activeAsset].symbol}`
             ) : (
               `0.${'0'.repeat(DISPLAY_DECIMALS[activeAsset])} ${ASSETS[activeAsset].symbol}`
             )}
@@ -304,11 +368,12 @@ export function WalletView({ onLock }: { onLock: () => void }) {
               {currentBalance.error === 'Offline' ? 'Offline - cached value' : currentBalance.error}
             </div>
           )}
+          {/* Show pending balance (can be positive for incoming or negative for outgoing) */}
           {currentBalance && !currentBalance.error && currentBalance.unconfirmed !== 0 && (
             <div
               class="balance-usd"
-              style={{ fontSize: '11px', color: '#f59e0b' }}
-              title={`${formatBalanceFull(currentBalance.unconfirmed, activeAsset)} ${ASSETS[activeAsset].symbol}`}
+              style={{ fontSize: '11px', color: currentBalance.unconfirmed < 0 ? '#ef4444' : '#f59e0b' }}
+              title={`${formatBalanceFull(Math.abs(currentBalance.unconfirmed), activeAsset)} ${ASSETS[activeAsset].symbol} ${currentBalance.unconfirmed < 0 ? 'outgoing' : 'incoming'}`}
             >
               {currentBalance.unconfirmed > 0 ? '+' : ''}
               {formatBalance(currentBalance.unconfirmed, activeAsset)} pending

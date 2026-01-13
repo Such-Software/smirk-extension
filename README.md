@@ -42,11 +42,17 @@ src/
 ├── popup/          # Main UI (Preact)
 ├── lib/
 │   ├── crypto.ts        # BIP39, BIP44 key derivation (secp256k1, ed25519)
-│   ├── monero-crypto.ts # Monero/Wownero key images, balance verification
+│   ├── xmr-tx.ts        # XMR/WOW transaction signing via smirk-wasm
+│   ├── monero-crypto.ts # XMR/WOW key image verification (calls smirk-wasm)
+│   ├── btc-tx.ts        # BTC/LTC transaction signing
 │   ├── api.ts           # Backend API client
 │   ├── browser.ts       # Cross-browser API abstraction (Chrome/Firefox)
 │   └── storage.ts       # Chrome storage helpers
 └── types/          # TypeScript types
+
+dist/wasm/          # smirk-wasm compiled to WebAssembly
+├── smirk_wasm.js       # JS bindings
+└── smirk_wasm_bg.wasm  # WASM binary
 ```
 
 ## Security Model
@@ -70,7 +76,7 @@ src/
 
 For Monero and Wownero, the backend returns `total_received` plus a list of candidate spent outputs detected by the Light Wallet Server. The extension verifies these client-side:
 
-1. **Key image computation**: For each candidate spent output, the extension computes the expected key image using:
+1. **Key image computation**: For each candidate spent output, smirk-wasm computes the expected key image using:
    - One-time private key: `x = Hs(aR || outputIndex) + b`
    - Key image: `KI = x * Hp(P)` where `Hp` is Monero's `hash_to_ec`
 
@@ -80,4 +86,4 @@ For Monero and Wownero, the backend returns `total_received` plus a list of cand
 
 This ensures the server cannot lie about spent funds - the balance is cryptographically verified using your private spend key, which never leaves the extension.
 
-**Implementation**: Pure JavaScript using `@noble/curves` and `@noble/hashes` (no WASM). Includes Monero's exact `ge_fromfe_frombytes_vartime` algorithm for the `hash_to_ec` operation.
+**Implementation**: Key image computation uses **smirk-wasm** (Rust compiled to WebAssembly) with the `monero-oxide` library for Monero's `hash_to_ec` operation. This ensures cryptographic correctness - the same implementation used by the broader Monero Rust ecosystem.

@@ -27,6 +27,13 @@ interface SmirkWasmExports {
     output_index: number,
     output_key: string
   ): string;
+  // Compute key image without needing output_key (for verifying LWS spent outputs)
+  compute_key_image(
+    view_key: string,
+    spend_key: string,
+    tx_pub_key: string,
+    output_index: number
+  ): string;
 }
 
 // WASM module instance - lazy loaded
@@ -216,8 +223,8 @@ async function buildInputsWithDecoys(
     throw new Error(response.error || 'Failed to get random outputs');
   }
 
-  // RingCT uses amount "0", so we get one pool of decoys
-  const decoyPool = response.data.amount_outs[0]?.outputs || [];
+  // Backend returns flat array of decoys
+  const decoyPool = response.data.outputs;
 
   if (decoyPool.length < decoyCount * outputs.length) {
     throw new Error(

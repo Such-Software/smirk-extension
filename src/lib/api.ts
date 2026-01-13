@@ -334,13 +334,10 @@ export class SmirkApi {
     asset: 'xmr' | 'wow',
     count: number
   ): Promise<ApiResponse<{
-    amount_outs: Array<{
-      amount: number;
-      outputs: Array<{
-        global_index: number;
-        public_key: string;
-        rct: string;
-      }>;
+    outputs: Array<{
+      global_index: number;
+      public_key: string;
+      rct: string;
     }>;
   }>> {
     return this.request('/wallet/lws/decoys', {

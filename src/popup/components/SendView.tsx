@@ -8,6 +8,11 @@ import {
   sendMessage,
   type BalanceData,
 } from '../shared';
+import {
+  sendTransaction as sendXmrTransaction,
+  validateAddress as validateXmrAddress,
+  type XmrAsset,
+} from '@/lib/xmr-tx';
 
 interface FeeEstimate {
   fast: number | null;
@@ -38,12 +43,14 @@ export function SendView({
   const [error, setError] = useState('');
   const [txid, setTxid] = useState<string | null>(null);
 
-  // Only BTC/LTC supported for now
-  const isSupportedAsset = asset === 'btc' || asset === 'ltc';
+  // Supported assets
+  const isUtxoAsset = asset === 'btc' || asset === 'ltc';
+  const isCryptonoteAsset = asset === 'xmr' || asset === 'wow';
+  const isSupportedAsset = isUtxoAsset || isCryptonoteAsset;
 
-  // Fetch fee estimates on mount
+  // Fetch fee estimates on mount (only for UTXO assets)
   useEffect(() => {
-    if (isSupportedAsset) {
+    if (isUtxoAsset) {
       fetchFeeEstimate();
     }
   }, [asset]);
@@ -108,7 +115,7 @@ export function SendView({
       return;
     }
 
-    // Convert to atomic units (satoshis)
+    // Convert to atomic units
     const amountAtomic = Math.round(amountFloat * divisor);
 
     if (amountAtomic > availableBalance) {
@@ -116,24 +123,64 @@ export function SendView({
       return;
     }
 
-    const feeRateNum = parseInt(feeRate);
-    if (isNaN(feeRateNum) || feeRateNum < 1) {
-      setError('Invalid fee rate');
-      return;
-    }
-
     setSending(true);
 
     try {
-      const result = await sendMessage<{ txid: string; fee: number }>({
-        type: 'SEND_TX',
-        asset: asset as 'btc' | 'ltc',
-        recipientAddress: recipientAddress.trim(),
-        amount: amountAtomic,
-        feeRate: feeRateNum,
-      });
+      if (isCryptonoteAsset) {
+        // XMR/WOW: Use client-side WASM signing
+        // Validate address first
+        const addrValidation = await validateXmrAddress(recipientAddress.trim());
+        if (!addrValidation.valid) {
+          setError(addrValidation.error || 'Invalid address');
+          setSending(false);
+          return;
+        }
 
-      setTxid(result.txid);
+        // Get wallet keys from background
+        const walletData = await sendMessage<{
+          address: string;
+          viewKey: string;
+          spendKey: string;
+        }>({
+          type: 'GET_WALLET_KEYS',
+          asset,
+        });
+
+        // Send transaction using WASM
+        const result = await sendXmrTransaction(
+          asset as XmrAsset,
+          walletData.address,
+          walletData.viewKey,
+          walletData.spendKey,
+          recipientAddress.trim(),
+          amountAtomic,
+          'mainnet'
+        );
+
+        setTxid(result.txHash);
+
+        // Note: No need to record pending tx locally - the backend now includes mempool
+        // spent_outputs in the balance response, so the next balance refresh will show
+        // the correct amount automatically.
+      } else {
+        // BTC/LTC: Use backend signing
+        const feeRateNum = parseInt(feeRate);
+        if (isNaN(feeRateNum) || feeRateNum < 1) {
+          setError('Invalid fee rate');
+          setSending(false);
+          return;
+        }
+
+        const result = await sendMessage<{ txid: string; fee: number }>({
+          type: 'SEND_TX',
+          asset: asset as 'btc' | 'ltc',
+          recipientAddress: recipientAddress.trim(),
+          amount: amountAtomic,
+          feeRate: feeRateNum,
+        });
+
+        setTxid(result.txid);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send transaction');
     } finally {
@@ -232,7 +279,6 @@ export function SendView({
             <h3 style={{ marginBottom: '8px' }}>Coming Soon</h3>
             <p style={{ color: '#a1a1aa', fontSize: '13px' }}>
               Sending {ASSETS[asset].name} is not yet supported.
-              {asset === 'xmr' || asset === 'wow' ? ' Cryptonote transactions require additional implementation.' : ''}
               {asset === 'grin' ? ' Grin requires interactive slatepack transactions.' : ''}
             </p>
           </div>
@@ -264,7 +310,12 @@ export function SendView({
               <input
                 type="text"
                 class="form-input"
-                placeholder={asset === 'btc' ? 'bc1q...' : 'ltc1q...'}
+                placeholder={
+                  asset === 'btc' ? 'bc1q...' :
+                  asset === 'ltc' ? 'ltc1q...' :
+                  asset === 'xmr' ? '4...' :
+                  asset === 'wow' ? 'Wo...' : ''
+                }
                 value={recipientAddress}
                 onInput={(e) => setRecipientAddress((e.target as HTMLInputElement).value)}
                 disabled={sending}
@@ -299,87 +350,105 @@ export function SendView({
               </div>
             </div>
 
-            {/* Fee Rate */}
-            <div class="form-group">
-              <label style={{ display: 'block', fontSize: '12px', color: '#a1a1aa', marginBottom: '4px' }}>
-                Fee Rate (sat/vB)
-              </label>
-              {loadingFees ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 0' }}>
-                  <span class="spinner" style={{ width: '14px', height: '14px' }} />
-                  <span style={{ fontSize: '12px', color: '#71717a' }}>Fetching fee estimates...</span>
-                </div>
-              ) : (
-                <>
-                  {/* Speed selection buttons */}
-                  <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
-                    {(['slow', 'normal', 'fast'] as const).map((speed) => {
-                      const rate = feeEstimate?.[speed] ?? null;
-                      const label = speed === 'fast' ? 'Fast' : speed === 'normal' ? 'Normal' : 'Slow';
-                      const blocks = speed === 'fast' ? '~1-2' : speed === 'normal' ? '~3-6' : '~12+';
-                      return (
-                        <button
-                          key={speed}
-                          type="button"
-                          class={`btn ${feeSpeed === speed ? 'btn-primary' : 'btn-secondary'}`}
-                          style={{
-                            flex: 1,
-                            padding: '6px 4px',
-                            fontSize: '10px',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            alignItems: 'center',
-                            gap: '2px',
-                          }}
-                          onClick={() => setFeeSpeed(speed)}
-                          disabled={sending || rate === null}
-                        >
-                          <span>{label}</span>
-                          <span style={{ opacity: 0.7 }}>
-                            {rate !== null ? `${Math.ceil(rate)}` : '-'} sat/vB
-                          </span>
-                          <span style={{ opacity: 0.5, fontSize: '9px' }}>{blocks} blocks</span>
-                        </button>
-                      );
-                    })}
-                    <button
-                      type="button"
-                      class={`btn ${feeSpeed === 'custom' ? 'btn-primary' : 'btn-secondary'}`}
-                      style={{
-                        flex: 1,
-                        padding: '6px 4px',
-                        fontSize: '10px',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      }}
-                      onClick={() => setFeeSpeed('custom')}
-                      disabled={sending}
-                    >
-                      <span>Custom</span>
-                    </button>
+            {/* Fee Rate - only for UTXO assets */}
+            {isUtxoAsset && (
+              <div class="form-group">
+                <label style={{ display: 'block', fontSize: '12px', color: '#a1a1aa', marginBottom: '4px' }}>
+                  Fee Rate (sat/vB)
+                </label>
+                {loadingFees ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 0' }}>
+                    <span class="spinner" style={{ width: '14px', height: '14px' }} />
+                    <span style={{ fontSize: '12px', color: '#71717a' }}>Fetching fee estimates...</span>
                   </div>
-                  {/* Manual input (always visible but highlighted when custom) */}
-                  <input
-                    type="number"
-                    class="form-input"
-                    placeholder="1"
-                    value={feeRate}
-                    onInput={(e) => {
-                      setFeeRate((e.target as HTMLInputElement).value);
-                      setFeeSpeed('custom');
-                    }}
-                    disabled={sending}
-                    min="1"
-                    style={{
-                      fontFamily: 'monospace',
-                      opacity: feeSpeed === 'custom' ? 1 : 0.7,
-                    }}
-                  />
-                </>
-              )}
-            </div>
+                ) : (
+                  <>
+                    {/* Speed selection buttons */}
+                    <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
+                      {(['slow', 'normal', 'fast'] as const).map((speed) => {
+                        const rate = feeEstimate?.[speed] ?? null;
+                        const label = speed === 'fast' ? 'Fast' : speed === 'normal' ? 'Normal' : 'Slow';
+                        const blocks = speed === 'fast' ? '~1-2' : speed === 'normal' ? '~3-6' : '~12+';
+                        return (
+                          <button
+                            key={speed}
+                            type="button"
+                            class={`btn ${feeSpeed === speed ? 'btn-primary' : 'btn-secondary'}`}
+                            style={{
+                              flex: 1,
+                              padding: '6px 4px',
+                              fontSize: '10px',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'center',
+                              gap: '2px',
+                            }}
+                            onClick={() => setFeeSpeed(speed)}
+                            disabled={sending || rate === null}
+                          >
+                            <span>{label}</span>
+                            <span style={{ opacity: 0.7 }}>
+                              {rate !== null ? `${Math.ceil(rate)}` : '-'} sat/vB
+                            </span>
+                            <span style={{ opacity: 0.5, fontSize: '9px' }}>{blocks} blocks</span>
+                          </button>
+                        );
+                      })}
+                      <button
+                        type="button"
+                        class={`btn ${feeSpeed === 'custom' ? 'btn-primary' : 'btn-secondary'}`}
+                        style={{
+                          flex: 1,
+                          padding: '6px 4px',
+                          fontSize: '10px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                        onClick={() => setFeeSpeed('custom')}
+                        disabled={sending}
+                      >
+                        <span>Custom</span>
+                      </button>
+                    </div>
+                    {/* Manual input (always visible but highlighted when custom) */}
+                    <input
+                      type="number"
+                      class="form-input"
+                      placeholder="1"
+                      value={feeRate}
+                      onInput={(e) => {
+                        setFeeRate((e.target as HTMLInputElement).value);
+                        setFeeSpeed('custom');
+                      }}
+                      disabled={sending}
+                      min="1"
+                      style={{
+                        fontFamily: 'monospace',
+                        opacity: feeSpeed === 'custom' ? 1 : 0.7,
+                      }}
+                    />
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* XMR/WOW fee notice */}
+            {isCryptonoteAsset && (
+              <div
+                style={{
+                  background: '#27272a',
+                  borderRadius: '8px',
+                  padding: '12px',
+                  marginBottom: '16px',
+                  fontSize: '12px',
+                  color: '#a1a1aa',
+                }}
+              >
+                Network fee will be calculated automatically based on transaction size.
+              </div>
+            )}
 
             {error && (
               <p style={{ color: '#ef4444', fontSize: '13px', marginBottom: '12px' }}>{error}</p>

@@ -161,7 +161,10 @@ export type MessageType =
   | { type: 'UPDATE_SETTINGS'; settings: Partial<UserSettings> }
   | { type: 'RESET_AUTO_LOCK_TIMER' }
   | { type: 'GET_HISTORY'; asset: 'btc' | 'ltc' }
-  | { type: 'ESTIMATE_FEE'; asset: 'btc' | 'ltc' };
+  | { type: 'ESTIMATE_FEE'; asset: 'btc' | 'ltc' }
+  | { type: 'GET_WALLET_KEYS'; asset: 'xmr' | 'wow' }
+  | { type: 'ADD_PENDING_TX'; txHash: string; asset: AssetType; amount: number; fee: number }
+  | { type: 'GET_PENDING_TXS'; asset: AssetType };
 
 export type MessageResponse<T = unknown> =
   | { success: true; data: T }

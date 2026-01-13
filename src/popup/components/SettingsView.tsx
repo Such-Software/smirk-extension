@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'preact/hooks';
 import type { AssetType, UserSettings } from '@/types';
 import { ASSETS, sendMessage } from '../shared';
+import { initWasm, getWasmVersion } from '@/lib/xmr-tx';
 
 const AUTO_LOCK_OPTIONS = [
   { value: 1, label: '1 minute' },
@@ -17,6 +18,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [wasmStatus, setWasmStatus] = useState<string | null>(null);
 
   useEffect(() => {
     loadSettings();
@@ -173,6 +175,39 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
                   </option>
                 ))}
               </select>
+            </div>
+
+            {/* Debug Section */}
+            <div class="section-title">Debug</div>
+            <div
+              style={{
+                background: '#27272a',
+                borderRadius: '8px',
+                padding: '12px',
+                marginBottom: '16px',
+              }}
+            >
+              <button
+                class="btn btn-secondary"
+                style={{ width: '100%', marginBottom: '8px' }}
+                onClick={async () => {
+                  setWasmStatus('Loading...');
+                  try {
+                    await initWasm();
+                    const version = await getWasmVersion();
+                    setWasmStatus(`WASM OK - v${version}`);
+                  } catch (err) {
+                    setWasmStatus(`Error: ${(err as Error).message}`);
+                  }
+                }}
+              >
+                Test WASM Loading
+              </button>
+              {wasmStatus && (
+                <div style={{ fontSize: '12px', color: wasmStatus.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
+                  {wasmStatus}
+                </div>
+              )}
             </div>
 
             {/* Version Info */}

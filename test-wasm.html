@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WASM Loading Test</title>
+</head>
+<body>
+  <h1>smirk-wasm Loading Test</h1>
+  <pre id="output">Loading...</pre>
+
+  <script type="module">
+    const output = document.getElementById('output');
+
+    function log(msg) {
+      output.textContent += '\n' + msg;
+      console.log(msg);
+    }
+
+    async function test() {
+      output.textContent = 'Starting WASM test...\n';
+
+      try {
+        // Import the WASM JS module
+        log('1. Importing smirk_wasm.js...');
+        const wasm = await import('./dist/wasm/smirk_wasm.js');
+        log('   OK - module imported');
+
+        // Initialize with the .wasm file
+        log('2. Initializing WASM binary...');
+        await wasm.default('./dist/wasm/smirk_wasm_bg.wasm');
+        log('   OK - WASM initialized');
+
+        // Test basic functions
+        log('3. Testing test()...');
+        const testResult = wasm.test();
+        log('   Result: ' + testResult);
+
+        log('4. Testing version()...');
+        const version = wasm.version();
+        log('   Version: ' + version);
+
+        log('5. Testing validate_address() with XMR mainnet address...');
+        const xmrAddr = '4AdUndXHHZ6cfufTMvppY6JwXNouMBzSkbLYfpAV5Usx3skxNgYeYTRj5UzqtReoS44qo9mtmXCqY45DJ852K5Jv2684Rge';
+        const addrResult = wasm.validate_address(xmrAddr);
+        log('   Result: ' + addrResult);
+
+        log('6. Testing estimate_fee()...');
+        const feeResult = wasm.estimate_fee(2, 2, BigInt(20000), BigInt(10000));
+        log('   Result: ' + feeResult);
+
+        log('\n=== ALL TESTS PASSED ===');
+
+      } catch (err) {
+        log('\nERROR: ' + err.message);
+        console.error(err);
+      }
+    }
+
+    test();
+  </script>
+</body>
+</html>

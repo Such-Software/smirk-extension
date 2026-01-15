@@ -19,11 +19,15 @@ import { SettingsView } from './SettingsView';
 // Storage key for persisting active asset tab
 const ACTIVE_ASSET_KEY = 'smirk_activeAsset';
 
-// Transaction history entry
+// Transaction history entry (common format for all assets)
 interface TxHistoryEntry {
   txid: string;
   height: number;
   fee?: number;
+  // XMR/WOW specific
+  is_pending?: boolean;
+  total_received?: number;
+  total_sent?: number;
 }
 
 // Pending outgoing transaction (not yet confirmed)
@@ -111,8 +115,8 @@ export function WalletView({ onLock }: { onLock: () => void }) {
   useEffect(() => {
     if (addresses[activeAsset]) {
       fetchBalance(activeAsset);
-      // Only fetch history for BTC/LTC (supported assets)
-      if (activeAsset === 'btc' || activeAsset === 'ltc') {
+      // Fetch history for BTC/LTC/XMR/WOW (Grin not supported yet)
+      if (activeAsset === 'btc' || activeAsset === 'ltc' || activeAsset === 'xmr' || activeAsset === 'wow') {
         fetchHistory(activeAsset);
       }
     }
@@ -241,7 +245,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     }
   };
 
-  const fetchHistory = async (asset: 'btc' | 'ltc') => {
+  const fetchHistory = async (asset: 'btc' | 'ltc' | 'xmr' | 'wow') => {
     if (loadingHistory) return;
     setLoadingHistory(true);
 
@@ -428,46 +432,67 @@ export function WalletView({ onLock }: { onLock: () => void }) {
           </div>
         ) : history[activeAsset] && history[activeAsset]!.length > 0 ? (
           <div class="tx-list">
-            {history[activeAsset]!.slice(0, 10).map((tx) => (
-              <div
-                key={tx.txid}
-                class="tx-item"
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  padding: '8px 12px',
-                  background: '#27272a',
-                  borderRadius: '6px',
-                  marginBottom: '6px',
-                  cursor: 'pointer',
-                }}
-                onClick={() => {
-                  // Copy txid to clipboard
-                  navigator.clipboard.writeText(tx.txid);
-                }}
-                title={`Click to copy\n${tx.txid}`}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontFamily: 'monospace',
-                      fontSize: '11px',
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}
-                  >
-                    {tx.txid.substring(0, 12)}...{tx.txid.substring(tx.txid.length - 8)}
+            {history[activeAsset]!.slice(0, 10).map((tx) => {
+              // Determine if incoming or outgoing for XMR/WOW
+              const isXmrWow = activeAsset === 'xmr' || activeAsset === 'wow';
+              const received = tx.total_received ?? 0;
+              const sent = tx.total_sent ?? 0;
+              const isIncoming = isXmrWow ? received > sent : true; // BTC/LTC: we don't know direction yet
+              const isPending = tx.is_pending || tx.height === 0;
+
+              return (
+                <div
+                  key={tx.txid}
+                  class="tx-item"
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '8px 12px',
+                    background: '#27272a',
+                    borderRadius: '6px',
+                    marginBottom: '6px',
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => {
+                    // Copy txid to clipboard
+                    navigator.clipboard.writeText(tx.txid);
+                  }}
+                  title={`Click to copy\n${tx.txid}`}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      style={{
+                        fontFamily: 'monospace',
+                        fontSize: '11px',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {tx.txid.substring(0, 12)}...{tx.txid.substring(tx.txid.length - 8)}
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#71717a' }}>
+                      {isPending ? 'Pending' : `Block ${tx.height}`}
+                    </div>
                   </div>
-                  <div style={{ fontSize: '10px', color: '#71717a' }}>
-                    {tx.height > 0 ? `Block ${tx.height}` : 'Pending'}
-                  </div>
+                  {isXmrWow && (received > 0 || sent > 0) && (
+                    <div
+                      style={{
+                        fontSize: '11px',
+                        color: isIncoming ? '#22c55e' : '#ef4444',
+                        fontWeight: 500,
+                      }}
+                    >
+                      {isIncoming ? '+' : '-'}
+                      {formatBalance(isIncoming ? received : sent, activeAsset)}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
-        ) : (activeAsset === 'btc' || activeAsset === 'ltc') ? (
+        ) : (activeAsset === 'btc' || activeAsset === 'ltc' || activeAsset === 'xmr' || activeAsset === 'wow') ? (
           <div class="empty-state">
             <div class="empty-icon">📭</div>
             <div class="empty-title">No transactions yet</div>

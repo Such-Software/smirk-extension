@@ -45,6 +45,11 @@ src/
 │   ├── xmr-tx.ts        # XMR/WOW transaction signing via smirk-wasm
 │   ├── monero-crypto.ts # XMR/WOW key image verification (calls smirk-wasm)
 │   ├── btc-tx.ts        # BTC/LTC transaction signing
+│   ├── grin/            # Grin wallet (client-side WASM)
+│   │   ├── index.ts         # TypeScript API wrapper
+│   │   ├── esm/init.ts      # ES module loader for MWC wallet
+│   │   ├── *.wasm           # secp256k1-zkp, Ed25519, X25519, BLAKE2b
+│   │   └── *.js             # MWC wallet JS files
 │   ├── api.ts           # Backend API client
 │   ├── browser.ts       # Cross-browser API abstraction (Chrome/Firefox)
 │   └── storage.ts       # Chrome storage helpers
@@ -70,7 +75,42 @@ dist/wasm/          # smirk-wasm compiled to WebAssembly
 | LTC | secp256k1 (BIP44) | Balance via Electrum |
 | XMR | ed25519 | View key registered with LWS, client-side key image verification |
 | WOW | ed25519 | Same as XMR |
-| GRIN | ed25519 | Slatepack addresses, balance via Owner API v3 |
+| GRIN | secp256k1 | Interactive transactions via slatepack, client-side WASM |
+
+## Grin Wallet (Client-side WASM)
+
+Grin uses Mimblewimble with interactive transactions. All cryptographic operations happen **client-side** in WebAssembly - keys never touch the backend.
+
+**Architecture:**
+- Based on [MWC Wallet](https://github.com/NicolasFlamel1/MWC-Wallet-Standalone) (MIT License)
+- WASM modules: secp256k1-zkp (ZK proofs), Ed25519 (addresses), X25519 (encryption), BLAKE2b (hashing)
+- Backend acts as relay only - stores/forwards slatepacks, broadcasts finalized transactions
+
+**Transaction Flow:**
+1. Sender builds slate S1 (WASM) → encodes as slatepack → sends to backend relay
+2. Recipient fetches slatepack → signs S2 (WASM) → sends signed slatepack to relay
+3. Sender fetches signed response → finalizes S3 (WASM) → sends finalized tx to relay
+4. Backend broadcasts finalized transaction to Grin network
+
+**API:**
+```typescript
+import { initGrinWallet, createSendSlate, signSlate, finalizeSlate, encodeSlatepack, decodeSlatepack } from '@/lib/grin';
+
+// Initialize wallet from BIP39 seed
+const keys = await initGrinWallet(seed);
+// keys.slatepackAddress - bech32-encoded address for receiving
+
+// Send flow
+const slate = await createSendSlate(keys, amount, fee, recipientAddress);
+const slatepack = await encodeSlatepack(keys, slate, recipientAddress);
+// POST slatepack to backend relay
+
+// Receive flow
+const decoded = await decodeSlatepack(keys, incomingSlatepack);
+const signed = await signSlate(keys, incomingSlatepack);
+const responseSlatepack = await encodeSlatepack(keys, signed);
+// POST responseSlatepack to backend relay
+```
 
 ## XMR/WOW Balance Verification
 

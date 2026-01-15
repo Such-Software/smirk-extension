@@ -45,7 +45,10 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["wasm/*"],
+      "resources": [
+        "src/lib/grin/*.wasm",
+        "src/lib/grin/*.js"
+      ],
       "matches": ["<all_urls>"]
     }
   ]

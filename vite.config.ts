@@ -32,7 +32,20 @@ function copyStaticAssets() {
         copyFileSync(`${wasmPkgDir}/smirk_wasm.js`, 'dist/wasm/smirk_wasm.js');
         copyFileSync(`${wasmPkgDir}/smirk_wasm_bg.wasm`, 'dist/wasm/smirk_wasm_bg.wasm');
       } catch (e) {
-        console.warn('Warning: Could not copy WASM files. Build smirk-wasm first.');
+        console.warn('Warning: Could not copy smirk-wasm files. Build smirk-wasm first.');
+      }
+
+      // Copy Grin WASM and JS files
+      mkdirSync('dist/src/lib/grin', { recursive: true });
+      const grinDir = 'src/lib/grin';
+      try {
+        for (const file of readdirSync(grinDir)) {
+          if (file.endsWith('.wasm') || file.endsWith('.js')) {
+            copyFileSync(`${grinDir}/${file}`, `dist/src/lib/grin/${file}`);
+          }
+        }
+      } catch (e) {
+        console.warn('Warning: Could not copy Grin files.', e);
       }
     },
   };

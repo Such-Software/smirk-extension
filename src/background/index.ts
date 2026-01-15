@@ -1388,11 +1388,12 @@ async function handleSendTx(
 }
 
 /**
- * Get transaction history for a BTC or LTC address.
+ * Get transaction history for any asset.
+ * BTC/LTC use Electrum, XMR/WOW use LWS.
  */
 async function handleGetHistory(
-  asset: 'btc' | 'ltc'
-): Promise<MessageResponse<{ transactions: Array<{ txid: string; height: number; fee?: number }> }>> {
+  asset: AssetType
+): Promise<MessageResponse<{ transactions: Array<{ txid: string; height: number; fee?: number; is_pending?: boolean; total_received?: number; total_sent?: number }> }>> {
   if (!isUnlocked) {
     return { success: false, error: 'Wallet is locked' };
   }
@@ -1404,13 +1405,39 @@ async function handleGetHistory(
   }
 
   const address = getAddressForAsset(asset, key);
-  const result = await api.getHistory(asset, address);
 
-  if (result.error) {
-    return { success: false, error: result.error };
+  if (asset === 'btc' || asset === 'ltc') {
+    // Electrum-based history
+    const result = await api.getHistory(asset, address);
+    if (result.error) {
+      return { success: false, error: result.error };
+    }
+    return { success: true, data: { transactions: result.data!.transactions } };
+  } else if (asset === 'xmr' || asset === 'wow') {
+    // LWS-based history
+    const viewKey = unlockedViewKeys.get(asset);
+    if (!viewKey) {
+      return { success: false, error: `No ${asset} view key available` };
+    }
+
+    const result = await api.getLwsHistory(asset, address, bytesToHex(viewKey));
+    if (result.error) {
+      return { success: false, error: result.error };
+    }
+
+    // Map LWS format to common format
+    const transactions = result.data!.transactions.map(tx => ({
+      txid: tx.txid,
+      height: tx.height,
+      is_pending: tx.is_pending,
+      total_received: tx.total_received,
+      total_sent: tx.total_sent,
+    }));
+
+    return { success: true, data: { transactions } };
+  } else {
+    return { success: false, error: `History not supported for ${asset}` };
   }
-
-  return { success: true, data: { transactions: result.data!.transactions } };
 }
 
 /**

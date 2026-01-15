@@ -364,6 +364,34 @@ export class SmirkApi {
   }
 
   /**
+   * Get transaction history for XMR or WOW address.
+   * Returns transactions from wallet registration (birthday) to present.
+   */
+  async getLwsHistory(
+    asset: 'xmr' | 'wow',
+    address: string,
+    viewKey: string
+  ): Promise<ApiResponse<{
+    asset: string;
+    transactions: Array<{
+      txid: string;
+      height: number;
+      timestamp: string;
+      is_pending: boolean;
+      total_received: number;
+      total_sent: number;
+      payment_id?: string;
+    }>;
+    scanned_height: number;
+    blockchain_height: number;
+  }>> {
+    return this.request('/wallet/lws/history', {
+      method: 'POST',
+      body: JSON.stringify({ asset, address, view_key: viewKey }),
+    });
+  }
+
+  /**
    * Register wallet with LWS for balance scanning.
    * @param asset - 'xmr' or 'wow'
    * @param address - Primary address

@@ -146,9 +146,9 @@ export async function initWasm(): Promise<SmirkWasmExports> {
       const wasm = await import(/* @vite-ignore */ wasmJsUrl);
 
       // Initialize WASM - the init function loads the .wasm file
-      // We need to provide the path to the .wasm file
+      // Pass as object to avoid deprecation warning (wasm-bindgen 0.2.99+)
       const wasmBinaryUrl = chrome.runtime.getURL('wasm/smirk_wasm_bg.wasm');
-      await wasm.default(wasmBinaryUrl);
+      await wasm.default({ module_or_path: wasmBinaryUrl });
 
       wasmExports = wasm as SmirkWasmExports;
       console.log('[xmr-tx] WASM initialized:', wasmExports.test(), 'version:', wasmExports.version());

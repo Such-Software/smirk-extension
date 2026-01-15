@@ -13,8 +13,8 @@ import type {
 // Vite environment variable type
 declare const import_meta_env: { VITE_API_BASE?: string };
 
-// API base URL - set via environment or default to production
-const API_BASE = (import.meta as unknown as { env: typeof import_meta_env }).env.VITE_API_BASE || 'http://127.0.0.1:8080/api/v1';
+// API base URL - set via environment or default to production server
+const API_BASE = (import.meta as unknown as { env: typeof import_meta_env }).env.VITE_API_BASE || 'http://45.84.59.17:8080/api/v1';
 
 /**
  * API client class with authentication support.

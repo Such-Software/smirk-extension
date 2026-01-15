@@ -204,10 +204,11 @@ export function grinSlatpackAddress(publicKey: Uint8Array): string {
     throw new Error('Grin slatepack address requires 32-byte ed25519 public key');
   }
 
-  // Convert to 5-bit words for bech32m
-  const words = bech32m.toWords(publicKey);
+  // Convert to 5-bit words for bech32 (NOT bech32m - Grin uses standard bech32)
+  const words = bech32.toWords(publicKey);
 
-  return bech32m.encode('grin', words);
+  // Use 1023 limit to allow longer addresses if needed
+  return bech32.encode('grin', words, 1023);
 }
 
 /**

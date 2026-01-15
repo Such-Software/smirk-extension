@@ -45,6 +45,8 @@ export interface WalletState {
   encryptedSeed?: string;
   // Salt used for seed encryption
   seedSalt?: string;
+  // Encrypted BIP39 seed (64 bytes) for Grin WASM operations
+  encryptedBip39Seed?: string;
   // Whether user has confirmed backup
   backupConfirmed?: boolean;
   // Wallet creation info (timestamp + block heights for efficient sync)
@@ -164,7 +166,13 @@ export type MessageType =
   | { type: 'ESTIMATE_FEE'; asset: 'btc' | 'ltc' }
   | { type: 'GET_WALLET_KEYS'; asset: 'xmr' | 'wow' }
   | { type: 'ADD_PENDING_TX'; txHash: string; asset: AssetType; amount: number; fee: number }
-  | { type: 'GET_PENDING_TXS'; asset: AssetType };
+  | { type: 'GET_PENDING_TXS'; asset: AssetType }
+  // Grin WASM wallet operations
+  | { type: 'INIT_GRIN_WALLET' }
+  | { type: 'GET_GRIN_PENDING_SLATEPACKS' }
+  | { type: 'GRIN_SIGN_SLATE'; relayId: string; slatepack: string }
+  | { type: 'GRIN_FINALIZE_SLATE'; relayId: string; slatepack: string }
+  | { type: 'GRIN_CANCEL_SLATE'; relayId: string };
 
 export type MessageResponse<T = unknown> =
   | { success: true; data: T }

@@ -499,20 +499,146 @@ export class SmirkApi {
     });
   }
 
+  // =========================================================================
+  // Grin Slatepack Relay (Non-custodial)
+  // =========================================================================
+
   /**
-   * Get Grin wallet balance from backend.
-   * Note: Grin uses a shared wallet on the backend due to Mimblewimble's
-   * interactive transaction nature.
+   * Store a slatepack for relay to recipient.
+   * The slatepack is built client-side - backend only stores it.
    */
-  async getGrinBalance(): Promise<ApiResponse<{
-    spendable: number;
-    awaiting_confirmation: number;
-    awaiting_finalization: number;
-    locked: number;
-    immature: number;
+  async createGrinRelay(params: {
+    senderUserId: string;
+    slatepack: string;
+    slateId: string;
+    amount: number;
+    recipientUserId?: string;
+    recipientAddress?: string;
+  }): Promise<ApiResponse<{
+    id: string;
+    expires_at: string;
+  }>> {
+    return this.request('/grin/relay', {
+      method: 'POST',
+      body: JSON.stringify({
+        sender_user_id: params.senderUserId,
+        slatepack: params.slatepack,
+        slate_id: params.slateId,
+        amount: params.amount,
+        recipient_user_id: params.recipientUserId,
+        recipient_address: params.recipientAddress,
+      }),
+    });
+  }
+
+  /**
+   * Get pending slatepacks for a user.
+   * Returns slates waiting to be signed (as recipient) or finalized (as sender).
+   */
+  async getGrinPendingSlatepacks(userId: string): Promise<ApiResponse<{
+    pending_to_sign: Array<{
+      id: string;
+      slate_id: string;
+      sender_user_id: string;
+      amount: number;
+      slatepack: string;
+      created_at: string;
+      expires_at: string;
+    }>;
+    pending_to_finalize: Array<{
+      id: string;
+      slate_id: string;
+      sender_user_id: string;
+      amount: number;
+      slatepack: string;
+      created_at: string;
+      expires_at: string;
+    }>;
+  }>> {
+    return this.request(`/grin/relay/pending/${userId}`, { method: 'GET' });
+  }
+
+  /**
+   * Submit a signed slatepack response (as recipient).
+   * Signing happens client-side - backend just stores the response.
+   */
+  async signGrinSlatepack(params: {
+    relayId: string;
+    userId: string;
+    signedSlatepack: string;
+  }): Promise<ApiResponse<{ success: boolean }>> {
+    return this.request('/grin/relay/sign', {
+      method: 'POST',
+      body: JSON.stringify({
+        relay_id: params.relayId,
+        user_id: params.userId,
+        signed_slatepack: params.signedSlatepack,
+      }),
+    });
+  }
+
+  /**
+   * Broadcast a finalized transaction (as sender).
+   * Finalization happens client-side - backend broadcasts to Grin network.
+   */
+  async finalizeGrinSlatepack(params: {
+    relayId: string;
+    userId: string;
+    finalizedSlatepack: string;
+  }): Promise<ApiResponse<{ broadcast: boolean }>> {
+    return this.request('/grin/relay/finalize', {
+      method: 'POST',
+      body: JSON.stringify({
+        relay_id: params.relayId,
+        user_id: params.userId,
+        finalized_slatepack: params.finalizedSlatepack,
+      }),
+    });
+  }
+
+  /**
+   * Cancel a pending slatepack relay.
+   */
+  async cancelGrinSlatepack(params: {
+    relayId: string;
+    userId: string;
+  }): Promise<ApiResponse<{ success: boolean }>> {
+    return this.request('/grin/relay/cancel', {
+      method: 'POST',
+      body: JSON.stringify({
+        relay_id: params.relayId,
+        user_id: params.userId,
+      }),
+    });
+  }
+
+  /**
+   * Get a user's Grin balance from transaction history.
+   */
+  async getGrinUserBalance(userId: string): Promise<ApiResponse<{
+    confirmed: number;
+    pending: number;
     total: number;
   }>> {
-    return this.request('/wallet/grin/balance', { method: 'GET' });
+    return this.request(`/wallet/grin/user/${userId}/balance`, { method: 'GET' });
+  }
+
+  /**
+   * Get a user's Grin transaction history.
+   */
+  async getGrinUserHistory(userId: string): Promise<ApiResponse<{
+    transactions: Array<{
+      id: string;
+      slate_id: string;
+      amount: number;
+      fee: number;
+      direction: 'send' | 'receive';
+      status: 'pending' | 'signed' | 'finalized' | 'confirmed' | 'cancelled';
+      counterparty_user_id: string | null;
+      created_at: string;
+    }>;
+  }>> {
+    return this.request(`/wallet/grin/user/${userId}/history`, { method: 'GET' });
   }
 
   // =========================================================================

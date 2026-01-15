@@ -15,6 +15,7 @@ import {
 import { ReceiveView } from './ReceiveView';
 import { SendView } from './SendView';
 import { SettingsView } from './SettingsView';
+import { GrinPendingView } from './GrinPendingView';
 
 // Storage key for persisting active asset tab
 const ACTIVE_ASSET_KEY = 'smirk_activeAsset';
@@ -115,10 +116,8 @@ export function WalletView({ onLock }: { onLock: () => void }) {
   useEffect(() => {
     if (addresses[activeAsset]) {
       fetchBalance(activeAsset);
-      // Fetch history for BTC/LTC/XMR/WOW (Grin not supported yet)
-      if (activeAsset === 'btc' || activeAsset === 'ltc' || activeAsset === 'xmr' || activeAsset === 'wow') {
-        fetchHistory(activeAsset);
-      }
+      // Fetch history for all assets
+      fetchHistory(activeAsset);
     }
   }, [activeAsset, addresses[activeAsset]]);
 
@@ -245,7 +244,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     }
   };
 
-  const fetchHistory = async (asset: 'btc' | 'ltc' | 'xmr' | 'wow') => {
+  const fetchHistory = async (asset: AssetType) => {
     if (loadingHistory) return;
     setLoadingHistory(true);
 
@@ -312,6 +311,11 @@ export function WalletView({ onLock }: { onLock: () => void }) {
         }}
       />
     );
+  }
+
+  // Show Grin pending slatepacks view
+  if (screen === 'grinPending') {
+    return <GrinPendingView onBack={() => setScreen('main')} />;
   }
 
   return (
@@ -418,10 +422,17 @@ export function WalletView({ onLock }: { onLock: () => void }) {
             <span class="action-icon">📤</span>
             <span class="action-label">Send</span>
           </button>
-          <button class="action-btn">
-            <span class="action-icon">🎁</span>
-            <span class="action-label">Tip</span>
-          </button>
+          {activeAsset === 'grin' ? (
+            <button class="action-btn" onClick={() => setScreen('grinPending')}>
+              <span class="action-icon">⏳</span>
+              <span class="action-label">Pending</span>
+            </button>
+          ) : (
+            <button class="action-btn">
+              <span class="action-icon">🎁</span>
+              <span class="action-label">Tip</span>
+            </button>
+          )}
         </div>
 
         {/* Recent Activity */}

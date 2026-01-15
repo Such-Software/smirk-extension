@@ -1,6 +1,6 @@
-import { useState } from 'preact/hooks';
+import { useState, useEffect } from 'preact/hooks';
 import type { AssetType } from '@/types';
-import { ASSETS, type AddressData } from '../shared';
+import { ASSETS, sendMessage, type AddressData } from '../shared';
 
 export function ReceiveView({
   asset,
@@ -12,11 +12,37 @@ export function ReceiveView({
   onBack: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  // For Grin, we need to get the slatepack address from WASM
+  const [grinAddress, setGrinAddress] = useState<string | null>(null);
+  const [grinLoading, setGrinLoading] = useState(false);
+  const [grinError, setGrinError] = useState<string | null>(null);
+
+  // Initialize Grin WASM wallet to get slatepack address
+  useEffect(() => {
+    if (asset === 'grin') {
+      setGrinLoading(true);
+      setGrinError(null);
+      sendMessage<{ slatepackAddress: string }>({ type: 'INIT_GRIN_WALLET' })
+        .then((result) => {
+          setGrinAddress(result.slatepackAddress);
+        })
+        .catch((err) => {
+          console.error('Failed to init Grin wallet:', err);
+          setGrinError(err instanceof Error ? err.message : 'Failed to initialize');
+        })
+        .finally(() => {
+          setGrinLoading(false);
+        });
+    }
+  }, [asset]);
+
+  // For Grin, use the WASM-derived slatepack address
+  const displayAddress = asset === 'grin' ? grinAddress : address?.address;
 
   const handleCopy = async () => {
-    if (!address) return;
+    if (!displayAddress) return;
     try {
-      await navigator.clipboard.writeText(address.address);
+      await navigator.clipboard.writeText(displayAddress);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
@@ -44,7 +70,19 @@ export function ReceiveView({
           </div>
         </div>
 
-        {address ? (
+        {/* Loading state for Grin WASM initialization */}
+        {asset === 'grin' && grinLoading ? (
+          <div style={{ textAlign: 'center', padding: '24px 0' }}>
+            <span class="spinner" style={{ width: '24px', height: '24px' }} />
+            <p style={{ color: '#a1a1aa', fontSize: '13px', marginTop: '12px' }}>
+              Initializing Grin wallet...
+            </p>
+          </div>
+        ) : asset === 'grin' && grinError ? (
+          <div style={{ textAlign: 'center', color: '#ef4444', padding: '16px' }}>
+            {grinError}
+          </div>
+        ) : displayAddress ? (
           <div
             style={{
               background: '#27272a',
@@ -63,7 +101,7 @@ export function ReceiveView({
                 marginBottom: '16px',
               }}
             >
-              {address.address}
+              {displayAddress}
             </div>
 
             <button

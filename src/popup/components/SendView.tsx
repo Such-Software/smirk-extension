@@ -13,6 +13,7 @@ import {
   validateAddress as validateXmrAddress,
   type XmrAsset,
 } from '@/lib/xmr-tx';
+import { GrinSendView } from './GrinSendView';
 
 interface FeeEstimate {
   fast: number | null;
@@ -43,10 +44,14 @@ export function SendView({
   const [error, setError] = useState('');
   const [txid, setTxid] = useState<string | null>(null);
 
+  // Grin uses a separate component for slatepack flow
+  if (asset === 'grin') {
+    return <GrinSendView balance={balance} onBack={onBack} onSlateCreated={onSent} />;
+  }
+
   // Supported assets
   const isUtxoAsset = asset === 'btc' || asset === 'ltc';
   const isCryptonoteAsset = asset === 'xmr' || asset === 'wow';
-  const isSupportedAsset = isUtxoAsset || isCryptonoteAsset;
 
   // Fetch fee estimates on mount (only for UTXO assets)
   useEffect(() => {
@@ -98,11 +103,6 @@ export function SendView({
   const handleSend = async (e: Event) => {
     e.preventDefault();
     setError('');
-
-    if (!isSupportedAsset) {
-      setError(`Sending ${ASSETS[asset].symbol} is not yet supported`);
-      return;
-    }
 
     if (!recipientAddress.trim()) {
       setError('Please enter a recipient address');
@@ -280,17 +280,7 @@ export function SendView({
       </header>
 
       <div class="content">
-        {!isSupportedAsset ? (
-          <div style={{ textAlign: 'center', padding: '24px 0' }}>
-            <div style={{ fontSize: '48px', marginBottom: '16px' }}>🚧</div>
-            <h3 style={{ marginBottom: '8px' }}>Coming Soon</h3>
-            <p style={{ color: '#a1a1aa', fontSize: '13px' }}>
-              Sending {ASSETS[asset].name} is not yet supported.
-              {asset === 'grin' ? ' Grin requires interactive slatepack transactions.' : ''}
-            </p>
-          </div>
-        ) : (
-          <form onSubmit={handleSend}>
+        <form onSubmit={handleSend}>
             {/* Available Balance */}
             <div
               style={{
@@ -470,7 +460,6 @@ export function SendView({
               {sending ? <span class="spinner" style={{ margin: '0 auto' }} /> : `Send ${ASSETS[asset].symbol}`}
             </button>
           </form>
-        )}
       </div>
     </>
   );

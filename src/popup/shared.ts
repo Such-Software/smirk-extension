@@ -81,4 +81,4 @@ export interface BalanceData {
 }
 
 // Wallet screen types
-export type WalletScreen = 'main' | 'receive' | 'send' | 'settings';
+export type WalletScreen = 'main' | 'receive' | 'send' | 'settings' | 'grinPending';

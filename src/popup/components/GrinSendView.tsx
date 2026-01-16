@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'preact/hooks';
+import type { GrinSendContext } from '@/types';
 import {
   ASSETS,
   ATOMIC_DIVISORS,
@@ -12,11 +13,11 @@ import {
  * Grin Send View - Interactive Slatepack Flow
  *
  * Grin uses Mimblewimble with interactive transactions:
- * 1. Sender creates slate (S1) and posts to relay
- * 2. Recipient fetches, signs (S2), and posts response
- * 3. Sender fetches signed response, finalizes (S3), broadcasts
+ * 1. Sender creates slate (S1) and gives slatepack to receiver
+ * 2. Receiver signs (S2) and returns the signed slatepack
+ * 3. Sender finalizes (S3), broadcasts, and transaction completes
  *
- * This component handles step 1 - creating and posting the initial slate.
+ * This component handles the full send flow with manual slatepack exchange.
  */
 export function GrinSendView({
   balance,
@@ -27,19 +28,34 @@ export function GrinSendView({
   onBack: () => void;
   onSlateCreated: () => void;
 }) {
+  // Form state
   const [recipientAddress, setRecipientAddress] = useState('');
   const [amount, setAmount] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
+
+  // Step 1: S1 slatepack created
   const [slatepack, setSlatepack] = useState<string | null>(null);
-  const [relayId, setRelayId] = useState<string | null>(null);
-  const [expiresAt, setExpiresAt] = useState<string | null>(null);
+  const [sendContext, setSendContext] = useState<GrinSendContext | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // Step 2: Waiting for S2 response
+  const [responseSlatepack, setResponseSlatepack] = useState('');
+
+  // Step 3: Finalizing and broadcasting
+  const [finalizing, setFinalizing] = useState(false);
+  const [broadcast, setBroadcast] = useState(false);
+
+  // WASM initialization
   const [initializingWasm, setInitializingWasm] = useState(false);
   const [wasmReady, setWasmReady] = useState(false);
 
   const asset = 'grin';
   const availableBalance = balance?.confirmed ?? 0;
   const divisor = ATOMIC_DIVISORS[asset];
+
+  // Default fee: 0.01 GRIN = 10,000,000 nanogrin
+  const DEFAULT_FEE = 10000000;
 
   // Initialize Grin WASM wallet on mount
   useEffect(() => {
@@ -71,17 +87,6 @@ export function GrinSendView({
       return;
     }
 
-    if (!recipientAddress.trim()) {
-      setError('Please enter a recipient slatepack address');
-      return;
-    }
-
-    // Validate slatepack address format (grin1...)
-    if (!recipientAddress.trim().startsWith('grin1')) {
-      setError('Invalid slatepack address. Must start with grin1...');
-      return;
-    }
-
     const amountFloat = parseFloat(amount);
     if (isNaN(amountFloat) || amountFloat <= 0) {
       setError('Please enter a valid amount');
@@ -90,34 +95,41 @@ export function GrinSendView({
 
     // Convert to nanogrin
     const amountNanogrin = Math.round(amountFloat * divisor);
+    const totalRequired = amountNanogrin + DEFAULT_FEE;
 
-    if (amountNanogrin > availableBalance) {
-      setError('Insufficient balance');
+    if (totalRequired > availableBalance) {
+      setError('Insufficient balance (including fee)');
       return;
     }
 
     setCreating(true);
 
     try {
-      // TODO: When WASM slate creation is implemented:
-      // 1. Call createSendSlate() to build the slate
-      // 2. Call encodeSlatepack() to encode it
-      // 3. Post to relay via API
+      // Validate recipient address if provided (optional for encryption)
+      const recipient = recipientAddress.trim() || undefined;
+      if (recipient && !recipient.startsWith('grin1')) {
+        setError('Invalid slatepack address. Must start with grin1...');
+        setCreating(false);
+        return;
+      }
 
-      // For now, show that the flow is not yet complete
-      setError('Grin slate creation via WASM is not yet implemented. The infrastructure is in place - check back soon!');
-      setCreating(false);
-      return;
+      // Create the send transaction
+      const result = await sendMessage<{
+        slatepack: string;
+        slateId: string;
+        sendContext: GrinSendContext;
+      }>({
+        type: 'GRIN_CREATE_SEND',
+        amount: amountNanogrin,
+        fee: DEFAULT_FEE,
+        recipientAddress: recipient,
+      });
 
-      // When implemented, this will look like:
-      // const slate = await createSendSlate(grinKeys, amountNanogrin, fee, recipientAddress);
-      // const encoded = await encodeSlatepack(grinKeys, slate, recipientAddress);
-      // const result = await api.createGrinRelay({...});
-      // setSlatepack(encoded);
-      // setRelayId(result.id);
-      // setExpiresAt(result.expires_at);
+      setSlatepack(result.slatepack);
+      setSendContext(result.sendContext);
+      console.log('Created send slate:', result.slateId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create slate');
+      setError(err instanceof Error ? err.message : 'Failed to create transaction');
     } finally {
       setCreating(false);
     }
@@ -125,8 +137,8 @@ export function GrinSendView({
 
   const handleMax = () => {
     if (availableBalance > 0) {
-      // Reserve some for fee (0.01 GRIN = 10000000 nanogrin)
-      const maxAmount = Math.max(0, availableBalance - 10000000);
+      // Reserve for fee
+      const maxAmount = Math.max(0, availableBalance - DEFAULT_FEE);
       setAmount(formatBalanceFull(maxAmount, asset));
     }
   };
@@ -134,85 +146,170 @@ export function GrinSendView({
   const copySlatepack = async () => {
     if (slatepack) {
       await navigator.clipboard.writeText(slatepack);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
     }
   };
 
-  // Success view - slatepack created and posted to relay
-  if (slatepack && relayId) {
+  const handleFinalize = async () => {
+    if (!responseSlatepack.trim() || !sendContext) {
+      setError('Please paste the signed slatepack from the recipient');
+      return;
+    }
+
+    setFinalizing(true);
+    setError('');
+
+    try {
+      await sendMessage<{ broadcast: boolean }>({
+        type: 'GRIN_FINALIZE_AND_BROADCAST',
+        slatepack: responseSlatepack.trim(),
+        sendContext,
+      });
+
+      setBroadcast(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to finalize transaction');
+    } finally {
+      setFinalizing(false);
+    }
+  };
+
+  // Step 3: Success - transaction broadcast
+  if (broadcast) {
     return (
       <>
         <header class="header">
           <button class="btn btn-icon" onClick={onBack} title="Back">
             ←
           </button>
-          <h1 style={{ flex: 1, textAlign: 'center' }}>Slatepack Created</h1>
+          <h1 style={{ flex: 1, textAlign: 'center' }}>Transaction Sent</h1>
           <div style={{ width: '32px' }} />
         </header>
 
         <div class="content">
-          <div style={{ textAlign: 'center', padding: '16px 0' }}>
-            <div style={{ fontSize: '36px', marginBottom: '12px' }}>📤</div>
-            <h3 style={{ marginBottom: '8px' }}>Waiting for Recipient</h3>
-            <p style={{ color: '#a1a1aa', fontSize: '12px', marginBottom: '16px' }}>
-              Your transaction request has been posted. The recipient needs to sign it within 24 hours.
+          <div style={{ textAlign: 'center', padding: '24px 0' }}>
+            <div style={{ fontSize: '48px', marginBottom: '16px' }}>✓</div>
+            <h3 style={{ marginBottom: '8px', color: '#22c55e' }}>Success!</h3>
+            <p style={{ color: '#a1a1aa', fontSize: '13px', marginBottom: '24px' }}>
+              Your transaction has been finalized and broadcast to the Grin network.
             </p>
-
-            {expiresAt && (
-              <div
-                style={{
-                  background: '#27272a',
-                  borderRadius: '8px',
-                  padding: '8px 12px',
-                  marginBottom: '16px',
-                  fontSize: '11px',
-                  color: '#71717a',
-                }}
-              >
-                Expires: {new Date(expiresAt).toLocaleString()}
-              </div>
-            )}
-
-            <div
-              style={{
-                background: '#27272a',
-                borderRadius: '8px',
-                padding: '12px',
-                marginBottom: '16px',
-                cursor: 'pointer',
-              }}
-              onClick={copySlatepack}
-              title="Click to copy"
-            >
-              <div style={{ fontSize: '10px', color: '#71717a', marginBottom: '4px' }}>
-                Slatepack (click to copy for manual sharing)
-              </div>
-              <div
-                style={{
-                  fontFamily: 'monospace',
-                  fontSize: '9px',
-                  wordBreak: 'break-all',
-                  maxHeight: '80px',
-                  overflow: 'auto',
-                }}
-              >
-                {slatepack}
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button class="btn btn-secondary" style={{ flex: 1 }} onClick={copySlatepack}>
-                Copy Slatepack
-              </button>
-              <button class="btn btn-primary" style={{ flex: 1 }} onClick={onSlateCreated}>
-                Done
-              </button>
-            </div>
+            <button class="btn btn-primary" style={{ width: '100%' }} onClick={onSlateCreated}>
+              Done
+            </button>
           </div>
         </div>
       </>
     );
   }
 
+  // Step 2: S1 created, waiting for S2 response
+  if (slatepack && sendContext) {
+    return (
+      <>
+        <header class="header">
+          <button class="btn btn-icon" onClick={onBack} title="Back">
+            ←
+          </button>
+          <h1 style={{ flex: 1, textAlign: 'center' }}>Complete Transaction</h1>
+          <div style={{ width: '32px' }} />
+        </header>
+
+        <div class="content">
+          {/* Instructions */}
+          <div
+            style={{
+              background: '#1e3a5f',
+              borderRadius: '8px',
+              padding: '12px',
+              marginBottom: '16px',
+              fontSize: '12px',
+              color: '#93c5fd',
+              lineHeight: '1.5',
+            }}
+          >
+            <strong>Step 1:</strong> Copy and send this slatepack to the recipient
+            <br />
+            <strong>Step 2:</strong> Paste their signed response below to complete
+          </div>
+
+          {/* S1 Slatepack to send */}
+          <div style={{ marginBottom: '16px' }}>
+            <label style={{ display: 'block', fontSize: '12px', color: '#a1a1aa', marginBottom: '6px' }}>
+              Send this to the recipient:
+            </label>
+            <div
+              style={{
+                background: '#18181b',
+                border: '1px solid #3f3f46',
+                borderRadius: '6px',
+                padding: '10px',
+                marginBottom: '8px',
+                maxHeight: '100px',
+                overflow: 'auto',
+                cursor: 'pointer',
+              }}
+              onClick={copySlatepack}
+            >
+              <pre
+                style={{
+                  fontSize: '9px',
+                  fontFamily: 'monospace',
+                  wordBreak: 'break-all',
+                  whiteSpace: 'pre-wrap',
+                  margin: 0,
+                  color: '#a1a1aa',
+                }}
+              >
+                {slatepack}
+              </pre>
+            </div>
+            <button class="btn btn-secondary" style={{ width: '100%' }} onClick={copySlatepack}>
+              {copied ? 'Copied!' : 'Copy Slatepack'}
+            </button>
+          </div>
+
+          {/* S2 Response input */}
+          <div style={{ marginBottom: '16px' }}>
+            <label style={{ display: 'block', fontSize: '12px', color: '#a1a1aa', marginBottom: '6px' }}>
+              Paste signed response from recipient:
+            </label>
+            <textarea
+              value={responseSlatepack}
+              onInput={(e) => setResponseSlatepack((e.target as HTMLTextAreaElement).value)}
+              placeholder="BEGINSLATEPACK. ... ENDSLATEPACK."
+              style={{
+                width: '100%',
+                minHeight: '80px',
+                background: '#18181b',
+                border: '1px solid #3f3f46',
+                borderRadius: '6px',
+                padding: '10px',
+                color: '#fff',
+                fontSize: '11px',
+                fontFamily: 'monospace',
+                resize: 'vertical',
+              }}
+              disabled={finalizing}
+            />
+          </div>
+
+          {error && <p style={{ color: '#ef4444', fontSize: '13px', marginBottom: '12px' }}>{error}</p>}
+
+          <button
+            class="btn btn-primary"
+            style={{ width: '100%' }}
+            onClick={handleFinalize}
+            disabled={!responseSlatepack.trim() || finalizing}
+          >
+            {finalizing ? 'Finalizing...' : 'Finalize & Broadcast'}
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  // Step 1: Initial form
   return (
     <>
       <header class="header">
@@ -234,17 +331,19 @@ export function GrinSendView({
             {/* Info about interactive transactions */}
             <div
               style={{
-                background: '#1e3a5f',
+                background: '#27272a',
                 borderRadius: '8px',
                 padding: '12px',
                 marginBottom: '16px',
-                fontSize: '11px',
-                color: '#93c5fd',
+                fontSize: '12px',
+                color: '#a1a1aa',
+                lineHeight: '1.5',
               }}
             >
-              <strong>Interactive Transaction</strong>
+              <strong style={{ color: '#fff' }}>Interactive Transaction</strong>
               <br />
-              Grin transactions require the recipient to sign. Your request will be posted to our relay and expire in 24 hours.
+              Grin transactions require the recipient to sign. You'll receive a
+              slatepack to share with them, then paste their response to complete.
             </div>
 
             {/* Available Balance */}
@@ -265,10 +364,10 @@ export function GrinSendView({
               </div>
             </div>
 
-            {/* Recipient Address */}
+            {/* Recipient Address (optional) */}
             <div class="form-group">
               <label style={{ display: 'block', fontSize: '12px', color: '#a1a1aa', marginBottom: '4px' }}>
-                Recipient Slatepack Address
+                Recipient Address <span style={{ color: '#71717a' }}>(optional, for encryption)</span>
               </label>
               <input
                 type="text"
@@ -319,7 +418,7 @@ export function GrinSendView({
                 color: '#a1a1aa',
               }}
             >
-              Network fee: ~0.01 GRIN (calculated automatically)
+              Network fee: ~0.01 GRIN
             </div>
 
             {error && <p style={{ color: '#ef4444', fontSize: '13px', marginBottom: '12px' }}>{error}</p>}
@@ -328,12 +427,12 @@ export function GrinSendView({
               type="submit"
               class="btn btn-primary"
               style={{ width: '100%' }}
-              disabled={creating || !recipientAddress || !amount || !wasmReady}
+              disabled={creating || !amount || !wasmReady}
             >
               {creating ? (
                 <span class="spinner" style={{ margin: '0 auto' }} />
               ) : (
-                'Create Transaction Request'
+                'Create Transaction'
               )}
             </button>
           </form>

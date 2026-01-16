@@ -60,10 +60,13 @@ import { api } from '@/lib/api';
 import { runtime, notifications, alarms, storage } from '@/lib/browser';
 import {
   initGrinWallet,
+  initGrinWalletFromExtendedKey,
   signSlate,
-  finalizeSlate,
   encodeSlatepack,
+  createSendTransaction,
+  finalizeSlate,
   type GrinKeys,
+  type GrinOutput,
 } from '@/lib/grin';
 import { mnemonicToSeed } from '@/lib/hd';
 
@@ -78,10 +81,12 @@ let unlockedKeys: Map<AssetType, Uint8Array> = new Map();
 // View keys for XMR/WOW (needed for balance queries)
 let unlockedViewKeys: Map<'xmr' | 'wow', Uint8Array> = new Map();
 let isUnlocked = false;
-// Cached Grin WASM wallet keys (derived from seed when needed)
+// Cached Grin WASM wallet keys (derived from mnemonic when needed)
 let grinWasmKeys: GrinKeys | null = null;
-// Decrypted BIP39 seed (64 bytes) for Grin WASM operations - cleared on lock
+// Decrypted BIP39 seed (64 bytes) - kept for backwards compatibility
 let unlockedSeed: Uint8Array | null = null;
+// Decrypted mnemonic string for Grin WASM operations - cleared on lock
+let unlockedMnemonic: string | null = null;
 
 // Auto-lock alarm name (uses chrome.alarms API for persistence across service worker restarts)
 const AUTO_LOCK_ALARM = 'smirk_auto_lock';
@@ -96,6 +101,7 @@ const PENDING_TXS_KEY = 'smirk_pending_txs';
 interface SessionKeysData {
   unlockedKeys: Record<string, string>; // asset -> hex-encoded key
   unlockedViewKeys: Record<string, string>; // 'xmr' | 'wow' -> hex-encoded key
+  grinExtendedPrivateKey?: string; // hex-encoded 64-byte key for Grin WASM operations (NOT the mnemonic)
 }
 
 interface PendingTx {
@@ -201,8 +207,19 @@ async function persistSessionKeys(): Promise<void> {
     viewKeysData[asset] = bytesToHex(key);
   }
 
+  const sessionData: SessionKeysData = {
+    unlockedKeys: keysData,
+    unlockedViewKeys: viewKeysData,
+  };
+
+  // Include Grin extended private key if available (for Grin WASM operations after restart)
+  // NOTE: We store only the extended key, NOT the mnemonic - mnemonic controls ALL coins
+  if (grinWasmKeys?.extendedPrivateKey) {
+    sessionData.grinExtendedPrivateKey = bytesToHex(grinWasmKeys.extendedPrivateKey);
+  }
+
   await storage.session.set({
-    [SESSION_KEYS_KEY]: { unlockedKeys: keysData, unlockedViewKeys: viewKeysData } as SessionKeysData,
+    [SESSION_KEYS_KEY]: sessionData,
   });
   console.log('[Session] Persisted keys to session storage');
 }
@@ -228,6 +245,19 @@ async function restoreSessionKeys(): Promise<boolean> {
   // Restore view keys
   for (const [asset, hexKey] of Object.entries(sessionData.unlockedViewKeys)) {
     unlockedViewKeys.set(asset as 'xmr' | 'wow', hexToBytes(hexKey));
+  }
+
+  // Restore Grin extended private key (for Grin WASM operations)
+  // This allows Grin wallet to work after service worker restart without the full mnemonic
+  if (sessionData.grinExtendedPrivateKey) {
+    try {
+      const extendedKey = hexToBytes(sessionData.grinExtendedPrivateKey);
+      grinWasmKeys = await initGrinWalletFromExtendedKey(extendedKey);
+      console.log('[Session] Restored Grin WASM keys from extended private key');
+    } catch (err) {
+      console.warn('[Session] Failed to restore Grin WASM keys:', err);
+      // Non-fatal - user can re-init by visiting Grin receive screen
+    }
   }
 
   if (unlockedKeys.size > 0) {
@@ -363,6 +393,18 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
 
     case 'GRIN_CANCEL_SLATE':
       return handleGrinCancelSlate(message.relayId);
+
+    // Direct slatepack operations (no relay)
+    case 'GRIN_SIGN_SLATEPACK':
+      return handleGrinSignSlatepack(message.slatepack);
+
+    // Grin send transaction (creates S1 slatepack)
+    case 'GRIN_CREATE_SEND':
+      return handleGrinCreateSend(message.amount, message.fee, message.recipientAddress);
+
+    // Grin finalize transaction (S2 -> S3 -> broadcast)
+    case 'GRIN_FINALIZE_AND_BROADCAST':
+      return handleGrinFinalizeAndBroadcast(message.slatepack, message.sendContext);
 
     default:
       return { success: false, error: 'Unknown message type' };
@@ -803,7 +845,17 @@ async function handleUnlockWallet(password: string): Promise<MessageResponse<{
       }
     }
 
-    // Decrypt BIP39 seed for Grin WASM operations
+    // Decrypt mnemonic for Grin WASM operations (MWC Seed class needs the mnemonic, not BIP39 seed)
+    if (state.encryptedSeed && state.seedSalt) {
+      try {
+        const mnemonicBytes = await decryptPrivateKey(state.encryptedSeed, state.seedSalt, password);
+        unlockedMnemonic = new TextDecoder().decode(mnemonicBytes);
+      } catch (err) {
+        console.warn('Failed to decrypt mnemonic:', err);
+      }
+    }
+
+    // Decrypt BIP39 seed (kept for backwards compatibility with other operations)
     if (state.encryptedBip39Seed && state.seedSalt) {
       try {
         unlockedSeed = await decryptPrivateKey(state.encryptedBip39Seed, state.seedSalt, password);
@@ -813,19 +865,16 @@ async function handleUnlockWallet(password: string): Promise<MessageResponse<{
     }
 
     // Migration: derive Grin key and BIP39 seed if missing (for wallets created before Grin support)
-    if ((!state.keys.grin || !state.encryptedBip39Seed) && state.encryptedSeed && state.seedSalt) {
+    if ((!state.keys.grin || !state.encryptedBip39Seed) && unlockedMnemonic) {
       try {
-        const mnemonic = await decryptPrivateKey(state.encryptedSeed, state.seedSalt, password);
-        const mnemonicStr = new TextDecoder().decode(mnemonic);
-
         // Derive encryption key from password
-        const saltBytes = hexToBytes(state.seedSalt);
+        const saltBytes = hexToBytes(state.seedSalt!);
         const encKey = await deriveKeyFromPassword(password, saltBytes);
         const encryptWithKey = (data: Uint8Array) => bytesToHex(encrypt(data, encKey));
 
         // Migrate: encrypt and store BIP39 seed if missing
         if (!state.encryptedBip39Seed) {
-          const bip39Seed = mnemonicToSeed(mnemonicStr);
+          const bip39Seed = mnemonicToSeed(unlockedMnemonic);
           state.encryptedBip39Seed = encryptWithKey(bip39Seed);
           unlockedSeed = bip39Seed;
           console.log('Migrated wallet: added encrypted BIP39 seed');
@@ -833,12 +882,12 @@ async function handleUnlockWallet(password: string): Promise<MessageResponse<{
 
         // Migrate: derive and store Grin key if missing
         if (!state.keys.grin) {
-          const derivedKeys = deriveAllKeys(mnemonicStr);
+          const derivedKeys = deriveAllKeys(unlockedMnemonic);
           state.keys.grin = {
             asset: 'grin',
             publicKey: bytesToHex(derivedKeys.grin.publicKey),
             privateKey: encryptWithKey(derivedKeys.grin.privateKey),
-            privateKeySalt: state.seedSalt,
+            privateKeySalt: state.seedSalt!,
             createdAt: Date.now(),
           };
           unlockedKeys.set('grin', derivedKeys.grin.privateKey);
@@ -871,6 +920,7 @@ async function handleLockWallet(): Promise<MessageResponse<{ locked: boolean }>>
   unlockedViewKeys.clear();
   grinWasmKeys = null;
   unlockedSeed = null;
+  unlockedMnemonic = null;
   isUnlocked = false;
   await clearSessionKeys();
   stopAutoLockTimer();
@@ -1626,6 +1676,11 @@ async function handleGetPendingTxs(
 /**
  * Initialize the Grin WASM wallet and return the slatepack address.
  * This derives the proper Grin keys using the MWC wallet's derivation.
+ *
+ * Keys can be initialized from:
+ * 1. Cached grinWasmKeys (already initialized this session)
+ * 2. Session storage (restored after service worker restart)
+ * 3. Mnemonic (fresh unlock - derives keys and persists to session)
  */
 async function handleInitGrinWallet(): Promise<MessageResponse<{
   slatepackAddress: string;
@@ -1634,7 +1689,7 @@ async function handleInitGrinWallet(): Promise<MessageResponse<{
     return { success: false, error: 'Wallet is locked' };
   }
 
-  // Return cached keys if already initialized
+  // Return cached keys if already initialized (or restored from session)
   if (grinWasmKeys) {
     return {
       success: true,
@@ -1642,13 +1697,19 @@ async function handleInitGrinWallet(): Promise<MessageResponse<{
     };
   }
 
-  if (!unlockedSeed) {
-    return { success: false, error: 'Seed not available - please re-unlock wallet' };
+  // MWC Seed class requires the mnemonic string, not the 64-byte BIP39 seed
+  // Valid seed lengths for MWC are 16/20/24/28/32 bytes (raw entropy), not 64 bytes
+  if (!unlockedMnemonic) {
+    return { success: false, error: 'Mnemonic not available - please re-unlock wallet' };
   }
 
   try {
-    // Initialize Grin WASM wallet with BIP39 seed
-    grinWasmKeys = await initGrinWallet(unlockedSeed);
+    // Initialize Grin WASM wallet with mnemonic
+    grinWasmKeys = await initGrinWallet(unlockedMnemonic);
+
+    // Persist the extended key to session storage so it survives service worker restarts
+    // NOTE: We only store the extended key, NOT the mnemonic - this limits exposure to Grin only
+    await persistSessionKeys();
 
     return {
       success: true,
@@ -1746,18 +1807,17 @@ async function handleGrinSignSlate(
   try {
     // Ensure Grin WASM wallet is initialized
     if (!grinWasmKeys) {
-      if (!unlockedSeed) {
-        return { success: false, error: 'Seed not available - please re-unlock wallet' };
+      if (!unlockedMnemonic) {
+        return { success: false, error: 'Mnemonic not available - please re-unlock wallet' };
       }
-      grinWasmKeys = await initGrinWallet(unlockedSeed);
+      grinWasmKeys = await initGrinWallet(unlockedMnemonic);
     }
 
     // Sign the slate (decodes, adds our signature, returns S2 slate)
     const signedSlate = await signSlate(grinWasmKeys, slatepack);
 
-    // Encode the signed slate as a slatepack for the sender
-    // No recipient address needed since we're sending back to sender
-    const signedSlatepack = await encodeSlatepack(grinWasmKeys, signedSlate);
+    // Encode the signed slate as a slatepack response for the sender
+    const signedSlatepack = await encodeSlatepack(grinWasmKeys, signedSlate, 'response');
 
     // Get auth state for user ID
     const authState = await getAuthState();
@@ -1791,11 +1851,36 @@ async function handleGrinSignSlate(
 /**
  * Finalize a slate and broadcast.
  * Decodes the signed slatepack from recipient, finalizes it, and submits for broadcast.
+ *
+ * NOTE: This requires the original S1 slate and sender's secret nonce from when the
+ * transaction was initiated. Currently not implemented - the relay workflow has the
+ * sender finalize client-side, but we'd need to store slate state to support this.
+ *
+ * TODO: Implement slate state storage for sender-initiated transactions
  */
 async function handleGrinFinalizeSlate(
-  relayId: string,
-  slatepack: string
+  _relayId: string,
+  _slatepack: string
 ): Promise<MessageResponse<{ broadcast: boolean; txid?: string }>> {
+  // Finalization requires the original S1 slate and sender's secret nonce
+  // which we don't currently store. This flow needs additional implementation.
+  return {
+    success: false,
+    error: 'Grin send/finalize flow not yet implemented. Use receive flow for now.',
+  };
+}
+
+/**
+ * Sign a slatepack directly (no relay).
+ * This is for the standard Grin receive flow:
+ * 1. Sender creates S1 slatepack and gives it to receiver (out of band)
+ * 2. Receiver pastes S1 here, signs it, gets S2 slatepack back
+ * 3. Receiver gives S2 back to sender (out of band)
+ * 4. Sender finalizes and broadcasts
+ */
+async function handleGrinSignSlatepack(
+  slatepackString: string
+): Promise<MessageResponse<{ signedSlatepack: string }>> {
   if (!isUnlocked) {
     return { success: false, error: 'Wallet is locked' };
   }
@@ -1803,49 +1888,26 @@ async function handleGrinFinalizeSlate(
   try {
     // Ensure Grin WASM wallet is initialized
     if (!grinWasmKeys) {
-      if (!unlockedSeed) {
-        return { success: false, error: 'Seed not available - please re-unlock wallet' };
+      if (!unlockedMnemonic) {
+        return { success: false, error: 'Mnemonic not available - please re-unlock wallet' };
       }
-      grinWasmKeys = await initGrinWallet(unlockedSeed);
+      grinWasmKeys = await initGrinWallet(unlockedMnemonic);
     }
 
-    // Finalize the slate (decodes S2, completes tx, returns S3 slate)
-    const finalizedSlate = await finalizeSlate(grinWasmKeys, slatepack);
+    // Sign the slate (decodes S1, adds our signature, returns S2 slate)
+    const signedSlate = await signSlate(grinWasmKeys, slatepackString);
 
-    // Encode the finalized slate for relay
-    const finalizedSlatepack = await encodeSlatepack(grinWasmKeys, finalizedSlate);
+    // Encode the signed slate as a slatepack response
+    const signedSlatepack = await encodeSlatepack(grinWasmKeys, signedSlate, 'response');
 
-    // Get auth state for user ID
-    const authState = await getAuthState();
-    if (!authState?.userId) {
-      return { success: false, error: 'Not authenticated' };
-    }
+    console.log(`[Grin] Signed slatepack, amount: ${signedSlate.amount} nanogrin`);
 
-    // Submit finalized slatepack to relay for broadcast
-    const result = await api.finalizeGrinSlatepack({
-      relayId,
-      userId: authState.userId,
-      finalizedSlatepack,
-    });
-
-    if (result.error) {
-      return { success: false, error: result.error };
-    }
-
-    console.log(`[Grin] Finalized and broadcast slate ${finalizedSlate.id}`);
-
-    return {
-      success: true,
-      data: {
-        broadcast: true,
-        txid: finalizedSlate.id, // Slate ID is often used as reference
-      },
-    };
+    return { success: true, data: { signedSlatepack } };
   } catch (err) {
-    console.error('[Grin] Failed to finalize slate:', err);
+    console.error('[Grin] Failed to sign slatepack:', err);
     return {
       success: false,
-      error: err instanceof Error ? err.message : 'Failed to finalize slate',
+      error: err instanceof Error ? err.message : 'Failed to sign slatepack',
     };
   }
 }
@@ -1880,6 +1942,243 @@ async function handleGrinCancelSlate(
     return {
       success: false,
       error: err instanceof Error ? err.message : 'Failed to cancel slatepack',
+    };
+  }
+}
+
+/**
+ * Create a Grin send transaction (S1 slatepack).
+ * Fetches UTXOs from backend, builds transaction with proper inputs/outputs.
+ */
+async function handleGrinCreateSend(
+  amount: number,
+  fee: number,
+  recipientAddress?: string
+): Promise<MessageResponse<{
+  slatepack: string;
+  slateId: string;
+  sendContext: import('@/types').GrinSendContext;
+}>> {
+  if (!isUnlocked) {
+    return { success: false, error: 'Wallet is locked' };
+  }
+
+  try {
+    // Ensure Grin WASM wallet is initialized
+    if (!grinWasmKeys) {
+      if (!unlockedMnemonic) {
+        return { success: false, error: 'Mnemonic not available - please re-unlock wallet' };
+      }
+      grinWasmKeys = await initGrinWallet(unlockedMnemonic);
+    }
+
+    // Get auth state for user ID
+    const authState = await getAuthState();
+    if (!authState?.userId) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    // Fetch UTXOs from backend
+    const outputsResult = await api.getGrinOutputs(authState.userId);
+    if (outputsResult.error) {
+      return { success: false, error: `Failed to fetch outputs: ${outputsResult.error}` };
+    }
+
+    const { outputs: rawOutputs, next_child_index: nextChildIndex } = outputsResult.data!;
+
+    // Filter to only unspent outputs and convert to GrinOutput format
+    const outputs: GrinOutput[] = rawOutputs
+      .filter(o => o.status === 'unspent')
+      .map(o => ({
+        id: o.id,
+        keyId: o.key_id,
+        nChild: o.n_child,
+        amount: BigInt(o.amount),
+        commitment: o.commitment,
+        isCoinbase: o.is_coinbase,
+        blockHeight: o.block_height ?? undefined,
+      }));
+
+    if (outputs.length === 0) {
+      return { success: false, error: 'No unspent outputs available' };
+    }
+
+    // Get current blockchain height
+    const heightsResult = await api.getBlockchainHeights();
+    if (heightsResult.error || !heightsResult.data?.grin) {
+      return { success: false, error: 'Failed to get blockchain height' };
+    }
+    const currentHeight = BigInt(heightsResult.data.grin);
+
+    // Create the send transaction
+    const result = await createSendTransaction(
+      grinWasmKeys,
+      outputs,
+      BigInt(amount),
+      BigInt(fee),
+      currentHeight,
+      nextChildIndex,
+      recipientAddress
+    );
+
+    // Lock the inputs on the backend
+    await api.lockGrinOutputs({
+      outputIds: result.inputIds,
+      txSlateId: result.slate.id,
+    });
+
+    // Record the transaction
+    await api.recordGrinTransaction({
+      userId: authState.userId,
+      slateId: result.slate.id,
+      amount,
+      fee,
+      direction: 'send',
+      counterpartyAddress: recipientAddress,
+    });
+
+    // Build send context for later finalization
+    const sendContext: import('@/types').GrinSendContext = {
+      slateId: result.slate.id,
+      secretKey: bytesToHex(result.secretKey),
+      secretNonce: bytesToHex(result.secretNonce),
+      inputIds: result.inputIds,
+      changeOutput: result.changeOutput ? {
+        keyId: result.changeOutput.keyId,
+        nChild: result.changeOutput.nChild,
+        amount: Number(result.changeOutput.amount),
+        commitment: result.changeOutput.commitment,
+      } : undefined,
+    };
+
+    // Clear sensitive data from memory
+    result.secretKey.fill(0);
+    result.secretNonce.fill(0);
+
+    console.log(`[Grin] Created send slate ${result.slate.id}, amount: ${amount} nanogrin`);
+
+    return {
+      success: true,
+      data: {
+        slatepack: result.slatepack,
+        slateId: result.slate.id,
+        sendContext,
+      },
+    };
+  } catch (err) {
+    console.error('[Grin] Failed to create send transaction:', err);
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Failed to create send transaction',
+    };
+  }
+}
+
+/**
+ * Finalize a Grin transaction and broadcast it.
+ * Takes S2 slatepack from receiver, finalizes to S3, broadcasts to network.
+ */
+async function handleGrinFinalizeAndBroadcast(
+  slatepackString: string,
+  sendContext: import('@/types').GrinSendContext
+): Promise<MessageResponse<{ broadcast: boolean; txid?: string }>> {
+  if (!isUnlocked) {
+    return { success: false, error: 'Wallet is locked' };
+  }
+
+  try {
+    // Ensure Grin WASM wallet is initialized
+    if (!grinWasmKeys) {
+      if (!unlockedMnemonic) {
+        return { success: false, error: 'Mnemonic not available - please re-unlock wallet' };
+      }
+      grinWasmKeys = await initGrinWallet(unlockedMnemonic);
+    }
+
+    const authState = await getAuthState();
+    if (!authState?.userId) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    // Decode sendContext secrets
+    const secretKey = hexToBytes(sendContext.secretKey);
+    const secretNonce = hexToBytes(sendContext.secretNonce);
+
+    // We need to reconstruct the initial slate to finalize
+    // For now, we'll decode the S2 response directly with the finalizeSlate function
+    // that accepts the secret key and nonce
+
+    // Finalize the slate (S2 -> S3)
+    const finalizedSlate = await finalizeSlate(
+      grinWasmKeys,
+      slatepackString,
+      { id: sendContext.slateId, amount: BigInt(0), fee: BigInt(0), state: 'S1', raw: null } as any, // Placeholder - finalizeSlate will decode the actual slate
+      secretKey,
+      secretNonce
+    );
+
+    // Clear sensitive data
+    secretKey.fill(0);
+    secretNonce.fill(0);
+
+    // Encode the finalized slate for broadcast
+    const finalizedSlatepack = await encodeSlatepack(grinWasmKeys, finalizedSlate, 'send');
+
+    // Broadcast to network via backend
+    const broadcastResult = await api.broadcastGrinTransaction({
+      slateId: sendContext.slateId,
+      slatepack: finalizedSlatepack,
+    });
+
+    if (broadcastResult.error) {
+      // Unlock inputs on failure
+      await api.unlockGrinOutputs({ outputIds: sendContext.inputIds });
+      return { success: false, error: `Broadcast failed: ${broadcastResult.error}` };
+    }
+
+    // Mark inputs as spent
+    await api.spendGrinOutputs({
+      outputIds: sendContext.inputIds,
+      txSlateId: sendContext.slateId,
+    });
+
+    // Record change output if any
+    if (sendContext.changeOutput) {
+      await api.recordGrinOutput({
+        userId: authState.userId,
+        keyId: sendContext.changeOutput.keyId,
+        nChild: sendContext.changeOutput.nChild,
+        amount: sendContext.changeOutput.amount,
+        commitment: sendContext.changeOutput.commitment,
+        txSlateId: sendContext.slateId,
+      });
+    }
+
+    // Update transaction status
+    await api.updateGrinTransaction({
+      slateId: sendContext.slateId,
+      status: 'finalized',
+    });
+
+    console.log(`[Grin] Finalized and broadcast slate ${sendContext.slateId}`);
+
+    return {
+      success: true,
+      data: { broadcast: true },
+    };
+  } catch (err) {
+    console.error('[Grin] Failed to finalize and broadcast:', err);
+
+    // Try to unlock inputs on error
+    try {
+      await api.unlockGrinOutputs({ outputIds: sendContext.inputIds });
+    } catch {
+      // Ignore unlock errors
+    }
+
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Failed to finalize transaction',
     };
   }
 }

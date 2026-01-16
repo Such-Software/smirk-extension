@@ -22,4 +22,6 @@ export {
   getBigNumber,
   getBech32,
   getBech32m,
-} from './esm/init';
+  getSlateInput,
+  getSlateOutput,
+} from './esm/init-esm';

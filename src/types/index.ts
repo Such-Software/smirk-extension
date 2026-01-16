@@ -172,7 +172,34 @@ export type MessageType =
   | { type: 'GET_GRIN_PENDING_SLATEPACKS' }
   | { type: 'GRIN_SIGN_SLATE'; relayId: string; slatepack: string }
   | { type: 'GRIN_FINALIZE_SLATE'; relayId: string; slatepack: string }
-  | { type: 'GRIN_CANCEL_SLATE'; relayId: string };
+  | { type: 'GRIN_CANCEL_SLATE'; relayId: string }
+  // Direct slatepack operations (no relay)
+  | { type: 'GRIN_SIGN_SLATEPACK'; slatepack: string }
+  // Grin send transaction
+  | { type: 'GRIN_CREATE_SEND'; amount: number; fee: number; recipientAddress?: string }
+  | { type: 'GRIN_FINALIZE_AND_BROADCAST'; slatepack: string; sendContext: GrinSendContext };
+
+/**
+ * Context needed to finalize a Grin send transaction.
+ * Stored after creating S1, needed when finalizing S2 -> S3.
+ */
+export interface GrinSendContext {
+  /** The slate ID */
+  slateId: string;
+  /** Secret key (blinding factor) for finalization */
+  secretKey: string; // hex encoded
+  /** Secret nonce for finalization */
+  secretNonce: string; // hex encoded
+  /** IDs of outputs used as inputs (to mark as spent) */
+  inputIds: string[];
+  /** Change output info (to record after broadcast) */
+  changeOutput?: {
+    keyId: string;
+    nChild: number;
+    amount: number;
+    commitment: string;
+  };
+}
 
 export type MessageResponse<T = unknown> =
   | { success: true; data: T }

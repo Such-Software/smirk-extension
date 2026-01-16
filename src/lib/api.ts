@@ -641,6 +641,159 @@ export class SmirkApi {
     return this.request(`/wallet/grin/user/${userId}/history`, { method: 'GET' });
   }
 
+  /**
+   * Get a user's unspent Grin outputs (UTXOs).
+   */
+  async getGrinOutputs(userId: string): Promise<ApiResponse<{
+    outputs: Array<{
+      id: string;
+      key_id: string;
+      n_child: number;
+      amount: number;
+      commitment: string;
+      is_coinbase: boolean;
+      block_height: number | null;
+      status: 'unconfirmed' | 'unspent' | 'locked' | 'spent';
+    }>;
+    next_child_index: number;
+  }>> {
+    return this.request(`/wallet/grin/user/${userId}/outputs`, { method: 'GET' });
+  }
+
+  /**
+   * Record a new Grin output (UTXO) from a transaction.
+   */
+  async recordGrinOutput(params: {
+    userId: string;
+    keyId: string;
+    nChild: number;
+    amount: number;
+    commitment: string;
+    txSlateId: string;
+    blockHeight?: number;
+    lockHeight?: number;
+  }): Promise<ApiResponse<{ id: string }>> {
+    return this.request('/wallet/grin/outputs', {
+      method: 'POST',
+      body: JSON.stringify({
+        user_id: params.userId,
+        key_id: params.keyId,
+        n_child: params.nChild,
+        amount: params.amount,
+        commitment: params.commitment,
+        tx_slate_id: params.txSlateId,
+        block_height: params.blockHeight,
+        lock_height: params.lockHeight,
+      }),
+    });
+  }
+
+  /**
+   * Lock Grin outputs for spending (prevents double-spend during tx creation).
+   */
+  async lockGrinOutputs(params: {
+    outputIds: string[];
+    txSlateId: string;
+  }): Promise<ApiResponse<void>> {
+    return this.request('/wallet/grin/outputs/lock', {
+      method: 'POST',
+      body: JSON.stringify({
+        output_ids: params.outputIds,
+        tx_slate_id: params.txSlateId,
+      }),
+    });
+  }
+
+  /**
+   * Unlock Grin outputs (transaction cancelled or failed).
+   */
+  async unlockGrinOutputs(params: {
+    outputIds: string[];
+  }): Promise<ApiResponse<void>> {
+    return this.request('/wallet/grin/outputs/unlock', {
+      method: 'POST',
+      body: JSON.stringify({
+        output_ids: params.outputIds,
+      }),
+    });
+  }
+
+  /**
+   * Mark Grin outputs as spent (transaction finalized).
+   */
+  async spendGrinOutputs(params: {
+    outputIds: string[];
+    txSlateId: string;
+  }): Promise<ApiResponse<void>> {
+    return this.request('/wallet/grin/outputs/spend', {
+      method: 'POST',
+      body: JSON.stringify({
+        output_ids: params.outputIds,
+        tx_slate_id: params.txSlateId,
+      }),
+    });
+  }
+
+  /**
+   * Record a Grin transaction for history tracking.
+   */
+  async recordGrinTransaction(params: {
+    userId: string;
+    slateId: string;
+    amount: number;
+    fee: number;
+    direction: 'send' | 'receive';
+    counterpartyAddress?: string;
+  }): Promise<ApiResponse<{ id: string }>> {
+    return this.request('/wallet/grin/transactions', {
+      method: 'POST',
+      body: JSON.stringify({
+        user_id: params.userId,
+        slate_id: params.slateId,
+        amount: params.amount,
+        fee: params.fee,
+        direction: params.direction,
+        counterparty_address: params.counterpartyAddress,
+      }),
+    });
+  }
+
+  /**
+   * Update a Grin transaction status.
+   */
+  async updateGrinTransaction(params: {
+    slateId: string;
+    status: 'pending' | 'signed' | 'finalized' | 'confirmed' | 'cancelled';
+    kernelExcess?: string;
+    confirmedHeight?: number;
+  }): Promise<ApiResponse<void>> {
+    return this.request('/wallet/grin/transactions/update', {
+      method: 'POST',
+      body: JSON.stringify({
+        slate_id: params.slateId,
+        status: params.status,
+        kernel_excess: params.kernelExcess,
+        confirmed_height: params.confirmedHeight,
+      }),
+    });
+  }
+
+  /**
+   * Broadcast a finalized Grin transaction.
+   */
+  async broadcastGrinTransaction(params: {
+    slateId: string;
+    slatepack: string;
+  }): Promise<ApiResponse<{ success: boolean }>> {
+    return this.request('/wallet/grin/broadcast', {
+      method: 'POST',
+      body: JSON.stringify({
+        slate_id: params.slateId,
+        slatepack: params.slatepack,
+      }),
+    });
+  }
+
   // =========================================================================
   // Blockchain Info
   // =========================================================================

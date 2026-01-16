@@ -102,6 +102,12 @@ export async function initializeGrin(): Promise<void> {
     console.log('[Grin] Initializing BLAKE2b WASM...');
     await Blake2b.initialize();
 
+    // Set wallet type to GRIN (not MWC which is the default)
+    // This is critical - without it, slatepack encoding/decoding uses MWC format
+    // which is incompatible with Grin slatepacks from external wallets
+    console.log('[Grin] Setting wallet type to GRIN...');
+    Consensus.walletType = Consensus.GRIN_WALLET_TYPE;
+
     initialized = true;
     console.log('[Grin] WASM initialization complete');
   })();

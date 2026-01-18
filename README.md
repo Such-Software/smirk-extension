@@ -84,32 +84,33 @@ Grin uses Mimblewimble with interactive transactions. All cryptographic operatio
 **Architecture:**
 - Based on [MWC Wallet](https://github.com/NicolasFlamel1/MWC-Wallet-Standalone) (MIT License)
 - WASM modules: secp256k1-zkp (ZK proofs), Ed25519 (addresses), X25519 (encryption), BLAKE2b (hashing)
-- Backend acts as relay only - stores/forwards slatepacks, broadcasts finalized transactions
+- Backend stores outputs/balances - no relay yet (slatepacks exchanged out-of-band)
 
-**Transaction Flow:**
-1. Sender builds slate S1 (WASM) → encodes as slatepack → sends to backend relay
-2. Recipient fetches slatepack → signs S2 (WASM) → sends signed slatepack to relay
-3. Sender fetches signed response → finalizes S3 (WASM) → sends finalized tx to relay
-4. Backend broadcasts finalized transaction to Grin network
+**Current Status (2026-01-18):**
+- ✅ Receive flow works: paste S1 slatepack → sign → copy S2 back to sender
+- ✅ Balance updates after signing (output recorded to backend)
+- ⚠️ Send flow: untested (UTXO selection, change outputs)
+- ❌ Relay endpoints not implemented (Smirk-to-Smirk transfers pending)
+
+**Receive Flow (manual slatepack exchange):**
+1. Sender creates S1 slatepack in Grim/grin-wallet and sends via Telegram/Discord/etc
+2. Paste S1 into Smirk extension → signs S2 (client-side WASM)
+3. Copy S2 slatepack back to sender
+4. Sender finalizes and broadcasts
+5. Your balance updates after output is recorded
 
 **API:**
 ```typescript
-import { initGrinWallet, createSendSlate, signSlate, finalizeSlate, encodeSlatepack, decodeSlatepack } from '@/lib/grin';
+import { initGrinWallet, signSlate, encodeSlatepack } from '@/lib/grin';
 
-// Initialize wallet from BIP39 seed
-const keys = await initGrinWallet(seed);
+// Initialize wallet from mnemonic
+const keys = await initGrinWallet(mnemonic);
 // keys.slatepackAddress - bech32-encoded address for receiving
 
-// Send flow
-const slate = await createSendSlate(keys, amount, fee, recipientAddress);
-const slatepack = await encodeSlatepack(keys, slate, recipientAddress);
-// POST slatepack to backend relay
-
-// Receive flow
-const decoded = await decodeSlatepack(keys, incomingSlatepack);
-const signed = await signSlate(keys, incomingSlatepack);
-const responseSlatepack = await encodeSlatepack(keys, signed);
-// POST responseSlatepack to backend relay
+// Receive flow (manual)
+const { slate, outputInfo } = await signSlate(keys, incomingSlatepack);
+const responseSlatepack = await encodeSlatepack(keys, slate, 'response');
+// Give responseSlatepack back to sender (copy/paste)
 ```
 
 ## XMR/WOW Balance Verification

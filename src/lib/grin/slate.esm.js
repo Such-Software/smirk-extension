@@ -562,17 +562,18 @@ class Slate {
 						// Return serialized slate
 						return bitWriter.getBytes();
 					}
-					
+
 					// Catch errors
 					catch(error) {
-					
+
 						// Throw error
+						console.error('[Slate.serialize V3] Compacting slate failed, error:', error);
 						throw "Compacting slate failed.";
 					}
-					
+
 					// Break
 					break;
-				
+
 				// Version four
 				case Slate.VERSION_FOUR.toFixed():
 				
@@ -809,18 +810,19 @@ class Slate {
 							// Return serialized slate
 							return bitWriter.getBytes();
 						}
-						
+
 						// Catch errors
 						catch(error) {
-						
+
 							// Throw error
+							console.error('[Slate.serialize V4] Compacting slate failed, error:', error);
 							throw "Compacting slate failed.";
 						}
 					}
-					
+
 					// Otherwise
 					else {
-				
+
 						// Create serialized slate
 						var serializedSlate = {
 						
@@ -3163,14 +3165,21 @@ class Slate {
 		
 		// Unserialize
 		unserialize(serializedSlate, isMainnet, purpose, initialSendSlate) {
-		
+
 			// Detect slate's version
 			var detectedVersion = Slate.detectVersion(serializedSlate, isMainnet);
-			
+
+			// Debug logging
+			console.log('[Slate] detectVersion result:', detectedVersion?.toString?.() || detectedVersion);
+			console.log('[Slate] SUPPORTED_VERSIONS:', Slate.SUPPORTED_VERSIONS);
+			var versionKey = (detectedVersion instanceof BigNumber === true) ? "V" + detectedVersion.toFixed() : detectedVersion;
+			console.log('[Slate] Looking for version key:', versionKey);
+
 			// Check if version is unknown or not supported
-			if(detectedVersion === Slate.UNKNOWN_VERSION || Slate.SUPPORTED_VERSIONS.indexOf((detectedVersion instanceof BigNumber === true) ? "V" + detectedVersion.toFixed() : detectedVersion) === Common.INDEX_NOT_FOUND) {
-			
+			if(detectedVersion === Slate.UNKNOWN_VERSION || Slate.SUPPORTED_VERSIONS.indexOf(versionKey) === Common.INDEX_NOT_FOUND) {
+
 				// Throw error
+				console.error('[Slate] Version not supported! detected:', detectedVersion, 'key:', versionKey);
 				throw "Unsupported slate.";
 			}
 			
@@ -4213,97 +4222,125 @@ class Slate {
 				
 				// Version four
 				case Slate.VERSION_FOUR.toFixed():
-				
+
+					console.log('[Slate V4] Starting VERSION_FOUR parsing');
 					// Set version to detected version
 					this.version = detectedVersion;
-					
+
 					// Set original version to version
 					this.originalVersion = this.getVersion();
-					
+
 					// Check if serialized slate is binary
 					if(serializedSlate instanceof Uint8Array === true) {
-					
+
+						console.log('[Slate V4] Binary slate, length:', serializedSlate.length);
 						// Initialize bit reader for the serialized slate
 						var bitReader = new BitReader(serializedSlate);
-						
+
 						// Try
 						try {
-						
+
 							// Skip serialized slate's version
 							bitReader.getBytes(Common.BYTES_IN_A_UINT16);
-							
+							console.log('[Slate V4] Skipped version bytes');
+
 							// Set block header version to serialized slate's block header version
 							this.blockHeaderVersion = new BigNumber(Common.HEX_PREFIX + Common.toHexString(bitReader.getBytes(Common.BYTES_IN_A_UINT16)));
-							
+							console.log('[Slate V4] Block header version:', this.blockHeaderVersion.toString());
+
 							// Set ID to serialized slate's ID
-							this.id = new Uuid(Uuid.serializeData(bitReader.getBytes(Uuid.BYTE_LENGTH)));
-							
+							var uuidBytes = bitReader.getBytes(Uuid.BYTE_LENGTH);
+							console.log('[Slate V4] UUID bytes:', Array.from(uuidBytes).map(b => b.toString(16).padStart(2, '0')).join(' '));
+							var uuidStr = Uuid.serializeData(uuidBytes);
+							console.log('[Slate V4] UUID string:', uuidStr);
+							this.id = new Uuid(uuidStr);
+
 							// Check if ID isn't a random UUID
+							console.log('[Slate V4] Checking isRandom(), value:', this.getId().isRandom());
 							if(this.getId().isRandom() === false) {
-							
+
 								// Throw error
+								console.error('[Slate V4] UUID is not random!');
 								throw "Unsupported slate.";
 							}
-							
+
 							// Check if serialized slate's purpose isn't correct
-							if(bitReader.getBytes(1)[0] !== purpose + 1) {
-							
+							var slatePurpose = bitReader.getBytes(1)[0];
+							console.log('[Slate V4] Slate purpose byte:', slatePurpose, 'expected:', purpose + 1);
+							if(slatePurpose !== purpose + 1) {
+
 								// Throw error
+								console.error('[Slate V4] Purpose mismatch!');
 								throw "Unsupported slate.";
 							}
 							
 							// Set offset to serialized slate's offset
 							this.offset = bitReader.getBytes(Crypto.BLINDING_FACTOR_LENGTH);
-							
+							console.log('[Slate V4] Offset (32 bytes):', Array.from(this.offset).map(b => b.toString(16).padStart(2, '0')).join(' '));
+
 							// Check if serialized slate's offset isn't supported
-							if((purpose === Slate.COMPACT_SLATE_PURPOSE_SEND_INITIAL && Common.arraysAreEqual(this.getOffset(), Slate.ZERO_OFFSET) === false && Secp256k1Zkp.isValidSecretKey(this.getOffset()) !== true) || (purpose === Slate.COMPACT_SLATE_PURPOSE_SEND_RESPONSE && Secp256k1Zkp.isValidSecretKey(this.getOffset()) !== true)) {
-							
+							var isZeroOffset = Common.arraysAreEqual(this.getOffset(), Slate.ZERO_OFFSET);
+							var isValidSecretKey = Secp256k1Zkp.isValidSecretKey(this.getOffset());
+							console.log('[Slate V4] Offset check - isZero:', isZeroOffset, 'isValidSecretKey:', isValidSecretKey, 'purpose:', purpose);
+							if((purpose === Slate.COMPACT_SLATE_PURPOSE_SEND_INITIAL && isZeroOffset === false && isValidSecretKey !== true) || (purpose === Slate.COMPACT_SLATE_PURPOSE_SEND_RESPONSE && isValidSecretKey !== true)) {
+
 								// Throw error
+								console.error('[Slate V4] Offset validation failed!');
 								throw "Unsupported slate.";
 							}
-							
+
 							// Get serialized slate's optional fields
 							var optionalFields = bitReader.getBytes(1)[0];
-							
+							console.log('[Slate V4] Optional fields byte:', optionalFields.toString(2).padStart(8, '0'));
+
 							// Set number of participants to serialized slate's number of participants if it includes it
 							this.numberOfParticipants = ((optionalFields & 0b00000001) !== 0) ? new BigNumber(bitReader.getBytes(1)[0]) : Slate.DEFAULT_NUMBER_OF_PARTICIPANTS;
-							
+							console.log('[Slate V4] Number of participants:', this.numberOfParticipants.toString());
+
 							// Check if serialized slate's number of participants isn't supported
 							if(this.getNumberOfParticipants().isLessThan(Slate.MINIMUM_NUMBER_OF_PARTICIPANTS) === true) {
-							
+
 								// Throw error
+								console.error('[Slate V4] Number of participants too low!');
 								throw "Unsupported slate.";
 							}
-							
+
 							// Set amount to serialized slate's amount if it includes it
 							this.amount = ((optionalFields & 0b00000010) !== 0) ? new BigNumber(Common.HEX_PREFIX + Common.toHexString(bitReader.getBytes(Common.BYTES_IN_A_UINT64))) : ((purpose === Slate.COMPACT_SLATE_PURPOSE_SEND_INITIAL) ? new BigNumber(0) : initialSendSlate.getAmount());
-							
+							console.log('[Slate V4] Amount:', this.amount.toString());
+
 							// Check if serialized slate's amount isn't supported
 							if(this.getAmount().isLessThan(Slate.MINIMUM_AMOUNT) === true) {
-							
+
 								// Throw error
+								console.error('[Slate V4] Amount too low!');
 								throw "Unsupported slate.";
 							}
-							
+
 							// Set fee to serialized slate's fee if it includes it
 							this.fee = ((optionalFields & 0b00000100) !== 0) ? new BigNumber(Common.HEX_PREFIX + Common.toHexString(bitReader.getBytes(Common.BYTES_IN_A_UINT64))) : ((purpose === Slate.COMPACT_SLATE_PURPOSE_SEND_INITIAL) ? new BigNumber(0) : initialSendSlate.getFee());
-							
+							console.log('[Slate V4] Fee:', this.fee.toString());
+
 							// Check if serialized slate's fee isn't supported
 							if(this.getFee().isLessThan(Slate.MINIMUM_FEE) === true) {
-							
+
 								// Throw error
+								console.error('[Slate V4] Fee too low!');
 								throw "Unsupported slate.";
 							}
 							
 							// Get serialized slate's features if it includes it
 							var features = ((optionalFields & 0b00001000) !== 0) ? bitReader.getBytes(1)[0] : SlateKernel.PLAIN_FEATURES;
-							
+							console.log('[Slate V4] Features:', features);
+
 							// Set time to live cut off height to serialized slate's time to live cut off height if it includes it
 							this.timeToLiveCutOffHeight = ((optionalFields & 0b00010000) !== 0) ? new BigNumber(Common.HEX_PREFIX + Common.toHexString(bitReader.getBytes(Common.BYTES_IN_A_UINT64))) : Slate.NO_TIME_TO_LIVE_CUT_OFF_HEIGHT;
-							
+							console.log('[Slate V4] TTL cut off height:', this.timeToLiveCutOffHeight?.toString?.() || 'none');
+
 							// Get serialized sate's participants length
 							var participantsLength = bitReader.getBytes(1)[0];
-							
+							console.log('[Slate V4] Participants length from slate:', participantsLength);
+
 							// Check if purpose is send response
 							if(purpose === Slate.COMPACT_SLATE_PURPOSE_SEND_RESPONSE) {
 							
@@ -4333,21 +4370,28 @@ class Slate {
 							}
 							
 							// Check if serialized slate's participants isn't supported
+							console.log('[Slate V4] Checking participants: numParticipants=' + this.getNumberOfParticipants() + ' participantsLength=' + participantsLength + ' existing=' + this.getParticipants()["length"]);
 							if(this.getNumberOfParticipants().isLessThan(participantsLength + this.getParticipants()["length"]) === true) {
-							
+
 								// Throw error
+								console.error('[Slate V4] Participants count invalid!');
 								throw "Unsupported slate.";
 							}
-							
+
 							// Go through all of the serialized slate's participants
+							console.log('[Slate V4] Parsing', participantsLength, 'participants...');
 							for(var i = 0; i < participantsLength; ++i) {
-							
+
 								// Add serialized slate's participant to the participants
+								console.log('[Slate V4] Parsing participant', i);
 								this.participants.push(new SlateParticipant(bitReader, this));
+								console.log('[Slate V4] Participant', i, 'parsed successfully');
 							}
-							
+							console.log('[Slate V4] All participants parsed');
+
 							// Get serialized slate's component fields
 							var componentFields = bitReader.getBytes(1)[0];
+							console.log('[Slate V4] Component fields:', componentFields.toString(2).padStart(8, '0'));
 							
 							// Check if serialized slate includes inputs and outputs
 							if((componentFields & 0b00000001) !== 0) {
@@ -4404,52 +4448,62 @@ class Slate {
 							}
 							
 							// Check serialized slate's features
+							console.log('[Slate V4] Checking features:', features, 'PLAIN_FEATURES:', SlateKernel.PLAIN_FEATURES);
 							switch(features) {
-							
+
 								// Plain features
 								case SlateKernel.PLAIN_FEATURES:
-								
+									console.log('[Slate V4] Features: PLAIN');
 									// Break
 									break;
-								
+
 								// Height locked features
 								case SlateKernel.HEIGHT_LOCKED_FEATURES:
-								
+
 									// Set lock height to serialized slate's lock height
 									this.lockHeight = new BigNumber(Common.HEX_PREFIX + Common.toHexString(bitReader.getBytes(Common.BYTES_IN_A_UINT64)));
-									
+									console.log('[Slate V4] Features: HEIGHT_LOCKED, lockHeight:', this.lockHeight.toString());
+
 									// Check if serialized slate's lock height isn't supported
 									if(this.getLockHeight().isLessThan(Slate.NO_LOCK_HEIGHT) === true) {
-									
+
 										// Throw error
+										console.error('[Slate V4] Lock height invalid!');
 										throw "Unsupported slate.";
 									}
-								
+
 									// Break
 									break;
-							
+
 								// Default
 								default:
-								
+
 									// Throw error
+									console.error('[Slate V4] Unknown features value:', features);
 									throw "Unsupported slate.";
 							}
-							
+
 							// Check if serialized slate's time to live cut off height isn't supported
+							console.log('[Slate V4] Checking TTL cutoff...');
 							if(this.getTimeToLiveCutOffHeight() !== Slate.NO_TIME_TO_LIVE_CUT_OFF_HEIGHT && (this.getTimeToLiveCutOffHeight().isLessThan(Consensus.FIRST_BLOCK_HEIGHT) === true || (this.getLockHeight().isEqualTo(Slate.NO_LOCK_HEIGHT) === false && this.getTimeToLiveCutOffHeight().isLessThan(this.getLockHeight()) === true))) {
-							
+
 								// Throw error
+								console.error('[Slate V4] TTL cutoff invalid!');
 								throw "Unsupported slate.";
 							}
-							
+
 							// Set kernels to serialized slate's kernels
+							console.log('[Slate V4] Creating kernel with features:', this.getKernelFeatures(), 'fee:', this.getFee()?.toString(), 'lockHeight:', this.getLockHeight()?.toString());
 							this.kernels.push(new SlateKernel(this.getKernelFeatures(), this.getFee(), this.getLockHeight(), this.getRelativeHeight()));
+							console.log('[Slate V4] Kernel created successfully!');
+							console.log('[Slate V4] VERSION_FOUR parsing COMPLETE!');
 						}
-					
+
 						// Catch errors
 						catch(error) {
-						
+
 							// Throw error
+							console.error('[Slate V4] Caught error during parsing:', error);
 							throw "Unsupported slate.";
 						}
 					}
@@ -4846,107 +4900,132 @@ class Slate {
 			
 			// Set participant IDs
 			var participantIds = [];
-			
+
 			// Set sender participant exists
 			var senderParticipantExists = false;
-			
+
+			console.log('[Slate] Checking participants, count:', this.getParticipants()["length"]);
 			// Go through all participants
 			for(var i = 0; i < this.getParticipants()["length"]; ++i) {
-			
+
 				// Get participant
 				var participant = this.getParticipants()[i];
-				
+				console.log('[Slate] Participant', i, '- ID:', participant.getId().toFixed(), 'isSender:', participant.isSender());
+
 				// Check if participant's ID already exists
 				if(participantIds.indexOf(participant.getId().toFixed()) !== Common.INDEX_NOT_FOUND) {
-				
+
 					// Throw error
+					console.error('[Slate] Duplicate participant ID:', participant.getId().toFixed());
 					throw "Unsupported slate.";
 				}
-				
+
 				// Append participant's ID to list
 				participantIds.push(participant.getId().toFixed());
-				
+
 				// Check if participant is a sender
 				if(participant.isSender() === true) {
-				
+
 					// Set sender participant exists
 					senderParticipantExists = true;
 				}
 			}
-			
+
 			// Check if a sender participant doesn't exist
 			if(senderParticipantExists === false) {
-			
+
 				// Throw error
+				console.error('[Slate] No sender participant found!');
 				throw "Unsupported slate.";
 			}
-			
+
 			// Check if partial signatures failed to be verified
+			console.log('[Slate] verifyPartialSignatures()...');
 			if(this.verifyPartialSignatures() === false) {
-			
+
 				// Throw error
+				console.error('[Slate] verifyPartialSignatures() FAILED!');
 				throw "Unsupported slate.";
 			}
-			
+
 			// Check if receiver signature failed to be verified
+			console.log('[Slate] verifyReceiverSignature()...');
 			if(this.verifyReceiverSignature(isMainnet) === false) {
-			
+
 				// Throw error
+				console.error('[Slate] verifyReceiverSignature() FAILED!');
 				throw "Unsupported slate.";
 			}
 			
 			// Check if verifying weight failed
+			console.log('[Slate] Running post-parse validations...');
+			console.log('[Slate] verifyWeight()...');
 			if(this.verifyWeight() === false) {
-			
+
 				// Throw error
+				console.error('[Slate] verifyWeight() FAILED!');
 				throw "Unsupported slate.";
 			}
-			
+
 			// Check if verifying no recent duplicate kernels failed
+			console.log('[Slate] verifyNoRecentDuplicateKernels()...');
 			if(this.verifyNoRecentDuplicateKernels(isMainnet) === false) {
-			
+
 				// Throw error
+				console.error('[Slate] verifyNoRecentDuplicateKernels() FAILED!');
 				throw "Unsupported slate.";
 			}
-			
+
 			// Check if verifying sorted and unique failed
+			console.log('[Slate] verifySortedAndUnique()...');
 			if(this.verifySortedAndUnique() === false) {
-			
+
 				// Throw error
+				console.error('[Slate] verifySortedAndUnique() FAILED!');
 				throw "Unsupported slate.";
 			}
-			
+
 			// Check if verifying no cut through failed
+			console.log('[Slate] verifyNoCutThrough()...');
 			if(this.verifyNoCutThrough() === false) {
-			
+
 				// Throw error
+				console.error('[Slate] verifyNoCutThrough() FAILED!');
 				throw "Unsupported slate.";
 			}
-			
+
 			// Check if no kernels exist
+			console.log('[Slate] Checking kernels exist, count:', this.getKernels()["length"]);
 			if(this.getKernels()["length"] === 0) {
-			
+
 				// Throw error
+				console.error('[Slate] No kernels exist!');
 				throw "Unsupported slate.";
 			}
-			
+
 			// Check if kernel's features differ from the slate's
+			console.log('[Slate] Checking kernel features match, slate:', this.getKernelFeatures(), 'kernel:', this.getKernels()[0].getFeatures());
 			if(this.getKernelFeatures() !== this.getKernels()[0].getFeatures()) {
-			
+
 				// Throw error
+				console.error('[Slate] Kernel features mismatch!');
 				throw "Unsupported slate.";
 			}
-			
+
 			// Check if kernel is complete
+			console.log('[Slate] Checking if kernel is complete:', this.getKernels()[0].isComplete());
 			if(this.getKernels()[0].isComplete() === true) {
-			
+
 				// Check if verifying kernel sums failed
+				console.log('[Slate] verifyKernelSums()...');
 				if(this.verifyKernelSums() === false) {
-				
+
 					// Throw error
+					console.error('[Slate] verifyKernelSums() FAILED!');
 					throw "Unsupported slate.";
 				}
 			}
+			console.log('[Slate] All validations PASSED!');
 		}
 		
 		// Minimum compatible version
@@ -5034,87 +5113,99 @@ class Slate {
 		
 		// Verify partial signatures
 		verifyPartialSignatures() {
-		
+
+			console.log('[Slate.verifyPartialSignatures] Checking', this.getParticipants()["length"], 'participants');
 			// Try
 			try {
-			
+
 				// Get message to sign
 				var messageToSign = SlateKernel.signatureMessage(this.getKernelFeatures(), this.getFee(), this.getLockHeight(), this.getRelativeHeight());
+				console.log('[Slate.verifyPartialSignatures] Message to sign:', Common.toHexString(messageToSign));
 			}
-			
+
 			// Catch errors
 			catch(error) {
-			
+
+				console.error('[Slate.verifyPartialSignatures] Error getting message to sign:', error);
 				// Return false
 				return false;
 			}
-			
+
 			// Get public nonce sum from combining participant's public nonces
 			var publicNonceSum = Secp256k1Zkp.combinePublicKeys(this.getParticipants().map(function(participant) {
-			
+
 				// Return participant's public nonce
 				return participant.getPublicNonce();
 			}));
-			
+
 			// Check if getting public nonce sum failed
 			if(publicNonceSum === Secp256k1Zkp.OPERATION_FAILED) {
-			
+
+				console.error('[Slate.verifyPartialSignatures] Failed to combine public nonces');
 				// Return false
 				return false;
 			}
-			
+
 			// Get public blind excess sum from combining participant's public blind excesses
 			var publicBlindExcessSum = Secp256k1Zkp.combinePublicKeys(this.getParticipants().map(function(participant) {
-			
+
 				// Return participant's public blind excess
 				return participant.getPublicBlindExcess();
 			}));
-			
+
 			// Check if getting public blind excess sum failed
 			if(publicBlindExcessSum === Secp256k1Zkp.OPERATION_FAILED) {
-			
+
+				console.error('[Slate.verifyPartialSignatures] Failed to combine public blind excesses');
 				// Return false
 				return false;
 			}
-			
+
 			// Go through all participants
 			for(var i = 0; i < this.getParticipants()["length"]; ++i) {
-			
+
 				// Get participant
 				var participant = this.getParticipants()[i];
-				
+
 				// Check if participant is complete
 				if(participant.isComplete() === true) {
-				
+
+					console.log('[Slate.verifyPartialSignatures] Verifying complete participant', i);
 					// Check if partial signature doesn't verify the message
 					if(Secp256k1Zkp.verifySingleSignerSignature(participant.getPartialSignature(), messageToSign, publicNonceSum, participant.getPublicBlindExcess(), publicBlindExcessSum, true) !== true) {
-					
+
+						console.error('[Slate.verifyPartialSignatures] Partial signature verification failed for participant', i);
 						// Return false
 						return false;
 					}
+				} else {
+					console.log('[Slate.verifyPartialSignatures] Participant', i, 'is not complete, skipping signature verification');
 				}
 			}
-			
+
 			// Return true
 			return true;
 		}
 		
 		// Verify receiver signature
 		verifyReceiverSignature(isMainnet) {
-		
+
+			console.log('[Slate.verifyReceiverSignature] Receiver signature exists:', this.getReceiverSignature() !== Slate.NO_RECEIVER_SIGNATURE);
 			// Check if receiver signature exists
 			if(this.getReceiverSignature() !== Slate.NO_RECEIVER_SIGNATURE) {
-			
+
 				// Try
 				try {
-				
+
 					// Get excess
 					var excess = this.getExcess();
+					console.log('[Slate.verifyReceiverSignature] Got excess');
 				}
-				
+
 				// Catch errors
 				catch(error) {
-				
+
+					console.error('[Slate.verifyReceiverSignature] Error getting excess:', error);
 					// Return false
 					return false;
 				}
@@ -5241,152 +5332,171 @@ class Slate {
 		
 		// Verify weight
 		verifyWeight(expectedNumberOfOutputs = 0) {
-		
+
 			// Get coinbase weight
 			var coinbaseWeight = Consensus.BLOCK_OUTPUT_WEIGHT + Consensus.BLOCK_KERNEL_WEIGHT;
-			
+
 			// Get maximum transaction weight while leaving room for a coinbase
 			var maximumTransactionWeight = Math.max(Consensus.MAXIMUM_BLOCK_WEIGHT - coinbaseWeight, 0);
-			
+
+			var weight = Slate.getWeight(this.getInputs()["length"], this.getOutputs()["length"] + expectedNumberOfOutputs, this.getKernels()["length"]);
+			console.log('[Slate.verifyWeight] inputs:', this.getInputs()["length"], 'outputs:', this.getOutputs()["length"], 'expectedOutputs:', expectedNumberOfOutputs, 'kernels:', this.getKernels()["length"]);
+			console.log('[Slate.verifyWeight] weight:', weight.toString(), 'max:', maximumTransactionWeight);
 			// Check if weight is too heavy
-			if(Slate.getWeight(this.getInputs()["length"], this.getOutputs()["length"] + expectedNumberOfOutputs, this.getKernels()["length"]).isGreaterThan(maximumTransactionWeight) === true)
-			
+			if(weight.isGreaterThan(maximumTransactionWeight) === true) {
+				console.error('[Slate.verifyWeight] Weight exceeds maximum!');
 				// Return false
 				return false;
-			
+			}
+
 			// Return true
 			return true;
 		}
 		
 		// Verify no recent duplicate kernels
 		verifyNoRecentDuplicateKernels(isMainnet) {
-		
+
+			console.log('[Slate.verifyNoRecentDuplicateKernels] isMainnet:', isMainnet);
 			// Check if no recent duplicate kernels is enabled
 			if(Consensus.isNoRecentDuplicateKernelsEnabled(isMainnet) === true) {
-			
+
+				console.log('[Slate.verifyNoRecentDuplicateKernels] Check enabled, checking kernels...');
 				// Initialize no recent duplicate kernels excesses
 				var noRecentDuplicateKernelsExcesses = [];
-			
+
 				// Go through all kernels
 				for(var i = 0; i < this.getKernels()["length"]; ++i) {
-				
+
 					// Get kernel
 					var kernel = this.getKernels()[i];
-					
+
 					// Check if kernel is no recent duplicate
 					if(kernel.isNoRecentDuplicate() === true) {
-					
+
 						// Check if kernel's excess already exists in the list
 						if(noRecentDuplicateKernelsExcesses.indexOf(Common.toHexString(kernel.getExcess())) !== Common.INDEX_NOT_FOUND) {
-						
+
+							console.error('[Slate.verifyNoRecentDuplicateKernels] Duplicate kernel excess found!');
 							// Return false
 							return false;
 						}
-					
+
 						// Append kernel's excess to list
 						noRecentDuplicateKernelsExcesses.push(Common.toHexString(kernel.getExcess()));
 					}
 				}
+			} else {
+				console.log('[Slate.verifyNoRecentDuplicateKernels] Check disabled, skipping');
 			}
-			
+
 			// Return true
 			return true;
 		}
 		
 		// Verify sorted and unique
 		verifySortedAndUnique() {
-		
+
+			console.log('[Slate.verifySortedAndUnique] Checking inputs:', this.getInputs()["length"]);
 			// Check if inputs aren't sorted and unique
 			if(Slate.isSortedAndUnique(this.getInputs().map(function(input) {
-			
+
 				// Return input's hash
 				return input.getHash();
-				
+
 			})) === false) {
-			
+
+				console.error('[Slate.verifySortedAndUnique] Inputs not sorted/unique!');
 				// Return false
 				return false;
 			}
-			
+
+			console.log('[Slate.verifySortedAndUnique] Checking outputs:', this.getOutputs()["length"]);
 			// Check if outputs aren't sorted and unique
 			if(Slate.isSortedAndUnique(this.getOutputs().map(function(output) {
-			
+
 				// Return output's hash
 				return output.getHash();
-				
+
 			})) === false) {
-			
+
+				console.error('[Slate.verifySortedAndUnique] Outputs not sorted/unique!');
 				// Return false
 				return false;
 			}
-			
+
 			// Try
 			try {
-			
+
+				console.log('[Slate.verifySortedAndUnique] Checking kernels:', this.getKernels()["length"]);
 				// Check if kernels aren't sorted and unique
 				if(Slate.isSortedAndUnique(this.getKernels().map(function(kernel) {
-				
+
 					// Return kernel's hash
 					return kernel.getHash();
-					
+
 				})) === false) {
-				
+
+					console.error('[Slate.verifySortedAndUnique] Kernels not sorted/unique!');
 					// Return false
 					return false;
 				}
 			}
-			
+
 			// Catch errors
 			catch(error) {
-			
+
+				console.error('[Slate.verifySortedAndUnique] Error checking kernels:', error);
 				// Return false
 				return false;
 			}
-			
+
 			// Return true
 			return true;
 		}
 		
 		// Verify no cut through
 		verifyNoCutThrough() {
-		
+
+			console.log('[Slate.verifyNoCutThrough] Checking inputs:', this.getInputs()["length"], 'outputs:', this.getOutputs()["length"]);
 			// Initialize serialized hashes
 			var serializedHashes = [];
-			
+
 			// Go through all inputs
 			for(var i = 0; i < this.getInputs()["length"]; ++i) {
-			
+
 				// Get input's serialized hash
 				var serializedHash = this.getInputs()[i].getHash().serialize();
-				
+
 				// Check if serialized hash already exists in the list
 				if(serializedHashes.indexOf(serializedHash) !== Common.INDEX_NOT_FOUND) {
-				
+
+					console.error('[Slate.verifyNoCutThrough] Duplicate input hash at index:', i);
 					// Return false
 					return false;
 				}
-				
+
 				// Append serialized hash to list
 				serializedHashes.push(serializedHash);
 			}
-			
+
 			// Go through all outputs
 			for(var i = 0; i < this.getOutputs()["length"]; ++i) {
-			
+
 				// Get input's serialized hash
 				var serializedHash = this.getOutputs()[i].getHash().serialize();
-				
+
 				// Check if serialized hash already exists in the list
 				if(serializedHashes.indexOf(serializedHash) !== Common.INDEX_NOT_FOUND) {
-				
+
+					console.error('[Slate.verifyNoCutThrough] Duplicate output hash at index:', i);
 					// Return false
 					return false;
 				}
-				
+
 				// Append serialized hash to list
 				serializedHashes.push(serializedHash);
 			}
-			
+
 			// Return true
 			return true;
 		}
@@ -5423,86 +5533,95 @@ class Slate {
 		
 		// Verify kernel sums
 		verifyKernelSums() {
-		
+
+			console.log('[Slate.verifyKernelSums] Starting verification');
 			// Set kernel excesses to all kernel's excesses
 			var kernelExcesses = this.getKernels().map(function(kernel) {
-			
+
 				// Return kernel's excess
 				return kernel.getExcess();
 			});
-			
+
+			console.log('[Slate.verifyKernelSums] Kernel excesses count:', kernelExcesses["length"]);
 			// Go through all kernel excesses
 			for(var i = 0; i < kernelExcesses["length"]; ++i) {
-			
+
 				// Get kernel excess
 				var kernelExcess = kernelExcesses[i];
-				
+
 				// Check if kernel excess is a zero commit
 				if(Common.arraysAreEqual(kernelExcess, Slate.ZERO_COMMIT) === true) {
-				
+
+					console.log('[Slate.verifyKernelSums] Removing zero commit at index:', i);
 					// Remove kernel excess from list
 					kernelExcesses.splice(i--, 1);
 				}
 			}
-			
+
 			// Check if getting kernels sum from kernel excesses failed
 			var kernelsSum = Secp256k1Zkp.pedersenCommitSum(kernelExcesses, []);
-			
+
 			if(kernelsSum === Secp256k1Zkp.OPERATION_FAILED) {
-			
+
+				console.error('[Slate.verifyKernelSums] Failed to get kernels sum');
 				// Return false
 				return false;
 			}
-			
+
 			// Initialize kernel commits
 			var kernelCommits = [
-			
+
 				// Kernels sum
 				kernelsSum
 			];
-			
+
 			// Try
 			try {
-			
+
 				// Get offset excess
 				var offsetExcess = this.getOffsetExcess();
+				console.log('[Slate.verifyKernelSums] Got offset excess');
 			}
-			
+
 			// Catch errors
 			catch(error) {
-			
+
+				console.error('[Slate.verifyKernelSums] Error getting offset excess:', error);
 				// Return false
 				return false;
 			}
-			
+
 			// Append offset excess to kernel commits
 			kernelCommits.push(offsetExcess);
-			
+
 			// Check if getting kernels sum with offset from kernel commits failed
 			var kernelsSumWithOffset = Secp256k1Zkp.pedersenCommitSum(kernelCommits, []);
-			
+
 			if(kernelsSumWithOffset === Secp256k1Zkp.OPERATION_FAILED) {
-			
+
+				console.error('[Slate.verifyKernelSums] Failed to get kernels sum with offset');
 				// Return false
 				return false;
 			}
-			
+
 			// Check if getting commits sum failed
 			var commitsSum = this.getCommitsSum();
-			
+
 			if(commitsSum === false) {
-			
+
+				console.error('[Slate.verifyKernelSums] Failed to get commits sum');
 				// Return false
 				return false;
 			}
-			
+
 			// Check if commits sum isn't equal to the kernels sum with offset
 			if(Common.arraysAreEqual(commitsSum, kernelsSumWithOffset) === false) {
-			
+
+				console.error('[Slate.verifyKernelSums] Commits sum does not equal kernels sum with offset');
 				// Return false
 				return false;
 			}
-			
+
 			// Return true
 			return true;
 		}

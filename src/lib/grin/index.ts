@@ -305,12 +305,34 @@ export async function decodeSlatepack(
 
   const Slate = getSlate();
   const Slatepack = getSlatepack();
+  const Consensus = getConsensus();
+
+  // Debug: log slatepack info
+  console.log('[Grin] decodeSlatepack called, wallet type:', Consensus.getWalletType());
+  console.log('[Grin] slatepack length:', slatepackString.length);
+  console.log('[Grin] slatepack starts with:', slatepackString.substring(0, 50));
+  console.log('[Grin] slatepack ends with:', slatepackString.substring(slatepackString.length - 50));
+
+  // Find delimiters for debugging
+  const sep = '.';
+  const headerDelim = slatepackString.indexOf(sep);
+  const payloadDelim = slatepackString.indexOf(sep, headerDelim + 1);
+  const footerDelim = slatepackString.indexOf(sep, payloadDelim + 1);
+  console.log('[Grin] Delimiter positions - header:', headerDelim, 'payload:', payloadDelim, 'footer:', footerDelim);
 
   // Decode the slatepack - returns Uint8Array of slate data
-  const slateData: Uint8Array = await Slatepack.decodeSlatepack(
-    slatepackString,
-    keys.addressKey // Ed25519 secret key for decryption
-  );
+  let slateData: Uint8Array;
+  try {
+    slateData = await Slatepack.decodeSlatepack(
+      slatepackString,
+      keys.addressKey // Ed25519 secret key for decryption
+    );
+    console.log('[Grin] Slatepack.decodeSlatepack() succeeded, data length:', slateData?.length);
+    console.log('[Grin] First 32 bytes:', Array.from(slateData?.slice(0, 32) || []).map(b => b.toString(16).padStart(2, '0')).join(' '));
+  } catch (e: any) {
+    console.error('[Grin] Slatepack.decodeSlatepack() FAILED:', e?.message || e);
+    throw e;
+  }
 
   // Determine purpose based on whether we have an initial slate
   const purpose = initialSlate
@@ -319,12 +341,21 @@ export async function decodeSlatepack(
 
   // Create Slate from decoded data
   // Constructor: (serializedSlate, isMainnet, purpose, initialSendSlate)
-  const slate = new Slate(
-    slateData,
-    true, // isMainnet
-    purpose,
-    initialSlate?.raw || null
-  );
+  console.log('[Grin] Creating Slate with purpose:', purpose, '(SEND_INITIAL=0, SEND_RESPONSE=1)');
+  console.log('[Grin] initialSlate provided:', !!initialSlate);
+  let slate;
+  try {
+    slate = new Slate(
+      slateData,
+      true, // isMainnet
+      purpose,
+      initialSlate?.raw || null
+    );
+    console.log('[Grin] Slate created successfully, id:', slate.getId?.());
+  } catch (e: any) {
+    console.error('[Grin] Slate constructor FAILED:', e?.message || e);
+    throw e;
+  }
 
   const amount = BigInt(slate.getAmount().toFixed());
   const fee = BigInt(slate.getFee().toFixed());
@@ -351,46 +382,226 @@ export async function decodeSlatepack(
 /**
  * Sign an incoming slate as the recipient (S1 -> S2).
  *
+ * This creates an output for the received amount, updates the offset,
+ * and adds the receiver's participant data with a partial signature.
+ *
  * @param keys - Grin wallet keys
  * @param slatepackString - The incoming slatepack string
- * @returns The signed slate (S2)
+ * @param nextChildIndex - The next child index for the output key derivation
+ * @returns The signed slate (S2) and output info for recording
  */
 export async function signSlate(
   keys: GrinKeys,
-  slatepackString: string
-): Promise<GrinSlate> {
+  slatepackString: string,
+  nextChildIndex: number = 0
+): Promise<{ slate: GrinSlate; outputInfo: { keyId: string; nChild: number; amount: bigint; commitment: string } }> {
   await initializeGrinWasm();
 
   const Secp256k1Zkp = getSecp256k1Zkp();
+  const Crypto = getCrypto();
+  const Identifier = getIdentifier();
+  const BigNumber = getBigNumber();
+  const SlateOutput = getSlateOutput();
+  const Slate = getSlate();
+  const Common = getCommon();
 
   // Decode the incoming slate
   const slate = await decodeSlatepack(keys, slatepackString);
+  const rawSlate = slate.raw;
 
-  // Generate a random secret nonce for signing
-  const secretNonce = new Uint8Array(32);
-  crypto.getRandomValues(secretNonce);
+  // Get the amount being received
+  const amount = slate.amount;
+  const amountBN = new BigNumber(amount.toString());
 
-  // Ensure nonce is a valid secret key
-  while (Secp256k1Zkp.isValidSecretKey(secretNonce) !== true) {
-    crypto.getRandomValues(secretNonce);
+  console.log('[signSlate] Receiving amount:', amount.toString());
+
+  // Create identifier for the receive output
+  // Use depth 3 (account/change/index pattern)
+  const outputIdentifier = new Identifier(
+    3,
+    new Uint32Array([0, 0, nextChildIndex, 0])
+  );
+
+  // Create commitment for the output
+  const outputCommit = await Crypto.commit(
+    keys.extendedPrivateKey,
+    amountBN,
+    outputIdentifier,
+    Crypto.SWITCH_TYPE_REGULAR
+  );
+
+  console.log('[signSlate] Created output commitment');
+
+  // Create bulletproof range proof using ProofBuilder
+  const proofBuilder = new ProofBuilder();
+  await proofBuilder.initialize(keys.extendedPrivateKey);
+
+  const outputProof = await Crypto.proof(
+    keys.extendedPrivateKey,
+    amountBN,
+    outputIdentifier,
+    Crypto.SWITCH_TYPE_REGULAR,
+    proofBuilder
+  );
+
+  proofBuilder.uninitialize();
+
+  console.log('[signSlate] Created range proof');
+
+  // Create SlateOutput for the receive amount
+  const slateOutput = new SlateOutput(
+    SlateOutput.PLAIN_FEATURES,
+    outputCommit,
+    outputProof
+  );
+
+  // Add output to slate (use synchronous method - async worker doesn't work in service workers)
+  console.log('[signSlate] slateOutput created:', slateOutput);
+  console.log('[signSlate] slateOutput commit:', Common.toHexString(slateOutput.getCommit?.()));
+  console.log('[signSlate] slateOutput proof length:', slateOutput.getProof?.()?.length);
+  console.log('[signSlate] rawSlate.outputs before add:', rawSlate.outputs?.length);
+
+  const addResult = rawSlate.addOutputs([slateOutput]);
+  console.log('[signSlate] addOutputs returned:', addResult);
+
+  if (!addResult) {
+    throw new Error('Failed to add output to slate');
   }
 
-  // Add recipient's participant data (this signs the slate)
-  // addParticipant(secretKey, secretNonce, message, isMainnet, ...)
-  await slate.raw.addParticipant(
-    keys.secretKey,
+  console.log('[signSlate] rawSlate.outputs after add:', rawSlate.outputs?.length);
+  console.log('[signSlate] rawSlate.getOutputs() after add:', rawSlate.getOutputs?.()?.length);
+
+  // Derive the blinding factor for this output
+  const outputBlind = await Crypto.deriveSecretKey(
+    keys.extendedPrivateKey,
+    amountBN,
+    outputIdentifier,
+    Crypto.SWITCH_TYPE_REGULAR
+  );
+
+  // Generate a RANDOM secret key for signing (this is our "excess" contribution)
+  // Per Grin protocol, the receiver generates a random key and adjusts the offset
+  // to account for: new_offset = old_offset - random_key + output_blind
+  // Use createSecretNonce() which generates random 32 bytes - same as what we need
+  const randomSecretKey = Secp256k1Zkp.createSecretNonce();
+  if (randomSecretKey === Secp256k1Zkp.OPERATION_FAILED) {
+    outputBlind.fill(0);
+    throw new Error('Failed to create random secret key');
+  }
+
+  // Verify it's a valid secret key (should be, but let's be safe)
+  if (Secp256k1Zkp.isValidSecretKey(randomSecretKey) !== true) {
+    outputBlind.fill(0);
+    randomSecretKey.fill(0);
+    throw new Error('Generated random key is not a valid secret key');
+  }
+
+  console.log('[signSlate] Output blind:', Common.toHexString(outputBlind));
+  console.log('[signSlate] Random signing key:', Common.toHexString(randomSecretKey));
+
+  // Adjust offset: new_offset = old_offset - random_key + output_blind
+  // This is done in two steps:
+  // 1. Subtract the random key (our signing key)
+  // 2. Add the output blind
+
+  const offsetBefore = rawSlate.getOffset();
+  console.log('[signSlate] Offset BEFORE adjustment:', Common.toHexString(offsetBefore));
+
+  // Use blindSum to compute: offset = offset - randomSecretKey + outputBlind
+  const newOffset = Secp256k1Zkp.blindSum(
+    [rawSlate.getOffset(), outputBlind],  // positives: old_offset + output_blind
+    [randomSecretKey]                      // negatives: - random_key
+  );
+
+  if (newOffset === Secp256k1Zkp.OPERATION_FAILED) {
+    outputBlind.fill(0);
+    randomSecretKey.fill(0);
+    throw new Error('Failed to compute new offset');
+  }
+
+  // Set the new offset
+  rawSlate.offset = newOffset;
+
+  console.log('[signSlate] Offset AFTER adjustment:', Common.toHexString(rawSlate.getOffset()));
+
+  // The signing key is the random key we generated
+  const finalSecretKey = new Uint8Array(randomSecretKey);
+  outputBlind.fill(0);
+  randomSecretKey.fill(0);
+
+  console.log('[signSlate] Using random key as signing key');
+
+  // Generate secret nonce for participant
+  const secretNonce = Secp256k1Zkp.createSecretNonce();
+  if (secretNonce === Secp256k1Zkp.OPERATION_FAILED) {
+    finalSecretKey.fill(0);
+    throw new Error('Failed to create secret nonce');
+  }
+
+  console.log('[signSlate] Generated secret nonce');
+
+  // Add recipient's participant data with partial signature
+  await rawSlate.addParticipant(
+    finalSecretKey,
     secretNonce,
     null, // no message
     true  // isMainnet
   );
 
+  console.log('[signSlate] Added participant');
+
+  // Per Grin protocol, for S2 response we need to:
+  // 1. Zero out amount and fee (privacy - sender already knows these)
+  // 2. Remove sender's participant data (keep only our own)
+
+  console.log('[signSlate] Before S2 cleanup - amount:', rawSlate.amount?.toFixed?.(), 'fee:', rawSlate.fee?.toFixed?.());
+  console.log('[signSlate] Participants before cleanup:', rawSlate.participants?.length);
+
+  // Zero out amount and fee for S2
+  rawSlate.amount = new BigNumber(0);
+  rawSlate.fee = new BigNumber(0);
+
+  // Remove sender's participant (keep only our participant - the one with partial sig)
+  // Our participant has the partial signature, sender's doesn't
+  const ourParticipant = rawSlate.participants?.find((p: any) => p.getPartialSignature?.() !== null);
+  if (ourParticipant) {
+    rawSlate.participants = [ourParticipant];
+    console.log('[signSlate] Kept only our participant (with partial sig)');
+  } else {
+    console.warn('[signSlate] Could not find our participant with partial sig!');
+  }
+
+  console.log('[signSlate] After S2 cleanup - amount:', rawSlate.amount?.toFixed?.(), 'fee:', rawSlate.fee?.toFixed?.());
+  console.log('[signSlate] Participants after cleanup:', rawSlate.participants?.length);
+
+  // Debug: Check slate state before returning
+  const outputs = rawSlate.getOutputs?.();
+  const inputs = rawSlate.getInputs?.();
+  const participants = rawSlate.getParticipants?.();
+  console.log('[signSlate] Slate outputs count:', outputs?.length);
+  console.log('[signSlate] Slate inputs count:', inputs?.length);
+  console.log('[signSlate] Slate participants count:', participants?.length);
+  if (outputs?.length > 0) {
+    console.log('[signSlate] Output 0 commit:', Common.toHexString(outputs[0].getCommit?.()));
+  }
+
+  // Clear sensitive data
+  finalSecretKey.fill(0);
+  secretNonce.fill(0);
+
   // Update state to S2
   slate.state = 'S2';
 
-  // Clear the nonce from memory
-  secretNonce.fill(0);
-
-  return slate;
+  // Return slate and output info for recording
+  return {
+    slate,
+    outputInfo: {
+      keyId: Common.toHexString(outputIdentifier.getValue()),
+      nChild: nextChildIndex,
+      amount,
+      commitment: Common.toHexString(outputCommit),
+    },
+  };
 }
 
 /**
@@ -460,7 +671,21 @@ export async function encodeSlatepack(
     ? Slate.COMPACT_SLATE_PURPOSE_SEND_INITIAL
     : Slate.COMPACT_SLATE_PURPOSE_SEND_RESPONSE;
 
+  console.log('[Grin.encodeSlatepack] Purpose:', purpose, 'slatePurpose:', slatePurpose);
+  console.log('[Grin.encodeSlatepack] Slate version:', slate.raw.getVersion?.().toFixed?.());
+  console.log('[Grin.encodeSlatepack] Slate ID:', slate.raw.getId?.().serialize?.());
+  console.log('[Grin.encodeSlatepack] Participants:', slate.raw.getParticipants?.()?.length);
+
+  // Debug: show offset being serialized
+  const Common = getCommon();
+  const offset = slate.raw.getOffset?.();
+  if (offset) {
+    console.log('[Grin.encodeSlatepack] Slate offset:', Common.toHexString(offset));
+  }
+
   const serializedSlate = slate.raw.serialize(true, slatePurpose, true); // isMainnet, purpose, preferBinary
+  console.log('[Grin.encodeSlatepack] Serialized slate length:', serializedSlate?.length);
+  console.log('[Grin.encodeSlatepack] First 64 bytes:', Array.from(serializedSlate?.slice(0, 64) || []).map((b: number) => b.toString(16).padStart(2, '0')).join(' '));
 
   // Encode as slatepack
   // encodeSlatepack(slate, secretKey, publicKey)
@@ -470,6 +695,7 @@ export async function encodeSlatepack(
     recipientPublicKey || null
   );
 
+  console.log('[Grin.encodeSlatepack] Slatepack generated, length:', slatepackString?.length);
   return slatepackString;
 }
 

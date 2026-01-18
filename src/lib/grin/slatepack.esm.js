@@ -518,15 +518,20 @@ class Slatepack {
 				var data = decodedPayload.subarray(Base58.CHECKSUM_LENGTH);
 				
 				// Check if checksum is invalid
-				if(Common.arraysAreEqual(checksum, Base58.getChecksum(data)) === false) {
-				
+				var expectedChecksum = Base58.getChecksum(data);
+				console.log('[Slatepack] Checksum validation - received:', Array.from(checksum).map(b => b.toString(16).padStart(2, '0')).join(''));
+				console.log('[Slatepack] Checksum validation - expected:', Array.from(expectedChecksum).map(b => b.toString(16).padStart(2, '0')).join(''));
+				if(Common.arraysAreEqual(checksum, expectedChecksum) === false) {
+
 					// Reject error
+					console.error('[Slatepack] Checksum mismatch!');
 					reject("Unsupported Slatepack.");
-					
+
 					// Return
 					return;
 				}
-				
+				console.log('[Slatepack] Checksum valid!');
+
 				// Check wallet type
 				switch(Consensus.getWalletType()) {
 				
@@ -889,17 +894,23 @@ class Slatepack {
 					
 					// GRIN wallet
 					case Consensus.GRIN_WALLET_TYPE:
-					
+
+						// Debug logging for Grin slatepack decoding
+						console.log('[Slatepack] GRIN wallet path, data length:', data["length"]);
+						console.log('[Slatepack] Data header bytes:', Array.from(data.subarray(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' '));
+						console.log('[Slatepack] Version:', data[0] + '.' + data[1], 'TransferMode:', data[2]);
+
 						// Check if data's length is too short
 						if(data["length"] < data["BYTES_PER_ELEMENT"] + data["BYTES_PER_ELEMENT"] + data["BYTES_PER_ELEMENT"] + Uint16Array["BYTES_PER_ELEMENT"] + Uint32Array["BYTES_PER_ELEMENT"]) {
-						
+
 							// Reject error
+							console.error('[Slatepack] GRIN data too short:', data["length"]);
 							reject("Unsupported Slatepack.");
-							
+
 							// Return
 							return;
 						}
-						
+
 						// Check data's transfer mode
 						switch(data[data["BYTES_PER_ELEMENT"] + data["BYTES_PER_ELEMENT"]]) {
 						
@@ -959,19 +970,20 @@ class Slatepack {
 						
 						// Check if encrypted
 						if(encrypted === true) {
-						
+
 							// TODO Support encrypted Grin Slatepacks
-							
+							console.error('[Slatepack] Encrypted Grin slatepacks not yet supported!');
 							// Reject error
 							reject("Unsupported Slatepack.");
 						}
-						
+
 						// Otherwise
 						else {
-						
+
 							// Get slate from data
 							var slate = data.subarray(data["BYTES_PER_ELEMENT"] + data["BYTES_PER_ELEMENT"] + data["BYTES_PER_ELEMENT"] + Uint16Array["BYTES_PER_ELEMENT"] + Uint32Array["BYTES_PER_ELEMENT"] + optionalFieldsLength + Common.BYTES_IN_A_UINT64);
-							
+
+							console.log('[Slatepack] Successfully extracted slate, length:', slate.length);
 							// Resolve slate
 							resolve(slate);
 						}

@@ -15,6 +15,11 @@ import { getResource } from './wasm-loader';
 // Phase 1: Core utilities (npm packages)
 import { BigNumber } from './bignumber.esm';
 import { bech32, bech32m } from './bech32.esm';
+import { Base58 } from './base58.esm';
+import { sha256 } from './sha256.esm';
+import { Uuid } from './uuid.esm';
+import { CRC32 } from './crc32.esm';
+import { Hash } from './hash.esm';
 
 // Phase 2: WASM module wrappers
 import { Secp256k1Zkp } from '../secp256k1-zkp.esm.js';
@@ -51,15 +56,26 @@ globalThis.getResource = getResource;
 globalThis.BigNumber = BigNumber;
 globalThis.bech32 = bech32;
 globalThis.bech32m = bech32m;
+globalThis.Base58 = Base58;
+globalThis.sha256 = sha256;
+globalThis.Uuid = Uuid;
+globalThis.CRC32 = CRC32;
 globalThis.Secp256k1Zkp = Secp256k1Zkp;
 globalThis.Ed25519 = Ed25519;
 globalThis.X25519 = X25519;
 globalThis.Blake2b = Blake2b;
 globalThis.Common = Common;
+globalThis.Hash = Hash;  // Must be after Blake2b and Common
 globalThis.BitReader = BitReader;
 globalThis.BitWriter = BitWriter;
 globalThis.Identifier = Identifier;
 globalThis.Consensus = Consensus;
+
+// CRITICAL: Set wallet type to GRIN immediately after Consensus is available
+// This must happen before any code calls getWalletType() which would default to MWC
+// The MWC library defaults to MWC wallet type which uses incompatible slatepack format
+Consensus.walletType = Consensus.GRIN_WALLET_TYPE;
+
 globalThis.Crypto = Crypto;
 globalThis.Seed = Seed;
 globalThis.SlateInput = SlateInput;
@@ -102,11 +118,12 @@ export async function initializeGrin(): Promise<void> {
     console.log('[Grin] Initializing BLAKE2b WASM...');
     await Blake2b.initialize();
 
-    // Set wallet type to GRIN (not MWC which is the default)
-    // This is critical - without it, slatepack encoding/decoding uses MWC format
-    // which is incompatible with Grin slatepacks from external wallets
-    console.log('[Grin] Setting wallet type to GRIN...');
-    Consensus.walletType = Consensus.GRIN_WALLET_TYPE;
+    // Initialize Slate worker (required for async operations like addOutputsAsynchronous)
+    console.log('[Grin] Initializing Slate worker...');
+    await Slate.initialize();
+
+    // Verify wallet type is GRIN (set at module load time, above)
+    console.log('[Grin] Verifying wallet type: ' + Consensus.getWalletType() + ' (expected: ' + Consensus.GRIN_WALLET_TYPE + ')');
 
     initialized = true;
     console.log('[Grin] WASM initialization complete');

@@ -1813,8 +1813,8 @@ async function handleGrinSignSlate(
       grinWasmKeys = await initGrinWallet(unlockedMnemonic);
     }
 
-    // Sign the slate (decodes, adds our signature, returns S2 slate)
-    const signedSlate = await signSlate(grinWasmKeys, slatepack);
+    // Sign the slate (decodes, adds our signature, returns S2 slate and output info)
+    const { slate: signedSlate, outputInfo } = await signSlate(grinWasmKeys, slatepack);
 
     // Encode the signed slate as a slatepack response for the sender
     const signedSlatepack = await encodeSlatepack(grinWasmKeys, signedSlate, 'response');
@@ -1834,6 +1834,25 @@ async function handleGrinSignSlate(
 
     if (result.error) {
       return { success: false, error: result.error };
+    }
+
+    // Record the received output to the backend so balance is updated
+    try {
+      const recordResult = await api.recordGrinOutput({
+        userId: authState.userId,
+        keyId: outputInfo.keyId,
+        nChild: outputInfo.nChild,
+        amount: Number(outputInfo.amount),
+        commitment: outputInfo.commitment,
+        txSlateId: signedSlate.id,
+      });
+      if (recordResult.error) {
+        console.warn('[Grin] Failed to record output (non-fatal):', recordResult.error);
+      } else {
+        console.log(`[Grin] Recorded output ${outputInfo.commitment} for ${outputInfo.amount} nanogrin`);
+      }
+    } catch (recordErr) {
+      console.warn('[Grin] Failed to record output (non-fatal):', recordErr);
     }
 
     console.log(`[Grin] Signed slate ${signedSlate.id}, amount: ${signedSlate.amount} nanogrin`);
@@ -1894,13 +1913,41 @@ async function handleGrinSignSlatepack(
       grinWasmKeys = await initGrinWallet(unlockedMnemonic);
     }
 
-    // Sign the slate (decodes S1, adds our signature, returns S2 slate)
-    const signedSlate = await signSlate(grinWasmKeys, slatepackString);
+    // Get auth state for user ID (needed to record output)
+    const authState = await getAuthState();
+    if (!authState?.userId) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    // Sign the slate (decodes S1, adds our signature, returns S2 slate and output info)
+    const { slate: signedSlate, outputInfo } = await signSlate(grinWasmKeys, slatepackString);
 
     // Encode the signed slate as a slatepack response
     const signedSlatepack = await encodeSlatepack(grinWasmKeys, signedSlate, 'response');
 
-    console.log(`[Grin] Signed slatepack, amount: ${signedSlate.amount} nanogrin`);
+    console.log(`[Grin] Signed slatepack, amount: ${signedSlate.amount} nanogrin, output: ${outputInfo.commitment}`);
+
+    // Record the received output to the backend so balance is updated
+    // The output is created when we sign (receive) - it will be spendable after tx confirms
+    try {
+      const recordResult = await api.recordGrinOutput({
+        userId: authState.userId,
+        keyId: outputInfo.keyId,
+        nChild: outputInfo.nChild,
+        amount: Number(outputInfo.amount),
+        commitment: outputInfo.commitment,
+        txSlateId: signedSlate.id,
+      });
+      if (recordResult.error) {
+        console.warn('[Grin] Failed to record output (non-fatal):', recordResult.error);
+      } else {
+        console.log(`[Grin] Recorded output ${outputInfo.commitment} for ${outputInfo.amount} nanogrin`);
+      }
+    } catch (recordErr) {
+      // Non-fatal - the signing worked, we just couldn't record the output
+      // User can still give slatepack to sender, balance will be wrong until fixed
+      console.warn('[Grin] Failed to record output (non-fatal):', recordErr);
+    }
 
     return { success: true, data: { signedSlatepack } };
   } catch (err) {

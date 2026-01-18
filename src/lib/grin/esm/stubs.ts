@@ -5,15 +5,11 @@
  * that we don't need for basic slatepack operations. This module provides
  * minimal stubs with the constants needed to avoid runtime errors.
  *
- * Tor address functions are implemented using sha3 from @noble/hashes
- * and base32 from hi-base32 (which we import below).
+ * NOTE: Tor address functions are stubbed to throw errors since we don't
+ * use payment proofs with Tor addresses in the extension.
  */
 
-import { sha3_256 } from '@noble/hashes/sha3';
-import base32 from 'hi-base32';
-
-// Tor class - provides onion address encoding/decoding
-// Used for payment proof address verification
+// Tor class - minimal stub (no actual Tor support needed)
 export class Tor {
   // Constants
   static get ADDRESS_LENGTH(): number {
@@ -45,88 +41,22 @@ export class Tor {
   }
 
   // Static state
-  static browserSupportsTor: boolean | null = null;
+  static browserSupportsTor: boolean | null = false;
 
   /**
    * Convert Ed25519 public key to Tor v3 onion address.
-   * Uses SHA3-256 for checksum calculation.
+   * Not implemented - we don't use Tor payment proofs.
    */
-  static publicKeyToTorAddress(publicKey: Uint8Array): string {
-    // Check if public key has correct length (ED25519 = 32 bytes)
-    if (publicKey.length !== 32) {
-      throw new Error('Invalid public key.');
-    }
-
-    // Build checksum input: seed + public key + version
-    const seed = new TextEncoder().encode(Tor.ADDRESS_CHECKSUM_SEED);
-    const checksumInput = new Uint8Array(seed.length + publicKey.length + 1);
-    checksumInput.set(seed, 0);
-    checksumInput.set(publicKey, seed.length);
-    checksumInput[seed.length + publicKey.length] = Tor.ADDRESS_VERSION;
-
-    // Get SHA3-256 hash and take first 2 bytes as checksum
-    const checksum = sha3_256(checksumInput);
-
-    // Combine: public key (32) + checksum (2) + version (1) = 35 bytes
-    const combined = new Uint8Array(35);
-    combined.set(publicKey, 0);
-    combined.set(checksum.subarray(0, Tor.ADDRESS_CHECKSUM_LENGTH), 32);
-    combined[34] = Tor.ADDRESS_VERSION;
-
-    // Encode as base32 lowercase (56 chars)
-    return base32.encode(combined).toLowerCase();
+  static publicKeyToTorAddress(_publicKey: Uint8Array): string {
+    throw new Error('Tor address conversion not supported in extension');
   }
 
   /**
    * Convert Tor v3 onion address to Ed25519 public key.
+   * Not implemented - we don't use Tor payment proofs.
    */
-  static torAddressToPublicKey(torAddress: string): Uint8Array {
-    // Check length (56 characters)
-    if (torAddress.length !== Tor.ADDRESS_LENGTH) {
-      throw new Error('Invalid Tor address.');
-    }
-
-    // Check lowercase
-    if (torAddress !== torAddress.toLowerCase()) {
-      throw new Error('Invalid Tor address.');
-    }
-
-    // Decode base32
-    let decodedAddress: Uint8Array;
-    try {
-      decodedAddress = new Uint8Array(base32.decode.asBytes(torAddress.toUpperCase()));
-    } catch {
-      throw new Error('Invalid Tor address.');
-    }
-
-    // Check decoded length (32 bytes pubkey + 2 bytes checksum + 1 byte version = 35)
-    if (decodedAddress.length !== 35) {
-      throw new Error('Invalid Tor address.');
-    }
-
-    // Extract public key
-    const publicKey = decodedAddress.subarray(0, 32);
-
-    // Verify checksum
-    const seed = new TextEncoder().encode(Tor.ADDRESS_CHECKSUM_SEED);
-    const checksumInput = new Uint8Array(seed.length + 32 + 1);
-    checksumInput.set(seed, 0);
-    checksumInput.set(publicKey, seed.length);
-    checksumInput[seed.length + 32] = Tor.ADDRESS_VERSION;
-
-    const expectedChecksum = sha3_256(checksumInput);
-    const actualChecksum = decodedAddress.subarray(32, 34);
-
-    if (expectedChecksum[0] !== actualChecksum[0] || expectedChecksum[1] !== actualChecksum[1]) {
-      throw new Error('Invalid Tor address.');
-    }
-
-    // Verify version
-    if (decodedAddress[34] !== Tor.ADDRESS_VERSION) {
-      throw new Error('Invalid Tor address.');
-    }
-
-    return publicKey;
+  static torAddressToPublicKey(_torAddress: string): Uint8Array {
+    throw new Error('Tor address conversion not supported in extension');
   }
 
   // Initialize - no-op for stub

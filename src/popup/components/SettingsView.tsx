@@ -20,6 +20,13 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const [error, setError] = useState('');
   const [wasmStatus, setWasmStatus] = useState<string | null>(null);
 
+  // Seed reveal state
+  const [showSeedModal, setShowSeedModal] = useState(false);
+  const [seedPassword, setSeedPassword] = useState('');
+  const [seedWords, setSeedWords] = useState<string[] | null>(null);
+  const [seedError, setSeedError] = useState('');
+  const [revealingSeeed, setRevealingSeed] = useState(false);
+
   useEffect(() => {
     loadSettings();
   }, []);
@@ -53,6 +60,35 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleRevealSeed = async () => {
+    if (!seedPassword) {
+      setSeedError('Please enter your password');
+      return;
+    }
+
+    setRevealingSeed(true);
+    setSeedError('');
+
+    try {
+      const result = await sendMessage<{ words: string[] }>({
+        type: 'REVEAL_SEED',
+        password: seedPassword,
+      });
+      setSeedWords(result.words);
+    } catch (err) {
+      setSeedError(err instanceof Error ? err.message : 'Invalid password');
+    } finally {
+      setRevealingSeed(false);
+    }
+  };
+
+  const closeSeedModal = () => {
+    setShowSeedModal(false);
+    setSeedPassword('');
+    setSeedWords(null);
+    setSeedError('');
   };
 
   return (
@@ -112,6 +148,20 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
                 </select>
                 <div style={{ fontSize: '11px', color: '#71717a', marginTop: '4px' }}>
                   Wallet will lock automatically after this period of inactivity
+                </div>
+              </div>
+
+              {/* Show Recovery Phrase */}
+              <div style={{ borderTop: '1px solid #3f3f46', paddingTop: '12px' }}>
+                <button
+                  class="btn btn-secondary"
+                  style={{ width: '100%' }}
+                  onClick={() => setShowSeedModal(true)}
+                >
+                  Show Recovery Phrase
+                </button>
+                <div style={{ fontSize: '11px', color: '#71717a', marginTop: '4px' }}>
+                  View your 12-word seed phrase for backup
                 </div>
               </div>
             </div>
@@ -217,6 +267,154 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           </>
         )}
       </div>
+
+      {/* Seed Reveal Modal */}
+      {showSeedModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.8)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '16px',
+            zIndex: 1000,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeSeedModal();
+          }}
+        >
+          <div
+            style={{
+              background: '#18181b',
+              borderRadius: '12px',
+              padding: '20px',
+              width: '100%',
+              maxWidth: '340px',
+              maxHeight: '90vh',
+              overflow: 'auto',
+            }}
+          >
+            <h2 style={{ margin: '0 0 16px', fontSize: '18px', textAlign: 'center' }}>
+              {seedWords ? 'Recovery Phrase' : 'Enter Password'}
+            </h2>
+
+            {!seedWords ? (
+              <>
+                {/* Warning */}
+                <div
+                  style={{
+                    background: 'rgba(239, 68, 68, 0.1)',
+                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    marginBottom: '16px',
+                    fontSize: '12px',
+                    color: '#fca5a5',
+                  }}
+                >
+                  <strong>Warning:</strong> Never share your recovery phrase. Anyone with these
+                  words can steal your funds.
+                </div>
+
+                {/* Password Input */}
+                <input
+                  type="password"
+                  class="form-input"
+                  placeholder="Enter your password"
+                  value={seedPassword}
+                  onInput={(e) => setSeedPassword((e.target as HTMLInputElement).value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleRevealSeed();
+                  }}
+                  style={{ marginBottom: '12px' }}
+                  autoFocus
+                />
+
+                {seedError && (
+                  <p style={{ color: '#ef4444', fontSize: '13px', margin: '0 0 12px' }}>
+                    {seedError}
+                  </p>
+                )}
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    class="btn btn-secondary"
+                    style={{ flex: 1 }}
+                    onClick={closeSeedModal}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    class="btn btn-primary"
+                    style={{ flex: 1 }}
+                    onClick={handleRevealSeed}
+                    disabled={revealingSeeed || !seedPassword}
+                  >
+                    {revealingSeeed ? <span class="spinner" style={{ width: '16px', height: '16px' }} /> : 'Reveal'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Seed Words Grid */}
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(3, 1fr)',
+                    gap: '8px',
+                    marginBottom: '16px',
+                  }}
+                >
+                  {seedWords.map((word, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        background: '#27272a',
+                        borderRadius: '6px',
+                        padding: '8px',
+                        fontSize: '12px',
+                        textAlign: 'center',
+                      }}
+                    >
+                      <span style={{ color: '#71717a', marginRight: '4px' }}>{i + 1}.</span>
+                      {word}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Warning */}
+                <div
+                  style={{
+                    background: 'rgba(234, 179, 8, 0.1)',
+                    border: '1px solid rgba(234, 179, 8, 0.3)',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    marginBottom: '16px',
+                    fontSize: '12px',
+                    color: '#fde047',
+                  }}
+                >
+                  Write these words down and store them safely. This is the only way to recover
+                  your wallet if you lose access.
+                </div>
+
+                <button
+                  class="btn btn-primary"
+                  style={{ width: '100%' }}
+                  onClick={closeSeedModal}
+                >
+                  Done
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </>
   );
 }

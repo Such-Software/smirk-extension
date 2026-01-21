@@ -388,6 +388,9 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
     case 'GET_WALLET_KEYS':
       return handleGetWalletKeys(message.asset);
 
+    case 'REVEAL_SEED':
+      return handleRevealSeed(message.password);
+
     case 'ADD_PENDING_TX':
       return handleAddPendingTx(message.txHash, message.asset, message.amount, message.fee);
 
@@ -941,6 +944,35 @@ async function handleLockWallet(): Promise<MessageResponse<{ locked: boolean }>>
   await clearSessionKeys();
   stopAutoLockTimer();
   return { success: true, data: { locked: true } };
+}
+
+/**
+ * Reveal seed phrase after password verification.
+ * Requires re-entering password for security even if wallet is unlocked.
+ */
+async function handleRevealSeed(password: string): Promise<MessageResponse<{ words: string[] }>> {
+  const state = await getWalletState();
+
+  if (!state.encryptedSeed || !state.seedSalt) {
+    return { success: false, error: 'No wallet found' };
+  }
+
+  try {
+    // Decrypt the mnemonic using provided password
+    const mnemonicBytes = await decryptPrivateKey(state.encryptedSeed, state.seedSalt, password);
+    const mnemonic = new TextDecoder().decode(mnemonicBytes);
+
+    // Split into words
+    const words = mnemonic.trim().split(/\s+/);
+
+    if (words.length !== 12 && words.length !== 24) {
+      return { success: false, error: 'Invalid seed format' };
+    }
+
+    return { success: true, data: { words } };
+  } catch {
+    return { success: false, error: 'Invalid password' };
+  }
 }
 
 async function handleDecryptTip(

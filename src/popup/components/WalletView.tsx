@@ -32,6 +32,8 @@ interface TxHistoryEntry {
   is_pending?: boolean;
   total_received?: number;
   total_sent?: number;
+  // Grin specific - on-chain tx identifier (like txid for BTC)
+  kernel_excess?: string;
 }
 
 // Pending outgoing transaction (not yet confirmed)
@@ -510,12 +512,17 @@ export function WalletView({ onLock }: { onLock: () => void }) {
         ) : history[activeAsset] && history[activeAsset]!.length > 0 ? (
           <div class="tx-list">
             {history[activeAsset]!.slice(0, 10).map((tx) => {
-              // Determine if incoming or outgoing for XMR/WOW
+              // Determine if incoming or outgoing
               const isXmrWow = activeAsset === 'xmr' || activeAsset === 'wow';
+              const isGrin = activeAsset === 'grin';
               const received = tx.total_received ?? 0;
               const sent = tx.total_sent ?? 0;
-              const isIncoming = isXmrWow ? received > sent : true; // BTC/LTC: we don't know direction yet
+              const isIncoming = (isXmrWow || isGrin) ? received > sent : true; // BTC/LTC: we don't know direction yet
               const isPending = tx.is_pending || tx.height === 0;
+
+              // For Grin, prefer kernel_excess as the copyable identifier
+              const displayId = isGrin && tx.kernel_excess ? tx.kernel_excess : tx.txid;
+              const idLabel = isGrin && tx.kernel_excess ? 'Kernel' : (isGrin ? 'Slate' : 'Txid');
 
               return (
                 <div
@@ -532,10 +539,10 @@ export function WalletView({ onLock }: { onLock: () => void }) {
                     cursor: 'pointer',
                   }}
                   onClick={() => {
-                    // Copy txid to clipboard
-                    navigator.clipboard.writeText(tx.txid);
+                    // Copy identifier to clipboard
+                    navigator.clipboard.writeText(displayId);
                   }}
-                  title={`Click to copy\n${tx.txid}`}
+                  title={`Click to copy ${idLabel.toLowerCase()}\n${displayId}`}
                 >
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div
@@ -547,13 +554,19 @@ export function WalletView({ onLock }: { onLock: () => void }) {
                         textOverflow: 'ellipsis',
                       }}
                     >
-                      {tx.txid.substring(0, 12)}...{tx.txid.substring(tx.txid.length - 8)}
+                      {displayId.substring(0, 12)}...{displayId.substring(displayId.length - 8)}
                     </div>
                     <div style={{ fontSize: '10px', color: '#71717a' }}>
-                      {isPending ? 'Pending' : `Block ${tx.height}`}
+                      {isGrin ? (
+                        <>
+                          {tx.kernel_excess ? 'Kernel' : 'Slate'} &bull; {isPending ? 'Pending' : 'Confirmed'}
+                        </>
+                      ) : (
+                        isPending ? 'Pending' : `Block ${tx.height}`
+                      )}
                     </div>
                   </div>
-                  {isXmrWow && (received > 0 || sent > 0) && (
+                  {(isXmrWow || isGrin) && (received > 0 || sent > 0) && (
                     <div
                       style={{
                         fontSize: '11px',
@@ -569,7 +582,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
               );
             })}
           </div>
-        ) : (activeAsset === 'btc' || activeAsset === 'ltc' || activeAsset === 'xmr' || activeAsset === 'wow') ? (
+        ) : (activeAsset === 'btc' || activeAsset === 'ltc' || activeAsset === 'xmr' || activeAsset === 'wow' || activeAsset === 'grin') ? (
           <div class="empty-state">
             <div class="empty-icon">📭</div>
             <div class="empty-title">No transactions yet</div>

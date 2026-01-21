@@ -1,7 +1,7 @@
 import { render } from 'preact';
 import { useState, useEffect } from 'preact/hooks';
 import type { AssetType, TipInfo } from '@/types';
-import { sendMessage } from './shared';
+import { sendMessage, clearScreenState } from './shared';
 import {
   ClaimView,
   Onboarding,
@@ -79,6 +79,8 @@ function App() {
       await sendMessage({ type: 'LOCK_WALLET' });
       setIsUnlocked(false);
       setPendingClaim(null);
+      // Clear saved screen state when locking
+      clearScreenState();
     } catch (err) {
       console.error('Failed to lock:', err);
     }

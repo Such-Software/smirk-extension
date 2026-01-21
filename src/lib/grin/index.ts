@@ -280,7 +280,7 @@ export async function createSendSlate(
   );
 
   return {
-    id: slate.getId(),
+    id: slate.getId().value || slate.getId().toString(),
     amount,
     fee,
     state: 'S1',
@@ -370,7 +370,7 @@ export async function decodeSlatepack(
   }
 
   return {
-    id: slate.getId(),
+    id: slate.getId().value || slate.getId().toString(),
     amount,
     fee,
     state,
@@ -395,6 +395,7 @@ export async function signSlate(
   slatepackString: string,
   nextChildIndex: number = 0
 ): Promise<{ slate: GrinSlate; outputInfo: { keyId: string; nChild: number; amount: bigint; commitment: string } }> {
+  console.log('[signSlate] ENTRY - nextChildIndex parameter:', nextChildIndex);
   await initializeGrinWasm();
 
   const Secp256k1Zkp = getSecp256k1Zkp();
@@ -413,14 +414,59 @@ export async function signSlate(
   const amount = slate.amount;
   const amountBN = new BigNumber(amount.toString());
 
+  // === ENHANCED DEBUG LOGGING: S1 Slate Details ===
+  console.log('[signSlate] ========== S1 SLATE DETAILS ==========');
+  console.log('[signSlate] Slate ID:', slate.id);
+  console.log('[signSlate] Amount:', amount.toString(), 'nanogrin');
+  console.log('[signSlate] Fee:', slate.fee.toString(), 'nanogrin');
+  console.log('[signSlate] State:', slate.state);
+
+  // Kernel info
+  const kernelFeatures = rawSlate.getKernelFeatures?.();
+  const lockHeight = rawSlate.getLockHeight?.();
+  const relativeHeight = rawSlate.getRelativeHeight?.();
+  console.log('[signSlate] Kernel features:', kernelFeatures);
+  console.log('[signSlate] Lock height:', lockHeight?.toFixed?.() ?? lockHeight);
+  console.log('[signSlate] Relative height:', relativeHeight?.toFixed?.() ?? relativeHeight);
+
+  // Initial offset from sender
+  const initialOffset = rawSlate.getOffset?.();
+  console.log('[signSlate] Initial offset (from S1):', initialOffset ? Common.toHexString(initialOffset) : 'null');
+
+  // Sender's participant (should be participant 0)
+  const senderParticipants = rawSlate.getParticipants?.();
+  if (senderParticipants && senderParticipants.length > 0) {
+    const sender = senderParticipants[0];
+    console.log('[signSlate] --- Sender Participant (ID 0) ---');
+    console.log('[signSlate] Sender public_blind_excess:', Common.toHexString(sender.getPublicBlindExcess?.()));
+    console.log('[signSlate] Sender public_nonce:', Common.toHexString(sender.getPublicNonce?.()));
+    const senderPartSig = sender.getPartialSignature?.();
+    console.log('[signSlate] Sender partial_sig:', senderPartSig ? Common.toHexString(senderPartSig) : 'null (expected for S1)');
+  } else {
+    console.log('[signSlate] WARNING: No sender participant found in S1!');
+  }
+
+  // Inputs from sender
+  const s1Inputs = rawSlate.getInputs?.();
+  console.log('[signSlate] S1 inputs count:', s1Inputs?.length ?? 0);
+  if (s1Inputs) {
+    s1Inputs.forEach((inp: any, i: number) => {
+      console.log(`[signSlate] Input ${i} commit:`, Common.toHexString(inp.getCommit?.()));
+    });
+  }
+  console.log('[signSlate] ========================================');
+
   console.log('[signSlate] Receiving amount:', amount.toString());
 
   // Create identifier for the receive output
   // Use depth 3 (account/change/index pattern)
-  const outputIdentifier = new Identifier(
-    3,
-    new Uint32Array([0, 0, nextChildIndex, 0])
-  );
+  // NOTE: Identifier constructor only takes 1 arg, must use setValue() for depth + paths
+  const outputIdentifier = new Identifier();
+  outputIdentifier.setValue(3, new Uint32Array([0, 0, nextChildIndex, 0]));
+  console.log('[signSlate] Created identifier with path [0, 0, ' + nextChildIndex + ', 0]');
+  console.log('[signSlate] Identifier depth:', outputIdentifier.getDepth());
+  console.log('[signSlate] Identifier paths:', Array.from(outputIdentifier.getPaths()));
+  console.log('[signSlate] Identifier getValue hex:', Common.toHexString(outputIdentifier.getValue()));
 
   // Create commitment for the output
   const outputCommit = await Crypto.commit(
@@ -550,40 +596,61 @@ export async function signSlate(
 
   console.log('[signSlate] Added participant');
 
-  // Per Grin protocol, for S2 response we need to:
-  // 1. Zero out amount and fee (privacy - sender already knows these)
-  // 2. Remove sender's participant data (keep only our own)
+  // NOTE: Do NOT manually zero amount/fee or filter participants!
+  // The library's serialize() method with COMPACT_SLATE_PURPOSE_SEND_RESPONSE
+  // handles this automatically:
+  // - Amount/fee are not serialized for SEND_RESPONSE
+  // - Only the receiver's participant (ID 1) is serialized
+  // Manual manipulation breaks the library's internal state management.
 
-  console.log('[signSlate] Before S2 cleanup - amount:', rawSlate.amount?.toFixed?.(), 'fee:', rawSlate.fee?.toFixed?.());
-  console.log('[signSlate] Participants before cleanup:', rawSlate.participants?.length);
-
-  // Zero out amount and fee for S2
-  rawSlate.amount = new BigNumber(0);
-  rawSlate.fee = new BigNumber(0);
-
-  // Remove sender's participant (keep only our participant - the one with partial sig)
-  // Our participant has the partial signature, sender's doesn't
-  const ourParticipant = rawSlate.participants?.find((p: any) => p.getPartialSignature?.() !== null);
-  if (ourParticipant) {
-    rawSlate.participants = [ourParticipant];
-    console.log('[signSlate] Kept only our participant (with partial sig)');
-  } else {
-    console.warn('[signSlate] Could not find our participant with partial sig!');
-  }
-
-  console.log('[signSlate] After S2 cleanup - amount:', rawSlate.amount?.toFixed?.(), 'fee:', rawSlate.fee?.toFixed?.());
-  console.log('[signSlate] Participants after cleanup:', rawSlate.participants?.length);
+  // === ENHANCED DEBUG LOGGING: After addParticipant ===
+  console.log('[signSlate] ========== S2 SLATE STATE ==========');
+  console.log('[signSlate] Amount:', rawSlate.amount?.toFixed?.(), 'Fee:', rawSlate.fee?.toFixed?.());
 
   // Debug: Check slate state before returning
   const outputs = rawSlate.getOutputs?.();
   const inputs = rawSlate.getInputs?.();
   const participants = rawSlate.getParticipants?.();
-  console.log('[signSlate] Slate outputs count:', outputs?.length);
-  console.log('[signSlate] Slate inputs count:', inputs?.length);
-  console.log('[signSlate] Slate participants count:', participants?.length);
-  if (outputs?.length > 0) {
-    console.log('[signSlate] Output 0 commit:', Common.toHexString(outputs[0].getCommit?.()));
+
+  console.log('[signSlate] Outputs count:', outputs?.length);
+  console.log('[signSlate] Inputs count:', inputs?.length);
+  console.log('[signSlate] Participants count:', participants?.length);
+
+  // Log all outputs
+  if (outputs) {
+    outputs.forEach((out: any, i: number) => {
+      console.log(`[signSlate] Output ${i} commit:`, Common.toHexString(out.getCommit?.()));
+      console.log(`[signSlate] Output ${i} proof length:`, out.getProof?.()?.length);
+    });
   }
+
+  // Log all participants with full detail
+  if (participants) {
+    participants.forEach((p: any, i: number) => {
+      console.log(`[signSlate] --- Participant ${i} ---`);
+      console.log(`[signSlate] P${i} public_blind_excess:`, Common.toHexString(p.getPublicBlindExcess?.()));
+      console.log(`[signSlate] P${i} public_nonce:`, Common.toHexString(p.getPublicNonce?.()));
+      const partSig = p.getPartialSignature?.();
+      console.log(`[signSlate] P${i} partial_sig:`, partSig ? Common.toHexString(partSig) : 'null');
+      console.log(`[signSlate] P${i} isComplete:`, p.isComplete?.());
+    });
+  }
+
+  // Log final offset
+  const finalOffset = rawSlate.getOffset?.();
+  console.log('[signSlate] Final offset (S2):', finalOffset ? Common.toHexString(finalOffset) : 'null');
+
+  // Try to compute and log the kernel excess for verification
+  try {
+    const excess = rawSlate.getExcess?.();
+    if (excess) {
+      console.log('[signSlate] Computed kernel excess:', Common.toHexString(excess));
+    }
+  } catch (e) {
+    console.log('[signSlate] Could not compute excess:', e);
+  }
+
+  console.log('[signSlate] ========================================');
 
   // Clear sensitive data
   finalSecretKey.fill(0);
@@ -1110,7 +1177,7 @@ export async function createSendTransaction(
 
   return {
     slate: {
-      id: slate.getId(),
+      id: slate.getId().value || slate.getId().toString(),
       amount,
       fee,
       state: 'S1',

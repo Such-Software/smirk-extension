@@ -302,19 +302,36 @@ export async function filterUnspentOutputs(
  * Uses simple "largest first" strategy.
  *
  * @param outputs - Available unspent outputs
- * @param targetAmount - Amount to send (in atomic units)
+ * @param targetAmount - Amount to send (in atomic units). Use 0 for sweep (send all).
  * @param feePerByte - Fee per byte
  * @param feeMask - Fee rounding mask
+ * @param sweep - If true, select all outputs and send max (no change output)
  */
 export async function selectOutputs(
   outputs: XmrOutput[],
   targetAmount: number,
   feePerByte: number,
-  feeMask: number
-): Promise<{ selected: XmrOutput[]; estimatedFee: number; change: number }> {
+  feeMask: number,
+  sweep: boolean = false
+): Promise<{ selected: XmrOutput[]; estimatedFee: number; change: number; sweepAmount?: number }> {
   // Sort by amount descending
   const sorted = [...outputs].sort((a, b) => b.amount - a.amount);
 
+  // Sweep mode: use all outputs, no change
+  if (sweep) {
+    const totalInput = sorted.reduce((sum, o) => sum + o.amount, 0);
+    // 1 output (recipient only, no change)
+    const fee = await estimateFee(sorted.length, 1, feePerByte, feeMask);
+    const sweepAmount = totalInput - fee;
+
+    if (sweepAmount <= 0) {
+      throw new Error('Balance too low to cover network fee');
+    }
+
+    return { selected: sorted, estimatedFee: fee, change: 0, sweepAmount };
+  }
+
+  // Normal mode: select enough outputs to cover amount + fee
   const selected: XmrOutput[] = [];
   let totalInput = 0;
 
@@ -339,6 +356,8 @@ export async function selectOutputs(
 /**
  * Build inputs with decoys for transaction signing.
  *
+ * Fetches decoys per input to avoid LWS rate limits.
+ *
  * @param asset - 'xmr' or 'wow'
  * @param outputs - Selected outputs to spend
  */
@@ -356,26 +375,30 @@ async function buildInputsWithDecoys(
   // - WOW: 21 decoys (ring size 22) - required since HF v9
   const decoyCount = asset === 'wow' ? 21 : 15;
 
-  // Fetch decoys from backend
-  const response = await api.getRandomOuts(asset, decoyCount * outputs.length);
-  if (response.error || !response.data) {
-    throw new Error(response.error || 'Failed to get random outputs');
+  // Fetch decoys for each input separately to avoid LWS rate limits
+  // LWS has a default limit on outputs per request (often 25-50)
+  const results: Array<{ output: XmrOutput; decoys: Decoy[] }> = [];
+
+  for (const output of outputs) {
+    const response = await api.getRandomOuts(asset, decoyCount);
+    if (response.error || !response.data) {
+      throw new Error(response.error || 'Failed to get random outputs');
+    }
+
+    const decoys = response.data.outputs;
+    if (decoys.length < decoyCount) {
+      throw new Error(
+        `Not enough decoys: got ${decoys.length}, need ${decoyCount}`
+      );
+    }
+
+    results.push({
+      output,
+      decoys: decoys.slice(0, decoyCount),
+    });
   }
 
-  // Backend returns flat array of decoys
-  const decoyPool = response.data.outputs;
-
-  if (decoyPool.length < decoyCount * outputs.length) {
-    throw new Error(
-      `Not enough decoys: got ${decoyPool.length}, need ${decoyCount * outputs.length}`
-    );
-  }
-
-  // Distribute decoys to inputs
-  return outputs.map((output, i) => ({
-    output,
-    decoys: decoyPool.slice(i * decoyCount, (i + 1) * decoyCount),
-  }));
+  return results;
 }
 
 /**
@@ -464,8 +487,9 @@ export async function createSignedTransaction(
   spendKey: string,
   recipientAddress: string,
   amount: number,
-  network: 'mainnet' | 'testnet' | 'stagenet' = 'mainnet'
-): Promise<{ txHex: string; txHash: string; fee: number; spentKeyImages: string[] }> {
+  network: 'mainnet' | 'testnet' | 'stagenet' = 'mainnet',
+  sweep: boolean = false
+): Promise<{ txHex: string; txHash: string; fee: number; spentKeyImages: string[]; actualAmount: number }> {
   // 1. Get unspent outputs
   const unspentResponse = await api.getUnspentOuts(asset, address, viewKey);
   if (unspentResponse.error || !unspentResponse.data) {
@@ -488,15 +512,19 @@ export async function createSignedTransaction(
   }
 
   // 3. Select outputs for this transaction
-  const { selected, estimatedFee, change } = await selectOutputs(
+  const { selected, estimatedFee, change, sweepAmount } = await selectOutputs(
     outputs,
     amount,
     per_byte_fee,
-    fee_mask
+    fee_mask,
+    sweep
   );
 
+  // In sweep mode, use the calculated sweep amount
+  const actualAmount = sweep && sweepAmount ? sweepAmount : amount;
+
   console.log(
-    `[xmr-tx] Selected ${selected.length} outputs, estimated fee: ${estimatedFee}, change: ${change}`
+    `[xmr-tx] Selected ${selected.length} outputs, estimated fee: ${estimatedFee}, change: ${change}, sweep: ${sweep}, actualAmount: ${actualAmount}`
   );
 
   // 4. Compute key images for selected outputs (for local spent tracking)
@@ -514,7 +542,7 @@ export async function createSignedTransaction(
   const inputsWithDecoys = await buildInputsWithDecoys(asset, selected);
 
   // 6. Sign transaction
-  const destinations: XmrDestination[] = [{ address: recipientAddress, amount }];
+  const destinations: XmrDestination[] = [{ address: recipientAddress, amount: actualAmount }];
 
   const result = await signTransaction(
     asset,
@@ -528,9 +556,9 @@ export async function createSignedTransaction(
     network
   );
 
-  console.log(`[xmr-tx] Transaction signed: ${result.txHash}, fee: ${result.fee}`);
+  console.log(`[xmr-tx] Transaction signed: ${result.txHash}, fee: ${result.fee}, actualAmount: ${actualAmount}`);
 
-  return { ...result, spentKeyImages };
+  return { ...result, spentKeyImages, actualAmount };
 }
 
 /**
@@ -541,8 +569,9 @@ export async function createSignedTransaction(
  * @param viewKey - Sender's private view key (hex)
  * @param spendKey - Sender's private spend key (hex)
  * @param recipientAddress - Where to send funds
- * @param amount - Amount in atomic units
+ * @param amount - Amount in atomic units (ignored if sweep=true)
  * @param network - Network type
+ * @param sweep - If true, send entire balance (amount parameter ignored)
  */
 export async function sendTransaction(
   asset: XmrAsset,
@@ -551,17 +580,19 @@ export async function sendTransaction(
   spendKey: string,
   recipientAddress: string,
   amount: number,
-  network: 'mainnet' | 'testnet' | 'stagenet' = 'mainnet'
-): Promise<{ txHash: string; fee: number }> {
+  network: 'mainnet' | 'testnet' | 'stagenet' = 'mainnet',
+  sweep: boolean = false
+): Promise<{ txHash: string; fee: number; actualAmount: number }> {
   // Create and sign
-  const { txHex, txHash, fee, spentKeyImages } = await createSignedTransaction(
+  const { txHex, txHash, fee, spentKeyImages, actualAmount } = await createSignedTransaction(
     asset,
     address,
     viewKey,
     spendKey,
     recipientAddress,
     amount,
-    network
+    network,
+    sweep
   );
 
   // Broadcast
@@ -580,9 +611,9 @@ export async function sendTransaction(
     markKeyImageSpent(keyImage);
   }
 
-  console.log(`[xmr-tx] Transaction broadcast: ${txHash}, marked ${spentKeyImages.length} outputs as spent`);
+  console.log(`[xmr-tx] Transaction broadcast: ${txHash}, marked ${spentKeyImages.length} outputs as spent, actualAmount: ${actualAmount}`);
 
-  return { txHash, fee };
+  return { txHash, fee, actualAmount };
 }
 
 /**

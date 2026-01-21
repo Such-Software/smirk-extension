@@ -8,6 +8,8 @@ import {
   formatBalance,
   formatBalanceFull,
   sendMessage,
+  saveScreenState,
+  restoreScreenState,
   type AddressData,
   type BalanceData,
   type WalletScreen,
@@ -16,6 +18,7 @@ import { ReceiveView } from './ReceiveView';
 import { SendView } from './SendView';
 import { SettingsView } from './SettingsView';
 import { GrinPendingView } from './GrinPendingView';
+import { getGrinPendingReceive, type GrinPendingReceive } from '@/lib/storage';
 
 // Storage key for persisting active asset tab
 const ACTIVE_ASSET_KEY = 'smirk_activeAsset';
@@ -74,22 +77,42 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     wow: 0,
     grin: 0,
   });
+  // Pending Grin receive (signed slatepack waiting for sender to finalize)
+  const [grinPendingReceive, setGrinPendingReceive] = useState<GrinPendingReceive | null>(null);
 
   const availableAssets: AssetType[] = ['btc', 'ltc', 'xmr', 'wow', 'grin'];
 
-  // Restore active asset from localStorage on mount
+  // Restore screen state and active asset on mount
   useEffect(() => {
-    const saved = localStorage.getItem(ACTIVE_ASSET_KEY);
-    if (saved && availableAssets.includes(saved as AssetType)) {
-      setActiveAsset(saved as AssetType);
+    // First try to restore full screen state (includes screen + asset)
+    const savedState = restoreScreenState();
+    if (savedState) {
+      setActiveAsset(savedState.asset);
+      setScreen(savedState.screen);
+    } else {
+      // Fall back to just restoring the active asset
+      const saved = localStorage.getItem(ACTIVE_ASSET_KEY);
+      if (saved && availableAssets.includes(saved as AssetType)) {
+        setActiveAsset(saved as AssetType);
+      }
     }
+
+    // Check for pending Grin receive
+    getGrinPendingReceive().then(setGrinPendingReceive);
   }, []);
 
   // Persist active asset when it changes
   const handleAssetChange = (asset: AssetType) => {
     setActiveAsset(asset);
     localStorage.setItem(ACTIVE_ASSET_KEY, asset);
+    // Save screen state so we can restore to same asset if popup closes
+    saveScreenState(screen, asset);
   };
+
+  // Save screen state whenever screen or asset changes
+  useEffect(() => {
+    saveScreenState(screen, activeAsset);
+  }, [screen, activeAsset]);
 
   // Reset auto-lock timer on user activity
   useEffect(() => {
@@ -284,7 +307,11 @@ export function WalletView({ onLock }: { onLock: () => void }) {
       <ReceiveView
         asset={activeAsset}
         address={currentAddress}
-        onBack={() => setScreen('main')}
+        onBack={() => {
+          // Refresh pending state when returning from receive view
+          getGrinPendingReceive().then(setGrinPendingReceive);
+          setScreen('main');
+        }}
       />
     );
   }
@@ -329,6 +356,42 @@ export function WalletView({ onLock }: { onLock: () => void }) {
       </header>
 
       <div class="content">
+        {/* Pending Grin Receive Banner */}
+        {grinPendingReceive && activeAsset === 'grin' && (
+          <div
+            style={{
+              background: '#422006',
+              border: '1px solid #f59e0b',
+              borderRadius: '8px',
+              padding: '10px 12px',
+              marginBottom: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '8px',
+            }}
+          >
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: '12px', color: '#fbbf24', fontWeight: 600 }}>
+                Pending Receive
+              </div>
+              <div style={{ fontSize: '11px', color: '#fcd34d', marginTop: '2px' }}>
+                Slatepack signed - send it back to finalize
+              </div>
+            </div>
+            <button
+              class="btn btn-primary"
+              style={{ fontSize: '11px', padding: '6px 10px' }}
+              onClick={() => {
+                setActiveAsset('grin');
+                setScreen('receive');
+              }}
+            >
+              View
+            </button>
+          </div>
+        )}
+
         {/* Asset Tabs */}
         <div class="asset-tabs">
           {availableAssets.map((asset) => (

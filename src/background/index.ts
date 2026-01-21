@@ -44,7 +44,7 @@ import {
   grinSlatpackAddress,
   hexToBytes,
 } from '@/lib/address';
-import { createSignedTransaction, type Utxo } from '@/lib/btc-tx';
+import { createSignedTransaction, maxSendable as maxSendableUtxo, type Utxo } from '@/lib/btc-tx';
 import {
   getWalletState,
   saveWalletState,
@@ -91,6 +91,10 @@ let unlockedMnemonic: string | null = null;
 // Auto-lock alarm name (uses chrome.alarms API for persistence across service worker restarts)
 const AUTO_LOCK_ALARM = 'smirk_auto_lock';
 let cachedAutoLockMinutes: number | null = null; // Cache to avoid reading storage on every activity
+
+// Promise that resolves when background initialization is complete
+// Messages wait for this before processing to avoid race conditions
+let initializationPromise: Promise<void> | null = null;
 
 // Session storage key for persisting unlock state across service worker restarts
 const SESSION_KEYS_KEY = 'smirk_session_keys';
@@ -279,10 +283,19 @@ async function clearSessionKeys(): Promise<void> {
 
 /**
  * Handles messages from popup and content scripts.
+ * Waits for initialization to complete before processing to avoid race conditions.
  */
 runtime.onMessage.addListener(
   (message: unknown, _sender, sendResponse: (response: unknown) => void) => {
-    handleMessage(message as MessageType)
+    // Wait for initialization before processing messages
+    const process = async () => {
+      if (initializationPromise) {
+        await initializationPromise;
+      }
+      return handleMessage(message as MessageType);
+    };
+
+    process()
       .then(sendResponse)
       .catch((err: Error) => sendResponse({ success: false, error: err.message }));
 
@@ -362,6 +375,9 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
 
     case 'SEND_TX':
       return handleSendTx(message.asset, message.recipientAddress, message.amount, message.feeRate);
+
+    case 'MAX_SENDABLE_UTXO':
+      return handleMaxSendableUtxo(message.asset, message.feeRate);
 
     case 'GET_HISTORY':
       return handleGetHistory(message.asset);
@@ -1429,6 +1445,43 @@ async function handleGetUtxos(
 }
 
 /**
+ * Calculate maximum sendable amount for BTC/LTC.
+ * Fetches UTXOs and calculates max after fees.
+ */
+async function handleMaxSendableUtxo(
+  asset: 'btc' | 'ltc',
+  feeRate: number
+): Promise<MessageResponse<{ maxAmount: number }>> {
+  if (!isUnlocked) {
+    return { success: false, error: 'Wallet is locked' };
+  }
+
+  const state = await getWalletState();
+  const key = state.keys[asset];
+  if (!key) {
+    return { success: false, error: `No ${asset} key found` };
+  }
+
+  const address = getAddressForAsset(asset, key);
+
+  // Fetch UTXOs
+  const utxoResult = await api.getUtxos(asset, address);
+  if (utxoResult.error || !utxoResult.data) {
+    return { success: false, error: utxoResult.error || 'Failed to fetch UTXOs' };
+  }
+
+  const utxos = utxoResult.data.utxos;
+  if (utxos.length === 0) {
+    return { success: true, data: { maxAmount: 0 } };
+  }
+
+  // Calculate max sendable using btc-tx helper
+  const maxAmount = maxSendableUtxo(utxos, feeRate);
+
+  return { success: true, data: { maxAmount } };
+}
+
+/**
  * Send BTC or LTC transaction.
  * Builds, signs, and broadcasts a transaction to the given recipient.
  */
@@ -1813,17 +1866,26 @@ async function handleGrinSignSlate(
       grinWasmKeys = await initGrinWallet(unlockedMnemonic);
     }
 
-    // Sign the slate (decodes, adds our signature, returns S2 slate and output info)
-    const { slate: signedSlate, outputInfo } = await signSlate(grinWasmKeys, slatepack);
-
-    // Encode the signed slate as a slatepack response for the sender
-    const signedSlatepack = await encodeSlatepack(grinWasmKeys, signedSlate, 'response');
-
     // Get auth state for user ID
     const authState = await getAuthState();
     if (!authState?.userId) {
       return { success: false, error: 'Not authenticated' };
     }
+
+    // Get the next available child index for key derivation
+    // This ensures we don't reuse blinding factors (which would create duplicate commitments)
+    const outputsResult = await api.getGrinOutputs(authState.userId);
+    if (outputsResult.error) {
+      return { success: false, error: `Failed to fetch outputs: ${outputsResult.error}` };
+    }
+    const nextChildIndex = outputsResult.data?.next_child_index ?? 0;
+    console.log(`[Grin] Using next_child_index: ${nextChildIndex}`);
+
+    // Sign the slate (decodes, adds our signature, returns S2 slate and output info)
+    const { slate: signedSlate, outputInfo } = await signSlate(grinWasmKeys, slatepack, nextChildIndex);
+
+    // Encode the signed slate as a slatepack response for the sender
+    const signedSlatepack = await encodeSlatepack(grinWasmKeys, signedSlate, 'response');
 
     // Submit signed slatepack to relay
     const result = await api.signGrinSlatepack({
@@ -1899,7 +1961,7 @@ async function handleGrinFinalizeSlate(
  */
 async function handleGrinSignSlatepack(
   slatepackString: string
-): Promise<MessageResponse<{ signedSlatepack: string }>> {
+): Promise<MessageResponse<{ signedSlatepack: string; slateId: string; amount: number }>> {
   if (!isUnlocked) {
     return { success: false, error: 'Wallet is locked' };
   }
@@ -1919,8 +1981,17 @@ async function handleGrinSignSlatepack(
       return { success: false, error: 'Not authenticated' };
     }
 
+    // Get the next available child index for key derivation
+    // This ensures we don't reuse blinding factors (which would create duplicate commitments)
+    const outputsResult = await api.getGrinOutputs(authState.userId);
+    if (outputsResult.error) {
+      return { success: false, error: `Failed to fetch outputs: ${outputsResult.error}` };
+    }
+    const nextChildIndex = outputsResult.data?.next_child_index ?? 0;
+    console.log(`[Grin] Using next_child_index: ${nextChildIndex}`);
+
     // Sign the slate (decodes S1, adds our signature, returns S2 slate and output info)
-    const { slate: signedSlate, outputInfo } = await signSlate(grinWasmKeys, slatepackString);
+    const { slate: signedSlate, outputInfo } = await signSlate(grinWasmKeys, slatepackString, nextChildIndex);
 
     // Encode the signed slate as a slatepack response
     const signedSlatepack = await encodeSlatepack(grinWasmKeys, signedSlate, 'response');
@@ -1929,6 +2000,14 @@ async function handleGrinSignSlatepack(
 
     // Record the received output to the backend so balance is updated
     // The output is created when we sign (receive) - it will be spendable after tx confirms
+    console.log('[Grin] Recording output to backend...', {
+      userId: authState.userId,
+      keyId: outputInfo.keyId,
+      nChild: outputInfo.nChild,
+      amount: Number(outputInfo.amount),
+      commitment: outputInfo.commitment,
+      txSlateId: signedSlate.id,
+    });
     try {
       const recordResult = await api.recordGrinOutput({
         userId: authState.userId,
@@ -1938,18 +2017,52 @@ async function handleGrinSignSlatepack(
         commitment: outputInfo.commitment,
         txSlateId: signedSlate.id,
       });
+      console.log('[Grin] recordGrinOutput result:', JSON.stringify(recordResult));
       if (recordResult.error) {
-        console.warn('[Grin] Failed to record output (non-fatal):', recordResult.error);
+        console.error('[Grin] Failed to record output:', recordResult.error);
       } else {
-        console.log(`[Grin] Recorded output ${outputInfo.commitment} for ${outputInfo.amount} nanogrin`);
+        console.log(`[Grin] Recorded output ${outputInfo.commitment} for ${outputInfo.amount} nanogrin, id: ${recordResult.data?.id}`);
       }
     } catch (recordErr) {
       // Non-fatal - the signing worked, we just couldn't record the output
       // User can still give slatepack to sender, balance will be wrong until fixed
-      console.warn('[Grin] Failed to record output (non-fatal):', recordErr);
+      console.error('[Grin] Exception recording output:', recordErr);
     }
 
-    return { success: true, data: { signedSlatepack } };
+    // Record the transaction so it shows up in balance and history
+    // Status starts as 'pending' - will become 'confirmed' when tx is mined
+    console.log('[Grin] Recording transaction to backend...', {
+      userId: authState.userId,
+      slateId: signedSlate.id,
+      amount: Number(signedSlate.amount),
+      direction: 'receive',
+    });
+    try {
+      const txResult = await api.recordGrinTransaction({
+        userId: authState.userId,
+        slateId: signedSlate.id,
+        amount: Number(signedSlate.amount),
+        fee: 0, // Receiver doesn't pay fee
+        direction: 'receive',
+      });
+      console.log('[Grin] recordGrinTransaction result:', JSON.stringify(txResult));
+      if (txResult.error) {
+        console.error('[Grin] Failed to record transaction:', txResult.error);
+      } else {
+        console.log(`[Grin] Recorded receive transaction ${signedSlate.id}, id: ${txResult.data?.id}`);
+      }
+    } catch (txErr) {
+      console.error('[Grin] Exception recording transaction:', txErr);
+    }
+
+    return {
+      success: true,
+      data: {
+        signedSlatepack,
+        slateId: signedSlate.id,
+        amount: Number(signedSlate.amount),
+      },
+    };
   } catch (err) {
     console.error('[Grin] Failed to sign slatepack:', err);
     return {
@@ -2286,6 +2399,9 @@ async function initializeBackground() {
   }
 }
 
-initializeBackground().catch(console.error);
+// Start initialization and store the promise so message handlers can wait for it
+initializationPromise = initializeBackground().catch((err) => {
+  console.error('Background initialization failed:', err);
+});
 
 console.log('Smirk Wallet background service worker started');

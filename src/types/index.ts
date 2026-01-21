@@ -150,7 +150,7 @@ export type MessageType =
   | { type: 'GET_ADDRESSES' }
   | { type: 'SIGN_TRANSACTION'; asset: AssetType; txData: unknown }
   | { type: 'GET_UTXOS'; asset: 'btc' | 'ltc'; address: string }
-  | { type: 'SEND_TX'; asset: 'btc' | 'ltc'; recipientAddress: string; amount: number; feeRate: number }
+  | { type: 'SEND_TX'; asset: 'btc' | 'ltc'; recipientAddress: string; amount: number; feeRate: number; sweep?: boolean }
   | { type: 'MAX_SENDABLE_UTXO'; asset: 'btc' | 'ltc'; feeRate: number }
   | { type: 'OPEN_CLAIM_POPUP'; linkId: string; fragmentKey?: string }
   | { type: 'GET_TIP_INFO'; linkId: string }

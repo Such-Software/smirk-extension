@@ -84,18 +84,21 @@ export function WalletView({ onLock }: { onLock: () => void }) {
 
   // Restore screen state and active asset on mount
   useEffect(() => {
-    // First try to restore full screen state (includes screen + asset)
-    const savedState = restoreScreenState();
-    if (savedState) {
-      setActiveAsset(savedState.asset);
-      setScreen(savedState.screen);
-    } else {
-      // Fall back to just restoring the active asset
-      const saved = localStorage.getItem(ACTIVE_ASSET_KEY);
-      if (saved && availableAssets.includes(saved as AssetType)) {
-        setActiveAsset(saved as AssetType);
+    const restore = async () => {
+      // First try to restore full screen state (includes screen + asset)
+      const savedState = await restoreScreenState();
+      if (savedState) {
+        setActiveAsset(savedState.asset);
+        setScreen(savedState.screen);
+      } else {
+        // Fall back to just restoring the active asset
+        const saved = localStorage.getItem(ACTIVE_ASSET_KEY);
+        if (saved && availableAssets.includes(saved as AssetType)) {
+          setActiveAsset(saved as AssetType);
+        }
       }
-    }
+    };
+    restore();
 
     // Check for pending Grin receive
     getGrinPendingReceive().then(setGrinPendingReceive);

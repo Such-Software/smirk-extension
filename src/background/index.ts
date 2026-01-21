@@ -105,7 +105,8 @@ const PENDING_TXS_KEY = 'smirk_pending_txs';
 interface SessionKeysData {
   unlockedKeys: Record<string, string>; // asset -> hex-encoded key
   unlockedViewKeys: Record<string, string>; // 'xmr' | 'wow' -> hex-encoded key
-  grinExtendedPrivateKey?: string; // hex-encoded 64-byte key for Grin WASM operations (NOT the mnemonic)
+  grinExtendedPrivateKey?: string; // hex-encoded 64-byte key for Grin WASM operations
+  mnemonic?: string; // BIP39 mnemonic for Grin init (session storage clears on browser close)
 }
 
 interface PendingTx {
@@ -217,9 +218,14 @@ async function persistSessionKeys(): Promise<void> {
   };
 
   // Include Grin extended private key if available (for Grin WASM operations after restart)
-  // NOTE: We store only the extended key, NOT the mnemonic - mnemonic controls ALL coins
   if (grinWasmKeys?.extendedPrivateKey) {
     sessionData.grinExtendedPrivateKey = bytesToHex(grinWasmKeys.extendedPrivateKey);
+  }
+
+  // Include mnemonic for Grin first-time init after service worker restart
+  // Session storage clears on browser close, so this is reasonably safe
+  if (unlockedMnemonic) {
+    sessionData.mnemonic = unlockedMnemonic;
   }
 
   await storage.session.set({
@@ -251,8 +257,14 @@ async function restoreSessionKeys(): Promise<boolean> {
     unlockedViewKeys.set(asset as 'xmr' | 'wow', hexToBytes(hexKey));
   }
 
+  // Restore mnemonic for Grin first-time init
+  if (sessionData.mnemonic) {
+    unlockedMnemonic = sessionData.mnemonic;
+    console.log('[Session] Restored mnemonic from session storage');
+  }
+
   // Restore Grin extended private key (for Grin WASM operations)
-  // This allows Grin wallet to work after service worker restart without the full mnemonic
+  // This allows Grin wallet to work after service worker restart without re-deriving
   if (sessionData.grinExtendedPrivateKey) {
     try {
       const extendedKey = hexToBytes(sessionData.grinExtendedPrivateKey);
@@ -260,7 +272,7 @@ async function restoreSessionKeys(): Promise<boolean> {
       console.log('[Session] Restored Grin WASM keys from extended private key');
     } catch (err) {
       console.warn('[Session] Failed to restore Grin WASM keys:', err);
-      // Non-fatal - user can re-init by visiting Grin receive screen
+      // Non-fatal - mnemonic is restored, so Grin can be re-initialized
     }
   }
 
@@ -374,7 +386,7 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
       return handleGetUtxos(message.asset, message.address);
 
     case 'SEND_TX':
-      return handleSendTx(message.asset, message.recipientAddress, message.amount, message.feeRate);
+      return handleSendTx(message.asset, message.recipientAddress, message.amount, message.feeRate, message.sweep);
 
     case 'MAX_SENDABLE_UTXO':
       return handleMaxSendableUtxo(message.asset, message.feeRate);
@@ -1516,13 +1528,15 @@ async function handleMaxSendableUtxo(
 /**
  * Send BTC or LTC transaction.
  * Builds, signs, and broadcasts a transaction to the given recipient.
+ * If sweep is true, sends all UTXOs with no change output (empties the wallet).
  */
 async function handleSendTx(
   asset: 'btc' | 'ltc',
   recipientAddress: string,
   amount: number,
-  feeRate: number
-): Promise<MessageResponse<{ txid: string; fee: number }>> {
+  feeRate: number,
+  sweep: boolean = false
+): Promise<MessageResponse<{ txid: string; fee: number; actualAmount: number }>> {
   if (!isUnlocked) {
     return { success: false, error: 'Wallet is locked' };
   }
@@ -1553,15 +1567,16 @@ async function handleSendTx(
   }
 
   try {
-    // Build and sign transaction
-    const { txHex, fee } = createSignedTransaction(
+    // Build and sign transaction (sweep mode uses all UTXOs, no change)
+    const { txHex, fee, actualAmount } = createSignedTransaction(
       asset,
       utxos,
       recipientAddress,
       amount,
       changeAddress,
       privateKey,
-      feeRate
+      feeRate,
+      sweep
     );
 
     // Broadcast transaction
@@ -1570,9 +1585,9 @@ async function handleSendTx(
       return { success: false, error: broadcastResult.error };
     }
 
-    console.log(`[Send] ${asset.toUpperCase()} tx broadcast:`, broadcastResult.data!.txid);
+    console.log(`[Send] ${asset.toUpperCase()} tx broadcast:`, broadcastResult.data!.txid, sweep ? '(sweep)' : '');
 
-    return { success: true, data: { txid: broadcastResult.data!.txid, fee } };
+    return { success: true, data: { txid: broadcastResult.data!.txid, fee, actualAmount } };
   } catch (err) {
     return {
       success: false,

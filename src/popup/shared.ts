@@ -3,7 +3,7 @@
  */
 
 import type { AssetType, MessageResponse } from '@/types';
-import { runtime } from '@/lib/browser';
+import { runtime, storage } from '@/lib/browser';
 
 // Asset display info with SVG icon paths
 export const ASSETS: Record<AssetType, { name: string; symbol: string; iconPath: string }> = {
@@ -93,24 +93,24 @@ interface ScreenState {
   timestamp: number;
 }
 
-// Save current screen state to sessionStorage
-export function saveScreenState(screen: WalletScreen, asset: AssetType): void {
+// Save current screen state to chrome.storage.session
+// This persists across popup closes (unlike DOM sessionStorage)
+export async function saveScreenState(screen: WalletScreen, asset: AssetType): Promise<void> {
   const state: ScreenState = { screen, asset, timestamp: Date.now() };
-  sessionStorage.setItem(SCREEN_STATE_KEY, JSON.stringify(state));
+  await storage.session.set({ [SCREEN_STATE_KEY]: state });
 }
 
-// Restore screen state from sessionStorage
+// Restore screen state from chrome.storage.session
 // Returns null if expired (> 5 min) or not found
-export function restoreScreenState(): ScreenState | null {
+export async function restoreScreenState(): Promise<ScreenState | null> {
   try {
-    const saved = sessionStorage.getItem(SCREEN_STATE_KEY);
-    if (!saved) return null;
-
-    const state = JSON.parse(saved) as ScreenState;
+    const data = await storage.session.get<{ [SCREEN_STATE_KEY]?: ScreenState }>([SCREEN_STATE_KEY]);
+    const state = data[SCREEN_STATE_KEY];
+    if (!state) return null;
 
     // Expire after 5 minutes of popup being closed
     if (Date.now() - state.timestamp > 5 * 60 * 1000) {
-      sessionStorage.removeItem(SCREEN_STATE_KEY);
+      await storage.session.remove([SCREEN_STATE_KEY]);
       return null;
     }
 
@@ -121,6 +121,6 @@ export function restoreScreenState(): ScreenState | null {
 }
 
 // Clear screen state (e.g., when locking)
-export function clearScreenState(): void {
-  sessionStorage.removeItem(SCREEN_STATE_KEY);
+export async function clearScreenState(): Promise<void> {
+  await storage.session.remove([SCREEN_STATE_KEY]);
 }

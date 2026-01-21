@@ -80,7 +80,7 @@ function App() {
       setIsUnlocked(false);
       setPendingClaim(null);
       // Clear saved screen state when locking
-      clearScreenState();
+      await clearScreenState();
     } catch (err) {
       console.error('Failed to lock:', err);
     }

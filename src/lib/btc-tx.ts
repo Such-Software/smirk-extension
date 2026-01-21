@@ -89,11 +89,12 @@ export function selectUtxos(
  * @param asset - 'btc' or 'ltc'
  * @param utxos - Available UTXOs
  * @param recipientAddress - Where to send funds
- * @param amount - Amount to send in satoshis
- * @param changeAddress - Address for change
+ * @param amount - Amount to send in satoshis (ignored if sweep=true)
+ * @param changeAddress - Address for change (unused if sweep=true)
  * @param privateKey - Private key for signing (32 bytes)
  * @param feeRate - Fee rate in sat/vbyte
- * @returns Signed transaction hex and fee
+ * @param sweep - If true, sends all UTXOs with no change output (amount is calculated)
+ * @returns Signed transaction hex, fee, txid, and actual amount sent
  */
 export function createSignedTransaction(
   asset: UtxoAsset,
@@ -102,8 +103,9 @@ export function createSignedTransaction(
   amount: number,
   changeAddress: string,
   privateKey: Uint8Array,
-  feeRate: number = 10
-): { txHex: string; fee: number; txid: string } {
+  feeRate: number = 10,
+  sweep: boolean = false
+): { txHex: string; fee: number; txid: string; actualAmount: number } {
   const network = getNetwork(asset);
 
   // Get public key from private key
@@ -112,8 +114,39 @@ export function createSignedTransaction(
   // Create P2WPKH payment for our inputs
   const p2wpkhPayment = p2wpkh(publicKey, network);
 
-  // Select UTXOs
-  const { selected, fee, change } = selectUtxos(utxos, amount, feeRate);
+  let selected: Utxo[];
+  let fee: number;
+  let change: number;
+  let actualAmount: number;
+
+  if (sweep) {
+    // Sweep mode: use all UTXOs, no change output
+    selected = utxos;
+    const totalValue = utxos.reduce((sum, u) => sum + u.value, 0);
+
+    // Estimate tx size with all inputs and 1 output (no change)
+    const estimatedSize = 10 + 68 * utxos.length + 31;
+    fee = Math.ceil(estimatedSize * feeRate);
+
+    actualAmount = totalValue - fee;
+    change = 0;
+
+    if (actualAmount <= 0) {
+      throw new Error(`Insufficient funds for sweep: total ${totalValue}, fee ${fee}`);
+    }
+
+    // Check dust threshold
+    if (actualAmount < 546) {
+      throw new Error(`Sweep amount ${actualAmount} is below dust threshold`);
+    }
+  } else {
+    // Normal mode: select UTXOs for specific amount
+    const selection = selectUtxos(utxos, amount, feeRate);
+    selected = selection.selected;
+    fee = selection.fee;
+    change = selection.change;
+    actualAmount = amount;
+  }
 
   // Create transaction
   const tx = new Transaction();
@@ -131,10 +164,10 @@ export function createSignedTransaction(
   }
 
   // Add recipient output
-  tx.addOutputAddress(recipientAddress, BigInt(amount), network);
+  tx.addOutputAddress(recipientAddress, BigInt(actualAmount), network);
 
-  // Add change output if significant (dust threshold ~546 sats)
-  if (change > 546) {
+  // Add change output if significant (dust threshold ~546 sats) and not sweeping
+  if (!sweep && change > 546) {
     tx.addOutputAddress(changeAddress, BigInt(change), network);
   }
 
@@ -148,6 +181,7 @@ export function createSignedTransaction(
     txHex: hex.encode(tx.extract()),
     fee,
     txid: tx.id,
+    actualAmount,
   };
 }
 

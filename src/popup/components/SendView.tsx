@@ -183,12 +183,13 @@ export function SendView({
           return;
         }
 
-        const result = await sendMessage<{ txid: string; fee: number }>({
+        const result = await sendMessage<{ txid: string; fee: number; actualAmount: number }>({
           type: 'SEND_TX',
           asset: asset as 'btc' | 'ltc',
           recipientAddress: recipientAddress.trim(),
           amount: amountAtomic,
           feeRate: feeRateNum,
+          sweep: isSweep, // Pass sweep flag for max sends
         });
 
         setTxid(result.txid);
@@ -252,6 +253,7 @@ export function SendView({
 
         if (result.maxAmount > 0) {
           setAmount(formatBalanceFull(result.maxAmount, asset));
+          setIsSweep(true); // Mark as sweep mode for BTC/LTC max send
         } else {
           setError('Balance too low to cover network fee');
         }

@@ -1,6 +1,12 @@
 import { useState, useEffect } from 'preact/hooks';
 import type { AssetType } from '@/types';
 import { ASSETS, sendMessage, type AddressData } from '../shared';
+import {
+  getGrinPendingReceive,
+  saveGrinPendingReceive,
+  clearGrinPendingReceive,
+  type GrinPendingReceive,
+} from '@/lib/storage';
 
 export function ReceiveView({
   asset,
@@ -22,12 +28,22 @@ export function ReceiveView({
   const [inputSlatepack, setInputSlatepack] = useState('');
   const [outputSlatepack, setOutputSlatepack] = useState('');
   const [signing, setSigning] = useState(false);
+  const [pendingReceive, setPendingReceive] = useState<GrinPendingReceive | null>(null);
 
-  // Initialize Grin WASM wallet
+  // Initialize Grin WASM wallet and restore any pending receive
   useEffect(() => {
     if (asset === 'grin') {
       setGrinLoading(true);
       setGrinError(null);
+
+      // Load any pending receive from storage
+      getGrinPendingReceive().then((pending) => {
+        if (pending) {
+          setPendingReceive(pending);
+          setInputSlatepack(pending.inputSlatepack);
+          setOutputSlatepack(pending.signedSlatepack);
+        }
+      });
 
       sendMessage<{ slatepackAddress: string }>({ type: 'INIT_GRIN_WALLET' })
         .then(() => {
@@ -53,17 +69,36 @@ export function ReceiveView({
 
     try {
       // Sign the slatepack - this creates S2 response
-      const result = await sendMessage<{ signedSlatepack: string }>({
+      const result = await sendMessage<{ signedSlatepack: string; slateId?: string; amount?: number }>({
         type: 'GRIN_SIGN_SLATEPACK',
         slatepack: inputSlatepack.trim(),
       });
       setOutputSlatepack(result.signedSlatepack);
+
+      // Save to storage so it persists across popup closes
+      const pending: GrinPendingReceive = {
+        slateId: result.slateId || 'unknown',
+        inputSlatepack: inputSlatepack.trim(),
+        signedSlatepack: result.signedSlatepack,
+        amount: result.amount || 0,
+        createdAt: Date.now(),
+      };
+      await saveGrinPendingReceive(pending);
+      setPendingReceive(pending);
     } catch (err) {
       console.error('Failed to sign slatepack:', err);
       setGrinError(err instanceof Error ? err.message : 'Failed to sign slatepack');
     } finally {
       setSigning(false);
     }
+  };
+
+  // Clear the pending receive (user acknowledges they've sent slatepack back)
+  const handleClearPending = async () => {
+    await clearGrinPendingReceive();
+    setPendingReceive(null);
+    setInputSlatepack('');
+    setOutputSlatepack('');
   };
 
   // Copy output slatepack to clipboard
@@ -197,6 +232,21 @@ export function ReceiveView({
               {/* Output: Signed S2 slatepack to give back */}
               {outputSlatepack && (
                 <div>
+                  {pendingReceive && (
+                    <div
+                      style={{
+                        background: '#422006',
+                        border: '1px solid #f59e0b',
+                        borderRadius: '6px',
+                        padding: '10px',
+                        marginBottom: '12px',
+                        fontSize: '12px',
+                        color: '#fbbf24',
+                      }}
+                    >
+                      Waiting for sender to finalize. Keep this slatepack until the transaction confirms.
+                    </div>
+                  )}
                   <label style={{ fontSize: '13px', color: '#a1a1aa', display: 'block', marginBottom: '6px' }}>
                     Send this response back to the sender:
                   </label>
@@ -226,11 +276,20 @@ export function ReceiveView({
                   </div>
                   <button
                     class="btn btn-primary"
-                    style={{ width: '100%' }}
+                    style={{ width: '100%', marginBottom: '8px' }}
                     onClick={handleCopyOutput}
                   >
                     {copied ? 'Copied!' : 'Copy Response Slatepack'}
                   </button>
+                  {pendingReceive && (
+                    <button
+                      class="btn btn-secondary"
+                      style={{ width: '100%', fontSize: '12px' }}
+                      onClick={handleClearPending}
+                    >
+                      Done - I've sent it back
+                    </button>
+                  )}
                 </div>
               )}
             </div>

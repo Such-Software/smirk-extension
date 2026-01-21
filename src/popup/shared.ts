@@ -82,3 +82,45 @@ export interface BalanceData {
 
 // Wallet screen types
 export type WalletScreen = 'main' | 'receive' | 'send' | 'settings' | 'grinPending';
+
+// Session storage keys for persisting popup state across popup closes
+const SCREEN_STATE_KEY = 'smirk_screen_state';
+
+// Screen state interface
+interface ScreenState {
+  screen: WalletScreen;
+  asset: AssetType;
+  timestamp: number;
+}
+
+// Save current screen state to sessionStorage
+export function saveScreenState(screen: WalletScreen, asset: AssetType): void {
+  const state: ScreenState = { screen, asset, timestamp: Date.now() };
+  sessionStorage.setItem(SCREEN_STATE_KEY, JSON.stringify(state));
+}
+
+// Restore screen state from sessionStorage
+// Returns null if expired (> 5 min) or not found
+export function restoreScreenState(): ScreenState | null {
+  try {
+    const saved = sessionStorage.getItem(SCREEN_STATE_KEY);
+    if (!saved) return null;
+
+    const state = JSON.parse(saved) as ScreenState;
+
+    // Expire after 5 minutes of popup being closed
+    if (Date.now() - state.timestamp > 5 * 60 * 1000) {
+      sessionStorage.removeItem(SCREEN_STATE_KEY);
+      return null;
+    }
+
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+// Clear screen state (e.g., when locking)
+export function clearScreenState(): void {
+  sessionStorage.removeItem(SCREEN_STATE_KEY);
+}

@@ -25,9 +25,9 @@ function copyStaticAssets() {
       // Copy icons (recursively to handle subdirs like coins/)
       copyDirRecursive('icons', 'dist/icons');
 
-      // Copy smirk-wasm files
+      // Copy smirk-wasm files (Monero key image verification)
       mkdirSync('dist/wasm', { recursive: true });
-      const wasmPkgDir = '../smirk-wasm/pkg';
+      const wasmPkgDir = '../smirk-wasm-monero/pkg';
       try {
         copyFileSync(`${wasmPkgDir}/smirk_wasm.js`, 'dist/wasm/smirk_wasm.js');
         copyFileSync(`${wasmPkgDir}/smirk_wasm_bg.wasm`, 'dist/wasm/smirk_wasm_bg.wasm');

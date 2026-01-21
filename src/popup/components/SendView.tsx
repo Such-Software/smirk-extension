@@ -11,6 +11,7 @@ import {
 import {
   sendTransaction as sendXmrTransaction,
   validateAddress as validateXmrAddress,
+  maxSendable as maxSendableXmr,
   type XmrAsset,
 } from '@/lib/xmr-tx';
 import { GrinSendView } from './GrinSendView';
@@ -41,6 +42,8 @@ export function SendView({
   const [feeEstimate, setFeeEstimate] = useState<FeeEstimate | null>(null);
   const [loadingFees, setLoadingFees] = useState(false);
   const [sending, setSending] = useState(false);
+  const [calculatingMax, setCalculatingMax] = useState(false);
+  const [isSweep, setIsSweep] = useState(false);
   const [error, setError] = useState('');
   const [txid, setTxid] = useState<string | null>(null);
 
@@ -154,7 +157,8 @@ export function SendView({
           walletData.spendKey,
           recipientAddress.trim(),
           amountAtomic,
-          'mainnet'
+          'mainnet',
+          isSweep // Pass sweep flag - if true, ignores amountAtomic and sends max
         );
 
         setTxid(result.txHash);
@@ -162,11 +166,12 @@ export function SendView({
         // Record pending tx locally for immediate UI feedback.
         // LWS may take a few seconds to see the tx in mempool, so we track it
         // locally to show the correct balance immediately after send.
+        // Use actualAmount from result (important for sweep mode)
         await sendMessage({
           type: 'ADD_PENDING_TX',
           txHash: result.txHash,
           asset,
-          amount: amountAtomic,
+          amount: result.actualAmount,
           fee: result.fee,
         });
       } else {
@@ -195,11 +200,67 @@ export function SendView({
     }
   };
 
-  const handleMax = () => {
-    // Set to max available balance (rough estimate, actual max depends on fee)
-    // For a proper implementation, we'd call estimateFee first
-    if (availableBalance > 0) {
-      setAmount(formatBalanceFull(availableBalance, asset));
+  const handleMax = async () => {
+    if (availableBalance <= 0) return;
+
+    setError('');
+
+    if (isCryptonoteAsset) {
+      // XMR/WOW: Mark as sweep mode (will send all, no change output)
+      setCalculatingMax(true);
+      try {
+        const walletData = await sendMessage<{
+          address: string;
+          viewKey: string;
+          spendKey: string;
+        }>({
+          type: 'GET_WALLET_KEYS',
+          asset,
+        });
+
+        const maxAmount = await maxSendableXmr(
+          asset as XmrAsset,
+          walletData.address,
+          walletData.viewKey,
+          walletData.spendKey
+        );
+
+        if (maxAmount > 0) {
+          setAmount(formatBalanceFull(maxAmount, asset));
+          setIsSweep(true); // Mark as sweep for transaction building
+        } else {
+          setError('Balance too low to cover network fee');
+        }
+      } catch (err) {
+        console.error('Failed to calculate max sendable:', err);
+        setError('Failed to calculate max amount');
+      } finally {
+        setCalculatingMax(false);
+      }
+    } else {
+      // BTC/LTC: Calculate max sendable accounting for fees
+      setCalculatingMax(true);
+      try {
+        // Use current fee rate or default
+        const currentFeeRate = parseInt(feeRate) || (asset === 'ltc' ? 1 : 2);
+
+        const result = await sendMessage<{ maxAmount: number }>({
+          type: 'MAX_SENDABLE_UTXO',
+          asset: asset as 'btc' | 'ltc',
+          feeRate: currentFeeRate,
+        });
+
+        if (result.maxAmount > 0) {
+          setAmount(formatBalanceFull(result.maxAmount, asset));
+        } else {
+          setError('Balance too low to cover network fee');
+        }
+      } catch (err) {
+        console.error('Failed to calculate max sendable:', err);
+        setError('Failed to calculate max amount');
+      } finally {
+        setCalculatingMax(false);
+      }
     }
   };
 
@@ -331,7 +392,10 @@ export function SendView({
                   class="form-input"
                   placeholder="0.00000000"
                   value={amount}
-                  onInput={(e) => setAmount((e.target as HTMLInputElement).value)}
+                  onInput={(e) => {
+                    setAmount((e.target as HTMLInputElement).value);
+                    setIsSweep(false); // Manual input clears sweep mode
+                  }}
                   disabled={sending}
                   style={{ flex: 1, fontFamily: 'monospace' }}
                 />
@@ -339,10 +403,10 @@ export function SendView({
                   type="button"
                   class="btn btn-secondary"
                   onClick={handleMax}
-                  disabled={sending || availableBalance === 0}
-                  style={{ padding: '8px 12px', fontSize: '12px' }}
+                  disabled={sending || calculatingMax || availableBalance === 0}
+                  style={{ padding: '8px 12px', fontSize: '12px', minWidth: '50px' }}
                 >
-                  Max
+                  {calculatingMax ? <span class="spinner" style={{ width: '14px', height: '14px' }} /> : 'Max'}
                 </button>
               </div>
             </div>

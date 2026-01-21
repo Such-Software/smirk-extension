@@ -4,18 +4,17 @@
 
 ### UI/UX Improvements
 - [ ] **Pop-out window feature** - Allow popping out the extension into its own standalone window (like Bitwarden does). Useful for longer operations like Grin slate exchanges.
+- [ ] **Copy feedback** - Toast notification when copying addresses/txids/kernels to clipboard
 - [ ] **Better loading states** - Show skeleton loaders instead of spinners for balance/history loading
-- [ ] **Copy feedback** - Toast notification when copying addresses/txids to clipboard
 
 ### Grin Improvements
-- [ ] Store kernel_excess in local storage after finalization for tx history display
-- [ ] Show link to Grin block explorer once kernel_excess is available
-- [ ] Better differentiation between "pending relay slates" vs "unconfirmed outputs" in UI
+- [ ] **Test Grin Send Flow** - UTXO selection, change output, broadcast
+- [ ] **Pending display clarity** - Differentiate "pending relay slates" vs "unconfirmed outputs" in UI
+- [ ] Link to Grin block explorer from kernel_excess (click to open grinexplorer.net)
 
 ## Medium Priority
 
 ### General
-- [ ] Transaction history for all coins (currently BTC/LTC only)
 - [ ] QR code scanning for addresses (camera permission)
 - [ ] Dark/light theme toggle
 - [ ] Configurable fee levels (low/medium/high)
@@ -41,3 +40,11 @@
 - [ ] Break up large files (background/index.ts is very long)
 - [ ] Add unit tests for crypto operations
 - [ ] Add e2e tests with Playwright
+
+## Completed (2026-01-21)
+
+- [x] Grin receive flow (direct slatepack) - Working
+- [x] Transaction history for Grin (kernel_excess shown with click-to-copy)
+- [x] Screen state persistence across popup closes
+- [x] Mnemonic persistence in session storage for Grin wallet init
+- [x] kernel_excess tracking in backend and display in UI

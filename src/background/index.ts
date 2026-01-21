@@ -1663,6 +1663,7 @@ async function handleGetHistory(
       is_pending: tx.status !== 'confirmed' && tx.status !== 'finalized',
       total_received: tx.direction === 'receive' ? tx.amount : 0,
       total_sent: tx.direction === 'send' ? tx.amount + tx.fee : 0,
+      kernel_excess: tx.kernel_excess ?? undefined,
     }));
 
     return { success: true, data: { transactions } };

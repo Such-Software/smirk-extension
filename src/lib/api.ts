@@ -656,6 +656,7 @@ export class SmirkApi {
       status: 'pending' | 'signed' | 'finalized' | 'confirmed' | 'cancelled';
       counterparty_user_id: string | null;
       created_at: string;
+      kernel_excess: string | null;
     }>;
   }>> {
     return this.request(`/wallet/grin/user/${userId}/history`, { method: 'GET' });

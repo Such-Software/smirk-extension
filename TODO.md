@@ -3,9 +3,9 @@
 ## High Priority
 
 ### UI/UX Improvements
-- [ ] **Pop-out window feature** - Allow popping out the extension into its own standalone window (like Bitwarden does). Useful for longer operations like Grin slate exchanges.
-- [ ] **Copy feedback** - Toast notification when copying addresses/txids/kernels to clipboard
-- [ ] **Better loading states** - Show skeleton loaders instead of spinners for balance/history loading
+- [x] **Pop-out window feature** - Standalone window via ⧉ button in header (2026-01-22)
+- [x] **Copy feedback** - Toast notifications for all clipboard operations (2026-01-22)
+- [x] **Better loading states** - Skeleton loaders for balance/history (2026-01-22)
 
 ### Grin Improvements
 - [x] **Grin Send Flow** - UTXO selection, change output, broadcast - WORKING (2026-01-22)
@@ -43,6 +43,9 @@
 
 ## Completed (2026-01-22)
 
+- [x] Toast notifications for clipboard copy feedback
+- [x] Skeleton loaders for balance/history loading states
+- [x] Pop-out window feature (⧉ button in header)
 - [x] Grin send flow (SRS) - Working end-to-end
   - UTXO selection, change outputs, finalization, broadcast
   - Fixed compact slate offset handling (must NOT create offset for compact slates)

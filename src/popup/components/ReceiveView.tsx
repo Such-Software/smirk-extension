@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'preact/hooks';
 import type { AssetType } from '@/types';
 import { ASSETS, sendMessage, type AddressData } from '../shared';
+import { useToast, copyToClipboard } from './Toast';
 import {
   getGrinPendingReceive,
   saveGrinPendingReceive,
@@ -17,7 +18,7 @@ export function ReceiveView({
   address: AddressData | null;
   onBack: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
+  const { showToast } = useToast();
 
   // Grin-specific state
   const [grinLoading, setGrinLoading] = useState(false);
@@ -104,13 +105,7 @@ export function ReceiveView({
   // Copy output slatepack to clipboard
   const handleCopyOutput = async () => {
     if (!outputSlatepack) return;
-    try {
-      await navigator.clipboard.writeText(outputSlatepack);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
-    }
+    await copyToClipboard(outputSlatepack, showToast, 'Slatepack copied');
   };
 
   // For non-Grin assets, use the provided address
@@ -118,13 +113,7 @@ export function ReceiveView({
 
   const handleCopy = async () => {
     if (!displayAddress) return;
-    try {
-      await navigator.clipboard.writeText(displayAddress);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
-    }
+    await copyToClipboard(displayAddress, showToast, 'Address copied');
   };
 
   return (
@@ -279,7 +268,7 @@ export function ReceiveView({
                     style={{ width: '100%', marginBottom: '8px' }}
                     onClick={handleCopyOutput}
                   >
-                    {copied ? 'Copied!' : 'Copy Response Slatepack'}
+                    Copy Response Slatepack
                   </button>
                   {pendingReceive && (
                     <button
@@ -322,7 +311,7 @@ export function ReceiveView({
               style={{ width: '100%' }}
               onClick={handleCopy}
             >
-              {copied ? 'Copied!' : 'Copy Address'}
+              Copy Address
             </button>
           </div>
         ) : (

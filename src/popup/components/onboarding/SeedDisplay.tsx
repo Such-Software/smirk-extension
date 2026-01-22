@@ -1,4 +1,5 @@
 import { useState } from 'preact/hooks';
+import { useToast, copyToClipboard } from '../Toast';
 
 export function SeedDisplay({
   words,
@@ -9,17 +10,11 @@ export function SeedDisplay({
   onContinue: () => void;
   onBack: () => void;
 }) {
+  const { showToast } = useToast();
   const [confirmed, setConfirmed] = useState(false);
-  const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(words.join(' '));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
-    }
+    await copyToClipboard(words.join(' '), showToast, 'Seed phrase copied');
   };
 
   return (
@@ -53,7 +48,7 @@ export function SeedDisplay({
         style={{ width: '100%', marginBottom: '16px' }}
         onClick={handleCopy}
       >
-        {copied ? 'Copied!' : 'Copy to Clipboard'}
+        Copy to Clipboard
       </button>
 
       <label

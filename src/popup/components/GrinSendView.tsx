@@ -11,6 +11,7 @@ import {
   clearGrinSendState,
   type BalanceData,
 } from '../shared';
+import { useToast, copyToClipboard } from './Toast';
 
 /**
  * Grin Send View - Interactive Slatepack Flow
@@ -31,6 +32,8 @@ export function GrinSendView({
   onBack: () => void;
   onSlateCreated: () => void;
 }) {
+  const { showToast } = useToast();
+
   // Form state
   const [amount, setAmount] = useState('');
   const [creating, setCreating] = useState(false);
@@ -39,7 +42,6 @@ export function GrinSendView({
   // Step 1: S1 slatepack created
   const [slatepack, setSlatepack] = useState<string | null>(null);
   const [sendContext, setSendContext] = useState<GrinSendContext | null>(null);
-  const [copied, setCopied] = useState(false);
 
   // Step 2: Waiting for S2 response
   const [responseSlatepack, setResponseSlatepack] = useState('');
@@ -166,9 +168,7 @@ export function GrinSendView({
 
   const copySlatepack = async () => {
     if (slatepack) {
-      await navigator.clipboard.writeText(slatepack);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      await copyToClipboard(slatepack, showToast, 'Slatepack copied');
     }
   };
 
@@ -314,7 +314,7 @@ export function GrinSendView({
               </pre>
             </div>
             <button class="btn btn-secondary" style={{ width: '100%' }} onClick={copySlatepack}>
-              {copied ? 'Copied!' : 'Copy Slatepack'}
+              Copy Slatepack
             </button>
           </div>
 

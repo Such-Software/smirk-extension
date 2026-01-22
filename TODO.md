@@ -6,6 +6,7 @@
 - [x] **Pop-out window feature** - Standalone window via ⧉ button in header (2026-01-22)
 - [x] **Copy feedback** - Toast notifications for all clipboard operations (2026-01-22)
 - [x] **Better loading states** - Skeleton loaders for balance/history (2026-01-22)
+- [ ] **Transaction list pagination** - Show only 2-3 transactions on main screen without scrollbar, add "View All" button to open full scrollable history
 
 ### Grin Improvements
 - [x] **Grin Send Flow** - UTXO selection, change output, broadcast - WORKING (2026-01-22)

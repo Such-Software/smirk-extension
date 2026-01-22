@@ -17,7 +17,6 @@ import {
 import { ReceiveView } from './ReceiveView';
 import { SendView } from './SendView';
 import { SettingsView } from './SettingsView';
-import { GrinPendingView } from './GrinPendingView';
 import { getGrinPendingReceive, type GrinPendingReceive } from '@/lib/storage';
 
 // Storage key for persisting active asset tab
@@ -34,6 +33,11 @@ interface TxHistoryEntry {
   total_sent?: number;
   // Grin specific - on-chain tx identifier (like txid for BTC)
   kernel_excess?: string;
+  // Grin transaction status and metadata
+  is_cancelled?: boolean;
+  status?: string;
+  direction?: 'send' | 'receive';
+  input_ids?: string[]; // For cancelling pending sends
 }
 
 // Pending outgoing transaction (not yet confirmed)
@@ -81,6 +85,8 @@ export function WalletView({ onLock }: { onLock: () => void }) {
   });
   // Pending Grin receive (signed slatepack waiting for sender to finalize)
   const [grinPendingReceive, setGrinPendingReceive] = useState<GrinPendingReceive | null>(null);
+  // Track which Grin transaction is being cancelled
+  const [cancellingTxId, setCancellingTxId] = useState<string | null>(null);
 
   const availableAssets: AssetType[] = ['btc', 'ltc', 'xmr', 'wow', 'grin'];
 
@@ -293,6 +299,28 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     }
   };
 
+  // Cancel a pending Grin send transaction
+  const handleCancelGrinTx = async (tx: TxHistoryEntry, e: Event) => {
+    e.stopPropagation(); // Don't trigger copy on parent click
+    if (cancellingTxId) return; // Already cancelling something
+
+    setCancellingTxId(tx.txid);
+    try {
+      await sendMessage<{ cancelled: boolean }>({
+        type: 'GRIN_CANCEL_SEND',
+        slateId: tx.txid,
+        inputIds: tx.input_ids || [],
+      });
+      // Refresh history and balance after cancellation
+      await fetchHistory('grin');
+      await fetchBalance('grin');
+    } catch (err) {
+      console.error('Failed to cancel Grin transaction:', err);
+    } finally {
+      setCancellingTxId(null);
+    }
+  };
+
   const currentAddress = addresses[activeAsset];
   const currentBalance = balances[activeAsset];
   // Track locally-recorded pending outgoing (not yet seen by LWS/backend).
@@ -340,14 +368,10 @@ export function WalletView({ onLock }: { onLock: () => void }) {
         onSent={() => {
           setScreen('main');
           fetchBalance(activeAsset);
+          fetchHistory(activeAsset);
         }}
       />
     );
-  }
-
-  // Show Grin pending slatepacks view
-  if (screen === 'grinPending') {
-    return <GrinPendingView onBack={() => setScreen('main')} />;
   }
 
   return (
@@ -490,17 +514,10 @@ export function WalletView({ onLock }: { onLock: () => void }) {
             <span class="action-icon">📤</span>
             <span class="action-label">Send</span>
           </button>
-          {activeAsset === 'grin' ? (
-            <button class="action-btn" onClick={() => setScreen('grinPending')}>
-              <span class="action-icon">⏳</span>
-              <span class="action-label">Pending</span>
-            </button>
-          ) : (
-            <button class="action-btn">
-              <span class="action-icon">🎁</span>
-              <span class="action-label">Tip</span>
-            </button>
-          )}
+          <button class="action-btn">
+            <span class="action-icon">🎁</span>
+            <span class="action-label">Tip</span>
+          </button>
         </div>
 
         {/* Recent Activity */}
@@ -519,6 +536,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
               const sent = tx.total_sent ?? 0;
               const isIncoming = (isXmrWow || isGrin) ? received > sent : true; // BTC/LTC: we don't know direction yet
               const isPending = tx.is_pending || tx.height === 0;
+              const isCancelled = (tx as any).is_cancelled === true;
 
               // For Grin, prefer kernel_excess as the copyable identifier
               const displayId = isGrin && tx.kernel_excess ? tx.kernel_excess : tx.txid;
@@ -556,28 +574,46 @@ export function WalletView({ onLock }: { onLock: () => void }) {
                     >
                       {displayId.substring(0, 12)}...{displayId.substring(displayId.length - 8)}
                     </div>
-                    <div style={{ fontSize: '10px', color: '#71717a' }}>
+                    <div style={{ fontSize: '10px', color: isCancelled ? '#ef4444' : '#71717a' }}>
                       {isGrin ? (
                         <>
-                          {tx.kernel_excess ? 'Kernel' : 'Slate'} &bull; {isPending ? 'Pending' : 'Confirmed'}
+                          {tx.kernel_excess ? 'Kernel' : 'Slate'} &bull; {isCancelled ? 'Cancelled' : (isPending ? 'Pending' : 'Confirmed')}
                         </>
                       ) : (
                         isPending ? 'Pending' : `Block ${tx.height}`
                       )}
                     </div>
                   </div>
-                  {(isXmrWow || isGrin) && (received > 0 || sent > 0) && (
-                    <div
-                      style={{
-                        fontSize: '11px',
-                        color: isIncoming ? '#22c55e' : '#ef4444',
-                        fontWeight: 500,
-                      }}
-                    >
-                      {isIncoming ? '+' : '-'}
-                      {formatBalance(isIncoming ? received : sent, activeAsset)}
-                    </div>
-                  )}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {(isXmrWow || isGrin) && (received > 0 || sent > 0) && (
+                      <div
+                        style={{
+                          fontSize: '11px',
+                          color: isIncoming ? '#22c55e' : '#ef4444',
+                          fontWeight: 500,
+                        }}
+                      >
+                        {isIncoming ? '+' : '-'}
+                        {formatBalance(isIncoming ? received : sent, activeAsset)}
+                      </div>
+                    )}
+                    {/* Cancel button for pending Grin sends */}
+                    {isGrin && isPending && !isCancelled && tx.direction === 'send' && (
+                      <button
+                        class="btn btn-secondary"
+                        style={{
+                          fontSize: '10px',
+                          padding: '4px 8px',
+                          minWidth: 'unset',
+                        }}
+                        onClick={(e) => handleCancelGrinTx(tx, e)}
+                        disabled={cancellingTxId === tx.txid}
+                        title="Cancel this pending transaction"
+                      >
+                        {cancellingTxId === tx.txid ? '...' : '✕'}
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })}

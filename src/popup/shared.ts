@@ -124,3 +124,65 @@ export async function restoreScreenState(): Promise<ScreenState | null> {
 export async function clearScreenState(): Promise<void> {
   await storage.session.remove([SCREEN_STATE_KEY]);
 }
+
+// === Grin Send Flow State Persistence ===
+// Persists the slatepack and sendContext so user can resume after popup close
+
+const GRIN_SEND_STATE_KEY = 'smirk_grin_send_state';
+
+export interface GrinSendFlowState {
+  slatepack: string;
+  sendContext: {
+    slateId: string;
+    secretKey: string;
+    secretNonce: string;
+    inputIds: string[];
+    serializedS1Slate: string; // base64 encoded - needed to decode compact S2 response
+    inputs: Array<{            // inputs for finalization - compact slate doesn't include them
+      commitment: string;
+      features: number;
+    }>;
+    senderOffset: string;      // hex encoded - compact S1 writes zero but we need real value
+    changeOutput?: {
+      keyId: string;
+      nChild: number;
+      amount: number;
+      commitment: string;
+      proof: string;
+    };
+  };
+  amount: number; // nanogrin
+  fee: number;    // nanogrin
+  timestamp: number;
+}
+
+// Save Grin send flow state when S1 is created
+export async function saveGrinSendState(state: Omit<GrinSendFlowState, 'timestamp'>): Promise<void> {
+  const fullState: GrinSendFlowState = { ...state, timestamp: Date.now() };
+  await storage.session.set({ [GRIN_SEND_STATE_KEY]: fullState });
+}
+
+// Restore Grin send flow state
+// Returns null if not found or expired (> 30 minutes - slates have limited lifetime)
+export async function restoreGrinSendState(): Promise<GrinSendFlowState | null> {
+  try {
+    const data = await storage.session.get<{ [GRIN_SEND_STATE_KEY]?: GrinSendFlowState }>([GRIN_SEND_STATE_KEY]);
+    const state = data[GRIN_SEND_STATE_KEY];
+    if (!state) return null;
+
+    // Expire after 30 minutes (slates shouldn't be kept much longer)
+    if (Date.now() - state.timestamp > 30 * 60 * 1000) {
+      await storage.session.remove([GRIN_SEND_STATE_KEY]);
+      return null;
+    }
+
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+// Clear Grin send flow state (after successful broadcast or cancel)
+export async function clearGrinSendState(): Promise<void> {
+  await storage.session.remove([GRIN_SEND_STATE_KEY]);
+}

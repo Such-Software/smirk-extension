@@ -383,7 +383,31 @@ class Consensus {
 			// Return reward
 			return reward;
 		}
-		
+
+		// Get base fee for transaction verification
+		// This is the minimum fee per transaction weight unit
+		static getBaseFee(isMainnet) {
+			// Check wallet type
+			switch(Consensus.getWalletType()) {
+				// GRIN wallet - base fee is 500000 nanogrin (0.0005 GRIN) on mainnet
+				// This is the ACCEPT_FEE_BASE in Grin consensus
+				case Consensus.GRIN_WALLET_TYPE:
+					return isMainnet ? new BigNumber(500000) : new BigNumber(1000000);
+
+				// MWC wallet - base fee is 500000 nanogrin
+				case Consensus.MWC_WALLET_TYPE:
+					return isMainnet ? new BigNumber(500000) : new BigNumber(1000000);
+
+				// EPIC wallet - different fee structure
+				case Consensus.EPIC_WALLET_TYPE:
+					return isMainnet ? new BigNumber(500000) : new BigNumber(1000000);
+
+				// Default to Grin values
+				default:
+					return isMainnet ? new BigNumber(500000) : new BigNumber(1000000);
+			}
+		}
+
 		// Is valid header version
 		static isValidHeaderVersion(isMainnet, height, version) {
 		

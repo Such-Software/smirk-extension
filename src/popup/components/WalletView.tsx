@@ -2,6 +2,7 @@ import { useState, useEffect } from 'preact/hooks';
 import type { AssetType, BalanceResponse } from '@/types';
 import { isLwsRawResponse } from '@/types';
 import { calculateVerifiedBalance } from '@/lib/monero-crypto';
+import { windows, runtime } from '@/lib/browser';
 import {
   ASSETS,
   DISPLAY_DECIMALS,
@@ -17,7 +18,11 @@ import {
 import { ReceiveView } from './ReceiveView';
 import { SendView } from './SendView';
 import { SettingsView } from './SettingsView';
+import { useToast, copyToClipboard } from './Toast';
 import { getGrinPendingReceive, type GrinPendingReceive } from '@/lib/storage';
+
+// Check if we're already in a popped out window
+const isPopup = window.location.search.includes('popup=true');
 
 // Storage key for persisting active asset tab
 const ACTIVE_ASSET_KEY = 'smirk_activeAsset';
@@ -50,6 +55,7 @@ interface PendingTx {
 }
 
 export function WalletView({ onLock }: { onLock: () => void }) {
+  const { showToast } = useToast();
   const [activeAsset, setActiveAsset] = useState<AssetType>('btc');
   const [screen, setScreen] = useState<WalletScreen>('main');
   const [addresses, setAddresses] = useState<Record<AssetType, AddressData | null>>({
@@ -321,6 +327,25 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     }
   };
 
+  // Pop out the extension into its own window
+  const handlePopOut = async () => {
+    try {
+      const popupUrl = runtime.getURL('popup.html?popup=true');
+      await windows.create({
+        url: popupUrl,
+        type: 'popup',
+        width: 400,
+        height: 600,
+        focused: true,
+      });
+      // Close the popup after opening the window
+      window.close();
+    } catch (err) {
+      console.error('Failed to pop out:', err);
+      showToast('Failed to pop out', 'error');
+    }
+  };
+
   const currentAddress = addresses[activeAsset];
   const currentBalance = balances[activeAsset];
   // Track locally-recorded pending outgoing (not yet seen by LWS/backend).
@@ -379,6 +404,9 @@ export function WalletView({ onLock }: { onLock: () => void }) {
       <header class="header">
         <h1>Smirk Wallet</h1>
         <div class="header-actions">
+          {!isPopup && (
+            <button class="btn btn-icon" onClick={handlePopOut} title="Pop out">⧉</button>
+          )}
           <button class="btn btn-icon" onClick={() => setScreen('settings')} title="Settings">⚙️</button>
           <button class="btn btn-icon" onClick={onLock} title="Lock">🔒</button>
         </div>
@@ -458,8 +486,8 @@ export function WalletView({ onLock }: { onLock: () => void }) {
             title={currentBalance ? `Total: ${formatBalanceFull(currentBalance.total, activeAsset)} ${ASSETS[activeAsset].symbol}\nConfirmed: ${formatBalanceFull(currentBalance.confirmed, activeAsset)}${currentPendingOutgoing > 0 ? `\nPending send: -${formatBalanceFull(currentPendingOutgoing, activeAsset)}` : ''}` : undefined}
             style={{ cursor: currentBalance ? 'help' : 'default' }}
           >
-            {loadingBalance === activeAsset ? (
-              <span class="spinner" style={{ width: '16px', height: '16px' }} />
+            {loadingBalance === activeAsset && !currentBalance ? (
+              <div class="skeleton skeleton-balance" />
             ) : currentBalance ? (
               `${formatBalance(adjustedConfirmed, activeAsset)} ${ASSETS[activeAsset].symbol}`
             ) : (
@@ -522,9 +550,11 @@ export function WalletView({ onLock }: { onLock: () => void }) {
 
         {/* Recent Activity */}
         <div class="section-title">Recent Activity</div>
-        {loadingHistory ? (
-          <div style={{ textAlign: 'center', padding: '16px' }}>
-            <span class="spinner" style={{ width: '16px', height: '16px' }} />
+        {loadingHistory && !history[activeAsset] ? (
+          <div style={{ padding: '8px 0' }}>
+            <div class="skeleton skeleton-tx" />
+            <div class="skeleton skeleton-tx" />
+            <div class="skeleton skeleton-tx" />
           </div>
         ) : history[activeAsset] && history[activeAsset]!.length > 0 ? (
           <div class="tx-list">
@@ -557,8 +587,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
                     cursor: 'pointer',
                   }}
                   onClick={() => {
-                    // Copy identifier to clipboard
-                    navigator.clipboard.writeText(displayId);
+                    copyToClipboard(displayId, showToast, `${idLabel} copied`);
                   }}
                   title={`Click to copy ${idLabel.toLowerCase()}\n${displayId}`}
                 >

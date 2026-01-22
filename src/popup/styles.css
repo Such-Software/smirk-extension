@@ -417,21 +417,21 @@ body {
   color: var(--color-error);
 }
 
-/* Spinner */
+/* Spinner - works on dark backgrounds by default */
 .spinner {
   width: 20px;
   height: 20px;
-  border: 3px solid rgba(0, 0, 0, 0.2);
-  border-top-color: #18181b;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-top-color: var(--color-yellow);
   border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+  animation: spin 0.7s linear infinite;
   display: inline-block;
 }
 
-/* Spinner on dark backgrounds (secondary buttons, etc) */
-.btn-secondary .spinner {
-  border-color: rgba(255, 255, 255, 0.2);
-  border-top-color: var(--color-yellow);
+/* Spinner in primary buttons (dark text on yellow) */
+.btn-primary .spinner {
+  border-color: rgba(0, 0, 0, 0.15);
+  border-top-color: #18181b;
 }
 
 @keyframes spin {
@@ -446,4 +446,114 @@ input[type="checkbox"] {
   height: 18px;
   accent-color: var(--color-yellow);
   cursor: pointer;
+}
+
+/* Toast notifications */
+.toast-container {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  animation: toast-in 0.2s ease-out;
+  pointer-events: auto;
+}
+
+.toast-icon {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.toast-success {
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+
+.toast-success .toast-icon {
+  color: var(--color-success);
+}
+
+.toast-error {
+  border-color: var(--color-error);
+  color: var(--color-error);
+}
+
+.toast-error .toast-icon {
+  color: var(--color-error);
+}
+
+.toast-info {
+  border-color: var(--color-yellow);
+  color: var(--color-yellow);
+}
+
+.toast-info .toast-icon {
+  color: var(--color-yellow);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Skeleton loaders */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-bg-input) 25%,
+    var(--color-bg-card) 50%,
+    var(--color-bg-input) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+  border-radius: 4px;
+}
+
+.skeleton-text {
+  height: 1em;
+  width: 100%;
+}
+
+.skeleton-balance {
+  height: 2.5rem;
+  width: 60%;
+  margin: 0 auto;
+}
+
+.skeleton-tx {
+  height: 48px;
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+@keyframes skeleton-pulse {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }

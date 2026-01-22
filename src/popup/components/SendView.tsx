@@ -15,6 +15,7 @@ import {
   type XmrAsset,
 } from '@/lib/xmr-tx';
 import { GrinSendView } from './GrinSendView';
+import { useToast, copyToClipboard } from './Toast';
 
 interface FeeEstimate {
   fast: number | null;
@@ -35,6 +36,7 @@ export function SendView({
   onBack: () => void;
   onSent: () => void;
 }) {
+  const { showToast } = useToast();
   const [recipientAddress, setRecipientAddress] = useState('');
   const [amount, setAmount] = useState('');
   const [feeRate, setFeeRate] = useState('');
@@ -269,7 +271,7 @@ export function SendView({
   // Copy txid to clipboard
   const copyTxid = async () => {
     if (txid) {
-      await navigator.clipboard.writeText(txid);
+      await copyToClipboard(txid, showToast, 'Transaction ID copied');
     }
   };
 

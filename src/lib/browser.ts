@@ -253,5 +253,29 @@ export const tabs = {
   },
 };
 
+/**
+ * Windows API wrapper.
+ * Used for creating pop-out windows.
+ */
+export const windows = {
+  async create(createData: chrome.windows.CreateData): Promise<chrome.windows.Window | undefined> {
+    if (isFirefox) {
+      return browserAPI.windows.create(createData);
+    }
+    return new Promise((resolve) => {
+      browserAPI.windows.create(createData, (window) => resolve(window));
+    });
+  },
+
+  async getCurrent(): Promise<chrome.windows.Window> {
+    if (isFirefox) {
+      return browserAPI.windows.getCurrent();
+    }
+    return new Promise((resolve) => {
+      browserAPI.windows.getCurrent((window) => resolve(window));
+    });
+  },
+};
+
 // Re-export for convenience
 export { browserAPI, isFirefox };

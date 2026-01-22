@@ -5,6 +5,7 @@ import { sendMessage, clearScreenState } from './shared';
 import {
   ClaimView,
   Onboarding,
+  ToastProvider,
   UnlockScreen,
   WalletView,
 } from './components';
@@ -129,5 +130,10 @@ function App() {
   return <WalletView onLock={handleLock} />;
 }
 
-// Mount the app
-render(<App />, document.getElementById('app')!);
+// Mount the app with ToastProvider
+render(
+  <ToastProvider>
+    <App />
+  </ToastProvider>,
+  document.getElementById('app')!
+);

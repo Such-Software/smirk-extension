@@ -8,8 +8,8 @@
 - [ ] **Better loading states** - Show skeleton loaders instead of spinners for balance/history loading
 
 ### Grin Improvements
-- [ ] **Test Grin Send Flow** - UTXO selection, change output, broadcast
-- [ ] **Pending display clarity** - Differentiate "pending relay slates" vs "unconfirmed outputs" in UI
+- [x] **Grin Send Flow** - UTXO selection, change output, broadcast - WORKING (2026-01-22)
+- [x] **Pending display clarity** - Removed confusing "Pending" button, pending status shown inline in tx history
 - [ ] Link to Grin block explorer from kernel_excess (click to open grinexplorer.net)
 
 ## Medium Priority
@@ -41,10 +41,16 @@
 - [ ] Add unit tests for crypto operations
 - [ ] Add e2e tests with Playwright
 
-## Completed (2026-01-21)
+## Completed (2026-01-22)
 
+- [x] Grin send flow (SRS) - Working end-to-end
+  - UTXO selection, change outputs, finalization, broadcast
+  - Fixed compact slate offset handling (must NOT create offset for compact slates)
+  - Fixed change output proof storage/restoration for finalization
+  - Fixed push_transaction to use node Foreign API (port 3413)
 - [x] Grin receive flow (direct slatepack) - Working
 - [x] Transaction history for Grin (kernel_excess shown with click-to-copy)
+- [x] Cancel pending send transactions from history view
 - [x] Screen state persistence across popup closes
 - [x] Mnemonic persistence in session storage for Grin wallet init
 - [x] kernel_excess tracking in backend and display in UI

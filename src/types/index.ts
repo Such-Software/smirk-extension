@@ -179,7 +179,8 @@ export type MessageType =
   | { type: 'GRIN_SIGN_SLATEPACK'; slatepack: string }
   // Grin send transaction
   | { type: 'GRIN_CREATE_SEND'; amount: number; fee: number; recipientAddress?: string }
-  | { type: 'GRIN_FINALIZE_AND_BROADCAST'; slatepack: string; sendContext: GrinSendContext };
+  | { type: 'GRIN_FINALIZE_AND_BROADCAST'; slatepack: string; sendContext: GrinSendContext }
+  | { type: 'GRIN_CANCEL_SEND'; slateId: string; inputIds: string[] };
 
 /**
  * Context needed to finalize a Grin send transaction.
@@ -194,12 +195,22 @@ export interface GrinSendContext {
   secretNonce: string; // hex encoded
   /** IDs of outputs used as inputs (to mark as spent) */
   inputIds: string[];
+  /** Serialized S1 slate (base64 encoded) - needed to decode S2 response */
+  serializedS1Slate: string;
+  /** Inputs used in the transaction - needed for finalization since compact slate doesn't include them */
+  inputs: Array<{
+    commitment: string; // hex encoded
+    features: number;   // 0 = plain, 1 = coinbase
+  }>;
+  /** Sender's offset - compact S1 serialization writes zero but we need the real value */
+  senderOffset: string; // hex encoded
   /** Change output info (to record after broadcast) */
   changeOutput?: {
     keyId: string;
     nChild: number;
     amount: number;
     commitment: string;
+    proof: string; // hex encoded - needed to restore output to slate for finalization
   };
 }
 

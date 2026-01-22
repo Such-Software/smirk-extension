@@ -37,6 +37,28 @@ import {
 
 export { initializeGrinWasm, isGrinWasmInitialized };
 
+// Grin consensus constants for fee calculation
+const GRIN_BASE_FEE = BigInt(500000); // 0.0005 GRIN per weight unit
+const GRIN_INPUT_WEIGHT = BigInt(1);
+const GRIN_OUTPUT_WEIGHT = BigInt(21);
+const GRIN_KERNEL_WEIGHT = BigInt(3);
+
+/**
+ * Calculate the required fee for a Grin transaction.
+ * Fee = weight * baseFee, where weight = inputs*1 + outputs*21 + kernels*3
+ *
+ * @param numInputs - Number of inputs
+ * @param numOutputs - Number of outputs (including change)
+ * @param numKernels - Number of kernels (usually 1)
+ * @returns Required fee in nanogrin
+ */
+export function calculateGrinFee(numInputs: number, numOutputs: number, numKernels: number = 1): bigint {
+  const weight = BigInt(numInputs) * GRIN_INPUT_WEIGHT +
+                 BigInt(numOutputs) * GRIN_OUTPUT_WEIGHT +
+                 BigInt(Math.max(numKernels, 1)) * GRIN_KERNEL_WEIGHT;
+  return weight * GRIN_BASE_FEE;
+}
+
 /**
  * Grin wallet keys derived from a seed.
  */
@@ -111,6 +133,7 @@ export interface SendTransactionResult {
     nChild: number;
     amount: bigint;
     commitment: string;
+    proof: string; // hex encoded - needed to restore output to slate for finalization
   };
 }
 
@@ -377,6 +400,119 @@ export async function decodeSlatepack(
     raw: slate,
     serialized: slateData,
   };
+}
+
+/**
+ * Reconstruct a GrinSlate from serialized binary data.
+ * Used to recreate the S1 slate for finalizing S2 responses.
+ *
+ * @param serializedData - The serialized slate as Uint8Array
+ * @returns The reconstructed GrinSlate
+ */
+export async function reconstructSlateFromSerialized(
+  serializedData: Uint8Array
+): Promise<GrinSlate> {
+  await initializeGrinWasm();
+
+  const Slate = getSlate();
+
+  console.log('[Grin] Reconstructing slate from serialized data, length:', serializedData.length);
+
+  // Create Slate from serialized data as S1 (SEND_INITIAL)
+  const slate = new Slate(
+    serializedData,
+    true, // isMainnet
+    Slate.COMPACT_SLATE_PURPOSE_SEND_INITIAL,
+    null // no initial slate needed for S1
+  );
+
+  const amount = BigInt(slate.getAmount().toFixed());
+  const fee = BigInt(slate.getFee().toFixed());
+
+  console.log('[Grin] Reconstructed slate - id:', slate.getId().value, 'amount:', amount.toString(), 'fee:', fee.toString());
+
+  return {
+    id: slate.getId().value || slate.getId().toString(),
+    amount,
+    fee,
+    state: 'S1',
+    raw: slate,
+    serialized: serializedData,
+  };
+}
+
+/**
+ * Add inputs to a slate that was reconstructed from serialized data.
+ * Compact slate serialization (SEND_INITIAL purpose) doesn't include inputs,
+ * so we need to re-add them before finalization.
+ *
+ * @param slate - The slate to add inputs to
+ * @param inputs - Array of input data (commitment + features)
+ */
+export async function addInputsToSlate(
+  slate: GrinSlate,
+  inputs: Array<{ commitment: string; features: number }>
+): Promise<void> {
+  await initializeGrinWasm();
+
+  const Common = getCommon();
+  const SlateInput = getSlateInput();
+  const Slate = getSlate();
+
+  // Create SlateInput objects from the stored data
+  const slateInputs = inputs.map(input => {
+    const commitBytes = Common.fromHexString(input.commitment);
+    return new SlateInput(input.features, commitBytes);
+  });
+
+  console.log('[addInputsToSlate] Adding', slateInputs.length, 'inputs to slate');
+
+  // Add inputs to the slate - sync method modifies in place
+  // Use updateKernel=false since we don't want to modify the kernel
+  // expectedNumberOfOutputs=0 since outputs are already in the slate
+  const addResult = slate.raw.addInputs(slateInputs, false, 0);
+  if (addResult === false) {
+    throw new Error('Failed to add inputs to slate');
+  }
+
+  console.log('[addInputsToSlate] Done, slate now has', slate.raw.getInputs?.()?.length, 'inputs');
+}
+
+/**
+ * Add outputs to a slate that was reconstructed from serialized data.
+ * Compact slate serialization (SEND_INITIAL purpose) doesn't include outputs,
+ * so we need to re-add the change output before finalization.
+ *
+ * @param slate - The slate to add outputs to
+ * @param outputs - Array of output data (commitment + proof + features)
+ */
+export async function addOutputsToSlate(
+  slate: GrinSlate,
+  outputs: Array<{ commitment: string; proof: string; features?: number }>
+): Promise<void> {
+  await initializeGrinWasm();
+
+  const Common = getCommon();
+  const SlateOutput = getSlateOutput();
+
+  // Create SlateOutput objects from the stored data
+  const slateOutputs = outputs.map(output => {
+    const commitBytes = Common.fromHexString(output.commitment);
+    const proofBytes = Common.fromHexString(output.proof);
+    const features = output.features ?? SlateOutput.PLAIN_FEATURES;
+    return new SlateOutput(features, commitBytes, proofBytes);
+  });
+
+  console.log('[addOutputsToSlate] Adding', slateOutputs.length, 'outputs to slate');
+
+  // Add outputs to the slate - sync method modifies in place
+  // Use updateKernel=false since we don't want to modify the kernel
+  const addResult = slate.raw.addOutputs(slateOutputs, false);
+  if (addResult === false) {
+    throw new Error('Failed to add outputs to slate');
+  }
+
+  console.log('[addOutputsToSlate] Done, slate now has', slate.raw.getOutputs?.()?.length, 'outputs');
 }
 
 /**
@@ -691,12 +827,66 @@ export async function finalizeSlate(
   await initializeGrinWasm();
 
   const Consensus = getConsensus();
+  const Slate = getSlate();
 
   // Decode the signed response slate
   const slate = await decodeSlatepack(keys, slatepackString, initialSlate);
 
+  // The compact S2 slate doesn't include inputs - we need to copy them from S1
+  // This is required for verifyAfterFinalize to pass (it checks inputs vs outputs balance)
+  const s1Inputs = initialSlate.raw.getInputs?.();
+  const s2Inputs = slate.raw.getInputs?.();
+  console.log('[finalizeSlate] S1 inputs:', s1Inputs?.length ?? 0, 'S2 inputs:', s2Inputs?.length ?? 0);
+
+  if (s1Inputs && s1Inputs.length > 0 && (!s2Inputs || s2Inputs.length === 0)) {
+    console.log('[finalizeSlate] Copying inputs from S1 to S2 slate');
+    // Add inputs from S1 to S2 slate - sync method modifies in place
+    const addResult = slate.raw.addInputs(s1Inputs, false, 0);
+    if (addResult === false) {
+      throw new Error('Failed to add inputs to slate during finalization');
+    }
+    console.log('[finalizeSlate] Inputs added, new count:', slate.raw.getInputs?.()?.length ?? 0);
+  }
+
+  // The compact S2 slate doesn't include sender's change output - copy from S1
+  // The S2 from receiver only has their output, not our change output
+  const s1Outputs = initialSlate.raw.getOutputs?.();
+  const s2Outputs = slate.raw.getOutputs?.();
+  console.log('[finalizeSlate] S1 outputs:', s1Outputs?.length ?? 0, 'S2 outputs:', s2Outputs?.length ?? 0);
+
+  if (s1Outputs && s1Outputs.length > 0) {
+    // S2 should have receiver's output. We need to add sender's change output from S1.
+    // Check which outputs from S1 are missing in S2 by comparing commits
+    const s2CommitSet = new Set(s2Outputs?.map((o: any) => Common.toHexString(o.getCommit())) || []);
+    const missingOutputs = s1Outputs.filter((o: any) => !s2CommitSet.has(Common.toHexString(o.getCommit())));
+
+    if (missingOutputs.length > 0) {
+      console.log('[finalizeSlate] Adding', missingOutputs.length, 'missing outputs from S1 to S2');
+      const addResult = slate.raw.addOutputs(missingOutputs, false);
+      if (addResult === false) {
+        throw new Error('Failed to add outputs to slate during finalization');
+      }
+      console.log('[finalizeSlate] Outputs added, new count:', slate.raw.getOutputs?.()?.length ?? 0);
+    }
+  }
+
   // Get base fee for verification
   const baseFee = Consensus.getBaseFee(true); // isMainnet
+
+  // Debug: Check slate state before finalize
+  console.log('[finalizeSlate] === PRE-FINALIZE STATE ===');
+  console.log('[finalizeSlate] Inputs:', slate.raw.getInputs?.()?.length);
+  console.log('[finalizeSlate] Outputs:', slate.raw.getOutputs?.()?.length);
+  console.log('[finalizeSlate] Kernels:', slate.raw.getKernels?.()?.length);
+  console.log('[finalizeSlate] Participants:', slate.raw.getParticipants?.()?.length);
+
+  const kernel = slate.raw.getKernels?.()?.[0];
+  if (kernel) {
+    console.log('[finalizeSlate] Kernel features:', kernel.getFeatures?.());
+    console.log('[finalizeSlate] Kernel fee:', kernel.getFee?.()?.toFixed?.());
+    console.log('[finalizeSlate] Kernel excess before finalize:', kernel.getExcess?.() ? Common.toHexString(kernel.getExcess()) : 'null');
+    console.log('[finalizeSlate] Kernel isComplete before finalize:', kernel.isComplete?.());
+  }
 
   // Finalize the transaction
   // finalize(secretKey, secretNonce, baseFee, isMainnet, ...)
@@ -706,6 +896,28 @@ export async function finalizeSlate(
     baseFee,
     true // isMainnet
   );
+
+  // Debug: Check slate state after finalize
+  console.log('[finalizeSlate] === POST-FINALIZE STATE ===');
+  const kernelAfter = slate.raw.getKernels?.()?.[0];
+  if (kernelAfter) {
+    console.log('[finalizeSlate] Kernel excess after finalize:', kernelAfter.getExcess?.() ? Common.toHexString(kernelAfter.getExcess()) : 'null');
+    console.log('[finalizeSlate] Kernel excessSig after finalize:', kernelAfter.getExcessSignature?.() ? Common.toHexString(kernelAfter.getExcessSignature()) : 'null');
+    console.log('[finalizeSlate] Kernel isComplete after finalize:', kernelAfter.isComplete?.());
+  }
+
+  // Debug: Run individual verifications manually
+  console.log('[finalizeSlate] === MANUAL VERIFICATIONS ===');
+  console.log('[finalizeSlate] sort():', slate.raw.sort?.());
+  console.log('[finalizeSlate] verifyWeight():', slate.raw.verifyWeight?.());
+  console.log('[finalizeSlate] verifySortedAndUnique():', slate.raw.verifySortedAndUnique?.());
+  console.log('[finalizeSlate] verifyNoCutThrough():', slate.raw.verifyNoCutThrough?.());
+  console.log('[finalizeSlate] verifyFees(baseFee):', slate.raw.verifyFees?.(baseFee));
+  console.log('[finalizeSlate] kernel.isComplete():', kernelAfter?.isComplete?.());
+  console.log('[finalizeSlate] verifyKernelSums():', slate.raw.verifyKernelSums?.());
+  console.log('[finalizeSlate] hasPaymentProof():', slate.raw.hasPaymentProof?.());
+  console.log('[finalizeSlate] verifyReceiverSignature(true):', slate.raw.verifyReceiverSignature?.(true));
+  console.log('[finalizeSlate] verifyNoRecentDuplicateKernels(true):', slate.raw.verifyNoRecentDuplicateKernels?.(true));
 
   // Update state to S3
   slate.state = 'S3';
@@ -764,6 +976,22 @@ export async function encodeSlatepack(
 
   console.log('[Grin.encodeSlatepack] Slatepack generated, length:', slatepackString?.length);
   return slatepackString;
+}
+
+/**
+ * Get the transaction JSON from a finalized slate for broadcasting.
+ *
+ * @param slate - The finalized slate (S3)
+ * @returns The transaction as a JSON object (for push_transaction API)
+ */
+export function getTransactionJson(slate: GrinSlate): object {
+  if (slate.state !== 'S3') {
+    throw new Error('Slate must be finalized (S3) to get transaction');
+  }
+
+  // Get the finalized transaction from the slate
+  // This returns { body: { inputs, kernels, outputs }, offset }
+  return slate.raw.getTransaction();
 }
 
 /**
@@ -936,7 +1164,7 @@ export async function createSendTransaction(
   keys: GrinKeys,
   outputs: GrinOutput[],
   amount: bigint,
-  fee: bigint,
+  _fee: bigint, // Ignored - we calculate fee dynamically based on transaction weight
   height: bigint,
   nextChildIndex: number,
   recipientAddress?: string
@@ -957,31 +1185,71 @@ export async function createSendTransaction(
     a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0
   );
 
-  // Select UTXOs to cover amount + fee
-  const requiredAmount = amount + fee;
-  const selectedOutputs: GrinOutput[] = [];
+  // Select UTXOs with dynamic fee calculation
+  // The fee depends on the number of inputs, so we iterate until stable
+  let selectedOutputs: GrinOutput[] = [];
   let totalSelected = BigInt(0);
+  let fee = BigInt(0);
+  let hasChange = false;
+  let changeAmount = BigInt(0);
 
-  for (const output of sortedOutputs) {
-    selectedOutputs.push(output);
-    totalSelected += output.amount;
-    if (totalSelected >= requiredAmount) break;
+  // Start with estimated fee for 1 input, 2 outputs (send + change), 1 kernel
+  let estimatedInputs = 1;
+  const MAX_ITERATIONS = 10;
+
+  for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+    // Calculate fee based on estimated inputs
+    // Outputs = 1 (receiver) + 1 (change if any) = 2 worst case
+    const estimatedOutputs = 2;
+    fee = calculateGrinFee(estimatedInputs, estimatedOutputs, 1);
+
+    const requiredAmount = amount + fee;
+    selectedOutputs = [];
+    totalSelected = BigInt(0);
+
+    for (const output of sortedOutputs) {
+      selectedOutputs.push(output);
+      totalSelected += output.amount;
+      if (totalSelected >= requiredAmount) break;
+    }
+
+    if (totalSelected < requiredAmount) {
+      throw new Error(`Insufficient balance: have ${totalSelected}, need ${requiredAmount} (amount: ${amount}, fee: ${fee})`);
+    }
+
+    // Check if we need more inputs than estimated
+    if (selectedOutputs.length > estimatedInputs) {
+      estimatedInputs = selectedOutputs.length;
+      continue; // Recalculate with more inputs
+    }
+
+    // Stable - fee calculation matches actual inputs
+    break;
   }
 
-  if (totalSelected < requiredAmount) {
-    throw new Error(`Insufficient balance: have ${totalSelected}, need ${requiredAmount}`);
-  }
+  // Recalculate fee with actual input/output count
+  changeAmount = totalSelected - amount - fee;
+  hasChange = changeAmount > BigInt(0);
+  const actualOutputs = hasChange ? 2 : 1; // receiver output + optional change
+  fee = calculateGrinFee(selectedOutputs.length, actualOutputs, 1);
 
-  const changeAmount = totalSelected - requiredAmount;
-  const hasChange = changeAmount > BigInt(0);
+  // Recalculate change with final fee
+  changeAmount = totalSelected - amount - fee;
+  hasChange = changeAmount > BigInt(0);
   const numberOfChangeOutputs = hasChange ? 1 : 0;
+
+  console.log('[createSendTransaction] UTXO selection complete:');
+  console.log('  - Inputs:', selectedOutputs.length);
+  console.log('  - Outputs:', actualOutputs, '(1 send +', numberOfChangeOutputs, 'change)');
+  console.log('  - Fee:', fee.toString(), 'nanogrin (', Number(fee) / 1e9, 'GRIN)');
+  console.log('  - Change:', changeAmount.toString(), 'nanogrin');
 
   // Create the slate
   const amountBN = new BigNumber(amount.toString());
   const feeBN = new BigNumber(fee.toString());
   const heightBN = new BigNumber(height.toString());
 
-  const slate = new Slate(
+  let slate = new Slate(
     amountBN,
     true, // isMainnet
     feeBN,
@@ -1000,8 +1268,10 @@ export async function createSendTransaction(
     return new SlateInput(features, commitBytes);
   });
 
-  // Add inputs to slate (async operation)
-  await Slate.addInputsAsynchronous(slate, slateInputs, true, numberOfChangeOutputs + 1);
+  // Add inputs to slate - use sync method which modifies in place
+  console.log('[createSendTransaction] Adding', slateInputs.length, 'inputs to slate');
+  slate.addInputs(slateInputs, true, numberOfChangeOutputs + 1);
+  console.log('[createSendTransaction] After addInputs, slate inputs:', slate.getInputs?.()?.length ?? 'getInputs not available');
 
   // Build change output if needed
   let changeOutputInfo: SendTransactionResult['changeOutput'] = undefined;
@@ -1062,15 +1332,20 @@ export async function createSendTransaction(
       changeProof
     );
 
-    // Add output to slate
-    await Slate.addOutputsAsynchronous(slate, [slateOutput]);
+    // Add output to slate - sync method modifies in place
+    const addOutputResult = slate.addOutputs([slateOutput]);
+    if (addOutputResult === false) {
+      throw new Error('Failed to add change output to slate');
+    }
 
     // Store change output info for backend recording
+    // Include proof since compact S1 serialization doesn't include outputs
     changeOutputInfo = {
       keyId: Common.toHexString(changeIdentifier.getValue()),
       nChild: nextChildIndex,
       amount: changeAmount,
       commitment: Common.toHexString(changeCommit),
+      proof: Common.toHexString(changeProof),
     };
 
     outputForSum = {
@@ -1080,8 +1355,13 @@ export async function createSendTransaction(
     };
   }
 
-  // Create slate offset
-  slate.createOffset();
+  // NOTE: For compact slates (SEND_INITIAL), we do NOT create an offset.
+  // The compact slate serialization writes zero offset regardless, and the receiver
+  // will compute their offset adjustment starting from zero. If we create a non-zero
+  // offset here, the sender's blind excess would include it, but the receiver wouldn't
+  // know about it, causing verifyKernelSums to fail at finalization.
+  // The offset remains at its default (zero) from slate creation.
+  // slate.createOffset(); // DO NOT call for compact slates
 
   // Calculate sum of inputs and outputs (blinding factors)
   // Sum = sum(output blinds) - sum(input blinds)
@@ -1113,20 +1393,13 @@ export async function createSendTransaction(
     );
 
     // Subtract input secret key from sum: sum = sum - inputSecretKey
-    const negated = Secp256k1Zkp.secretKeyNegate(inputSecretKey);
-    if (negated === Secp256k1Zkp.OPERATION_FAILED) {
-      inputSecretKey.fill(0);
-      sum.fill(0);
-      throw new Error('Failed to negate input secret key');
-    }
-
-    const newSum = Secp256k1Zkp.secretKeyTweakAdd(sum, negated);
-    negated.fill(0);
+    // Use blindSum with input as negative blind
+    const newSum = Secp256k1Zkp.blindSum([sum], [inputSecretKey]);
     inputSecretKey.fill(0);
 
     if (newSum === Secp256k1Zkp.OPERATION_FAILED) {
       sum.fill(0);
-      throw new Error('Failed to add secret keys');
+      throw new Error('Failed to compute blind sum');
     }
 
     sum.fill(0);
@@ -1174,6 +1447,13 @@ export async function createSendTransaction(
     recipientPublicKey ? keys.addressKey : null,
     recipientPublicKey
   );
+
+  // Verify inputs are still in the slate before returning
+  const finalInputCount = slate.getInputs?.()?.length ?? 0;
+  console.log('[createSendTransaction] Final slate input count before return:', finalInputCount);
+  if (finalInputCount === 0) {
+    console.error('[createSendTransaction] CRITICAL: Slate has no inputs at return time!');
+  }
 
   return {
     slate: {

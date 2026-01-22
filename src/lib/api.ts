@@ -713,12 +713,14 @@ export class SmirkApi {
    * Lock Grin outputs for spending (prevents double-spend during tx creation).
    */
   async lockGrinOutputs(params: {
+    userId: string;
     outputIds: string[];
     txSlateId: string;
   }): Promise<ApiResponse<void>> {
     return this.request('/wallet/grin/outputs/lock', {
       method: 'POST',
       body: JSON.stringify({
+        user_id: params.userId,
         output_ids: params.outputIds,
         tx_slate_id: params.txSlateId,
       }),
@@ -727,29 +729,33 @@ export class SmirkApi {
 
   /**
    * Unlock Grin outputs (transaction cancelled or failed).
+   * Backend finds outputs locked for this slate_id and unlocks them.
    */
   async unlockGrinOutputs(params: {
-    outputIds: string[];
+    userId: string;
+    txSlateId: string;
   }): Promise<ApiResponse<void>> {
     return this.request('/wallet/grin/outputs/unlock', {
       method: 'POST',
       body: JSON.stringify({
-        output_ids: params.outputIds,
+        user_id: params.userId,
+        tx_slate_id: params.txSlateId,
       }),
     });
   }
 
   /**
    * Mark Grin outputs as spent (transaction finalized).
+   * Backend finds outputs locked for this slate_id and marks them spent.
    */
   async spendGrinOutputs(params: {
-    outputIds: string[];
+    userId: string;
     txSlateId: string;
   }): Promise<ApiResponse<void>> {
     return this.request('/wallet/grin/outputs/spend', {
       method: 'POST',
       body: JSON.stringify({
-        output_ids: params.outputIds,
+        user_id: params.userId,
         tx_slate_id: params.txSlateId,
       }),
     });
@@ -783,18 +789,18 @@ export class SmirkApi {
    * Update a Grin transaction status.
    */
   async updateGrinTransaction(params: {
+    userId: string;
     slateId: string;
     status: 'pending' | 'signed' | 'finalized' | 'confirmed' | 'cancelled';
     kernelExcess?: string;
-    confirmedHeight?: number;
   }): Promise<ApiResponse<void>> {
     return this.request('/wallet/grin/transactions/update', {
       method: 'POST',
       body: JSON.stringify({
+        user_id: params.userId,
         slate_id: params.slateId,
         status: params.status,
         kernel_excess: params.kernelExcess,
-        confirmed_height: params.confirmedHeight,
       }),
     });
   }
@@ -803,14 +809,16 @@ export class SmirkApi {
    * Broadcast a finalized Grin transaction.
    */
   async broadcastGrinTransaction(params: {
+    userId: string;
     slateId: string;
-    slatepack: string;
+    tx: object;
   }): Promise<ApiResponse<{ success: boolean }>> {
     return this.request('/wallet/grin/broadcast', {
       method: 'POST',
       body: JSON.stringify({
+        user_id: params.userId,
         slate_id: params.slateId,
-        slatepack: params.slatepack,
+        tx: params.tx,
       }),
     });
   }

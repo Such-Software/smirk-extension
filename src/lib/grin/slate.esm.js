@@ -5503,31 +5503,36 @@ class Slate {
 		
 		// Verify fees
 		verifyFees(baseFee) {
-		
+
 			// Get the required transaction fee
 			var transactionFee = Slate.getRequiredFee(this.getInputs()["length"], this.getOutputs()["length"], this.getKernels()["length"], baseFee);
-			
+
+			console.log('[verifyFees] baseFee:', baseFee?.toFixed?.() ?? baseFee);
+			console.log('[verifyFees] transactionFee:', transactionFee?.toFixed?.());
+			console.log('[verifyFees] overage:', this.getOverage?.()?.toFixed?.());
+			console.log('[verifyFees] amount:', this.getAmount?.()?.toFixed?.());
+			console.log('[verifyFees] fee:', this.getFee?.()?.toFixed?.());
+			console.log('[verifyFees] MINIMUM_FEE:', Slate.MINIMUM_FEE?.toFixed?.());
+
 			// Check if transaction fee is greater than the overage
 			if(transactionFee.isGreaterThan(this.getOverage()) === true) {
-			
-				// Return false
+				console.log('[verifyFees] FAILED: transactionFee > overage');
 				return false;
 			}
-			
+
 			// Check if transaction fee is greater than the received amount
 			if(transactionFee.isGreaterThan(this.getAmount().plus(this.getFee())) === true) {
-			
-				// Return false
+				console.log('[verifyFees] FAILED: transactionFee > amount + fee');
 				return false;
 			}
-			
+
 			// Check if transaction fee is less than the minimum fee
 			if(transactionFee.isLessThan(Slate.MINIMUM_FEE) === true) {
-			
-				// Return false
+				console.log('[verifyFees] FAILED: transactionFee < MINIMUM_FEE');
 				return false;
 			}
-		
+
+			console.log('[verifyFees] PASSED all checks');
 			return true;
 		}
 		
@@ -5535,6 +5540,22 @@ class Slate {
 		verifyKernelSums() {
 
 			console.log('[Slate.verifyKernelSums] Starting verification');
+			console.log('[Slate.verifyKernelSums] Inputs count:', this.getInputs()?.length);
+			console.log('[Slate.verifyKernelSums] Outputs count:', this.getOutputs()?.length);
+			console.log('[Slate.verifyKernelSums] Amount:', this.getAmount?.()?.toFixed?.());
+			console.log('[Slate.verifyKernelSums] Fee:', this.getFee?.()?.toFixed?.());
+			console.log('[Slate.verifyKernelSums] Offset:', Common.toHexString(this.getOffset?.()));
+
+			// Log input commits
+			var inputCommits = this.getInputs().map(function(input) { return input.getCommit(); });
+			console.log('[Slate.verifyKernelSums] Input commits:');
+			inputCommits.forEach(function(c, i) { console.log('  Input ' + i + ':', Common.toHexString(c)); });
+
+			// Log output commits
+			var outputCommits = this.getOutputs().map(function(output) { return output.getCommit(); });
+			console.log('[Slate.verifyKernelSums] Output commits:');
+			outputCommits.forEach(function(c, i) { console.log('  Output ' + i + ':', Common.toHexString(c)); });
+
 			// Set kernel excesses to all kernel's excesses
 			var kernelExcesses = this.getKernels().map(function(kernel) {
 
@@ -5543,6 +5564,8 @@ class Slate {
 			});
 
 			console.log('[Slate.verifyKernelSums] Kernel excesses count:', kernelExcesses["length"]);
+			kernelExcesses.forEach(function(e, i) { console.log('  Kernel excess ' + i + ':', Common.toHexString(e)); });
+
 			// Go through all kernel excesses
 			for(var i = 0; i < kernelExcesses["length"]; ++i) {
 
@@ -5567,6 +5590,7 @@ class Slate {
 				// Return false
 				return false;
 			}
+			console.log('[Slate.verifyKernelSums] kernelsSum:', Common.toHexString(kernelsSum));
 
 			// Initialize kernel commits
 			var kernelCommits = [
@@ -5580,7 +5604,7 @@ class Slate {
 
 				// Get offset excess
 				var offsetExcess = this.getOffsetExcess();
-				console.log('[Slate.verifyKernelSums] Got offset excess');
+				console.log('[Slate.verifyKernelSums] offsetExcess:', Common.toHexString(offsetExcess));
 			}
 
 			// Catch errors
@@ -5603,6 +5627,7 @@ class Slate {
 				// Return false
 				return false;
 			}
+			console.log('[Slate.verifyKernelSums] kernelsSumWithOffset:', Common.toHexString(kernelsSumWithOffset));
 
 			// Check if getting commits sum failed
 			var commitsSum = this.getCommitsSum();
@@ -5613,11 +5638,14 @@ class Slate {
 				// Return false
 				return false;
 			}
+			console.log('[Slate.verifyKernelSums] commitsSum:', Common.toHexString(commitsSum));
 
 			// Check if commits sum isn't equal to the kernels sum with offset
 			if(Common.arraysAreEqual(commitsSum, kernelsSumWithOffset) === false) {
 
-				console.error('[Slate.verifyKernelSums] Commits sum does not equal kernels sum with offset');
+				console.error('[Slate.verifyKernelSums] MISMATCH! commitsSum != kernelsSumWithOffset');
+				console.error('[Slate.verifyKernelSums] commitsSum:          ', Common.toHexString(commitsSum));
+				console.error('[Slate.verifyKernelSums] kernelsSumWithOffset:', Common.toHexString(kernelsSumWithOffset));
 				// Return false
 				return false;
 			}
@@ -5685,51 +5713,58 @@ class Slate {
 		
 		// Get commits sum
 		getCommitsSum() {
-		
+
+			console.log('[Slate.getCommitsSum] Starting calculation');
 			// Set input commits to all input's commits
 			var inputCommits = this.getInputs().map(function(input) {
-			
+
 				// Return input's commit
 				return input.getCommit();
 			});
-			
+
 			// Set output commits to all output's commits
 			var outputCommits = this.getOutputs().map(function(output) {
-			
+
 				// Return output's commit
 				return output.getCommit();
 			});
-		
+
+			console.log('[Slate.getCommitsSum] Raw inputs:', inputCommits.length, 'Raw outputs:', outputCommits.length);
+
 			// Get overage
 			var overage = this.getOverage();
-			
+			console.log('[Slate.getCommitsSum] Overage (fee from kernels):', overage.toFixed());
+
 			// Check if overage isn't zero
 			if(overage.isZero() === false) {
-			
+
 				// Try
 				try {
-			
+
 					// Get over commit from the overage's absolute value
 					var overCommit = Crypto.commitAmount(overage.absoluteValue());
+					console.log('[Slate.getCommitsSum] overCommit:', Common.toHexString(overCommit));
 				}
-				
+
 				// Catch errors
 				catch(error) {
-				
+
 					// Return false
 					return false;
 				}
-				
+
 				// Check if overage is negative
 				if(overage.isNegative() === true) {
-				
+
+					console.log('[Slate.getCommitsSum] Overage is NEGATIVE, adding to inputs');
 					// Append over commit to input commits
 					inputCommits.push(overCommit);
 				}
-				
+
 				// Otherwise
 				else {
-				
+
+					console.log('[Slate.getCommitsSum] Overage is POSITIVE, adding to outputs');
 					// Append over commit to output commits
 					outputCommits.push(overCommit);
 				}
@@ -6205,83 +6240,81 @@ class Slate {
 		
 		// Verify after finalize
 		verifyAfterFinalize(baseFee, isMainnet) {
-		
+
+			console.log('[verifyAfterFinalize] Starting verification...');
+
 			// Check if sorting failed
 			if(this.sort() === false) {
-			
-				// Return false
+				console.log('[verifyAfterFinalize] FAILED: sort()');
 				return false;
 			}
-			
+			console.log('[verifyAfterFinalize] PASSED: sort()');
+
 			// Otherwise check if verifying weight failed
-			else if(this.verifyWeight() === false) {
-			
-				// Return false
+			if(this.verifyWeight() === false) {
+				console.log('[verifyAfterFinalize] FAILED: verifyWeight()');
 				return false;
 			}
-			
+			console.log('[verifyAfterFinalize] PASSED: verifyWeight()');
+
 			// Otherwise check if verifying sorted and unique failed
-			else if(this.verifySortedAndUnique() === false) {
-			
-				// Return false
+			if(this.verifySortedAndUnique() === false) {
+				console.log('[verifyAfterFinalize] FAILED: verifySortedAndUnique()');
 				return false;
 			}
-			
+			console.log('[verifyAfterFinalize] PASSED: verifySortedAndUnique()');
+
 			// Otherwise check if verifying no cut through failed
-			else if(this.verifyNoCutThrough() === false) {
-			
-				// Return false
+			if(this.verifyNoCutThrough() === false) {
+				console.log('[verifyAfterFinalize] FAILED: verifyNoCutThrough()');
 				return false;
 			}
-			
+			console.log('[verifyAfterFinalize] PASSED: verifyNoCutThrough()');
+
 			// Otherwise check if verifying fees failed
-			else if(this.verifyFees(baseFee) === false) {
-			
-				// Return false
+			if(this.verifyFees(baseFee) === false) {
+				console.log('[verifyAfterFinalize] FAILED: verifyFees()', baseFee?.toFixed?.() ?? baseFee);
 				return false;
 			}
-			
+			console.log('[verifyAfterFinalize] PASSED: verifyFees()');
+
 			// Otherwise check if kernel isn't complete
-			else if(this.getKernels()[0].isComplete() === false) {
-			
-				// Return false
+			if(this.getKernels()[0].isComplete() === false) {
+				console.log('[verifyAfterFinalize] FAILED: kernel.isComplete()');
 				return false;
 			}
-			
+			console.log('[verifyAfterFinalize] PASSED: kernel.isComplete()');
+
 			// Otherwise check if verifying kernel sums failed
-			else if(this.verifyKernelSums() === false) {
-			
-				// Return false
+			if(this.verifyKernelSums() === false) {
+				console.log('[verifyAfterFinalize] FAILED: verifyKernelSums()');
 				return false;
 			}
-			
+			console.log('[verifyAfterFinalize] PASSED: verifyKernelSums()');
+
 			// Otherwise check if has payment proof and the receiver signature doesn't exist
-			else if(this.hasPaymentProof() === true && this.getReceiverSignature() === Slate.NO_RECEIVER_SIGNATURE) {
-			
-				// Return false
+			if(this.hasPaymentProof() === true && this.getReceiverSignature() === Slate.NO_RECEIVER_SIGNATURE) {
+				console.log('[verifyAfterFinalize] FAILED: payment proof missing receiver signature');
 				return false;
 			}
-			
+			console.log('[verifyAfterFinalize] PASSED: payment proof check');
+
 			// Otherwise check if receiver signature failed to be verified
-			else if(this.verifyReceiverSignature(isMainnet) === false) {
-			
-				// Return false
+			if(this.verifyReceiverSignature(isMainnet) === false) {
+				console.log('[verifyAfterFinalize] FAILED: verifyReceiverSignature()');
 				return false;
 			}
-			
+			console.log('[verifyAfterFinalize] PASSED: verifyReceiverSignature()');
+
 			// Otherwise check if verifying no recent duplicate kernels failed
-			else if(this.verifyNoRecentDuplicateKernels(isMainnet) === false) {
-			
-				// Return false
+			if(this.verifyNoRecentDuplicateKernels(isMainnet) === false) {
+				console.log('[verifyAfterFinalize] FAILED: verifyNoRecentDuplicateKernels()');
 				return false;
 			}
-			
-			// Otherwise
-			else {
-			
-				// Return true
-				return true;
-			}
+			console.log('[verifyAfterFinalize] PASSED: verifyNoRecentDuplicateKernels()');
+
+			console.log('[verifyAfterFinalize] ALL CHECKS PASSED!');
+			return true;
 		}
 		
 		// Get weight

@@ -437,6 +437,10 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
     case 'GRIN_FINALIZE_AND_BROADCAST':
       return handleGrinFinalizeAndBroadcast(message.slatepack, message.sendContext);
 
+    // Grin cancel send (unlocks outputs, cancels transaction)
+    case 'GRIN_CANCEL_SEND':
+      return handleGrinCancelSend(message.slateId, message.inputIds);
+
     default:
       return { success: false, error: 'Unknown message type' };
   }
@@ -1660,7 +1664,10 @@ async function handleGetHistory(
     const transactions = result.data!.transactions.map(tx => ({
       txid: tx.slate_id,
       height: tx.status === 'confirmed' ? 1 : 0, // Placeholder - we don't track block height yet
-      is_pending: tx.status !== 'confirmed' && tx.status !== 'finalized',
+      is_pending: tx.status === 'pending' || tx.status === 'signed',
+      is_cancelled: tx.status === 'cancelled',
+      status: tx.status,
+      direction: tx.direction,
       total_received: tx.direction === 'receive' ? tx.amount : 0,
       total_sent: tx.direction === 'send' ? tx.amount + tx.fee : 0,
       kernel_excess: tx.kernel_excess ?? undefined,
@@ -2229,13 +2236,7 @@ async function handleGrinCreateSend(
       recipientAddress
     );
 
-    // Lock the inputs on the backend
-    await api.lockGrinOutputs({
-      outputIds: result.inputIds,
-      txSlateId: result.slate.id,
-    });
-
-    // Record the transaction
+    // Record the transaction FIRST (so lock can reference it)
     await api.recordGrinTransaction({
       userId: authState.userId,
       slateId: result.slate.id,
@@ -2245,17 +2246,53 @@ async function handleGrinCreateSend(
       counterpartyAddress: recipientAddress,
     });
 
+    // Lock the inputs on the backend (must be after recordGrinTransaction)
+    // This sets spent_in_tx_id to link outputs to the transaction
+    await api.lockGrinOutputs({
+      userId: authState.userId,
+      outputIds: result.inputIds,
+      txSlateId: result.slate.id,
+    });
+
     // Build send context for later finalization
+    // Include serialized S1 slate - needed to decode compact S2 response
+    const serializedS1Base64 = result.slate.serialized
+      ? btoa(String.fromCharCode(...result.slate.serialized))
+      : '';
+
+    // Extract inputs from the raw slate - needed for finalization since compact S2 doesn't include them
+    console.log('[Grin] result.slate.raw type:', typeof result.slate.raw);
+    console.log('[Grin] result.slate.raw.getInputs type:', typeof result.slate.raw.getInputs);
+    const rawInputs = result.slate.raw.getInputs?.() || [];
+    console.log('[Grin] rawInputs from slate:', rawInputs, 'length:', rawInputs.length);
+    if (rawInputs.length === 0) {
+      console.error('[Grin] CRITICAL: No inputs extracted from slate.raw.getInputs()!');
+    }
+    const inputs = rawInputs.map((input: any) => ({
+      commitment: bytesToHex(input.getCommit()),
+      features: input.getFeatures(),
+    }));
+    console.log(`[Grin] Storing ${inputs.length} inputs in sendContext for finalization`);
+
+    // Extract offset from slate - compact S1 serialization writes zero but we need the real value
+    const rawOffset = result.slate.raw.getOffset?.();
+    const senderOffset = rawOffset ? bytesToHex(rawOffset) : '';
+    console.log(`[Grin] Storing sender offset: ${senderOffset.substring(0, 16)}...`);
+
     const sendContext: import('@/types').GrinSendContext = {
       slateId: result.slate.id,
       secretKey: bytesToHex(result.secretKey),
       secretNonce: bytesToHex(result.secretNonce),
       inputIds: result.inputIds,
+      serializedS1Slate: serializedS1Base64,
+      inputs,
+      senderOffset,
       changeOutput: result.changeOutput ? {
         keyId: result.changeOutput.keyId,
         nChild: result.changeOutput.nChild,
         amount: Number(result.changeOutput.amount),
         commitment: result.changeOutput.commitment,
+        proof: result.changeOutput.proof,
       } : undefined,
     };
 
@@ -2312,15 +2349,74 @@ async function handleGrinFinalizeAndBroadcast(
     const secretKey = hexToBytes(sendContext.secretKey);
     const secretNonce = hexToBytes(sendContext.secretNonce);
 
-    // We need to reconstruct the initial slate to finalize
-    // For now, we'll decode the S2 response directly with the finalizeSlate function
-    // that accepts the secret key and nonce
+    // Reconstruct the S1 slate from serialized data
+    // This is needed because compact S2 slates don't include all fields (amount, fee, etc.)
+    // and the parser falls back to the initial slate
+    if (!sendContext.serializedS1Slate) {
+      return { success: false, error: 'Missing serialized S1 slate - cannot finalize' };
+    }
+
+    // Decode base64 to Uint8Array
+    const serializedBytes = Uint8Array.from(atob(sendContext.serializedS1Slate), c => c.charCodeAt(0));
+    // Create slate from serialized data
+    const { reconstructSlateFromSerialized, addInputsToSlate, addOutputsToSlate } = await import('@/lib/grin');
+    const initialSlate = await reconstructSlateFromSerialized(serializedBytes);
+    console.log('[Grin] Reconstructed S1 slate for finalization, id:', initialSlate.id);
+
+    // Add inputs to the reconstructed slate - compact S1 serialization doesn't include them
+    console.log('[Grin] sendContext.inputs:', sendContext.inputs);
+    if (sendContext.inputs && sendContext.inputs.length > 0) {
+      console.log('[Grin] Adding', sendContext.inputs.length, 'inputs to reconstructed S1 slate');
+      console.log('[Grin] Input commitments:', sendContext.inputs.map(i => i.commitment.substring(0, 16) + '...'));
+      await addInputsToSlate(initialSlate, sendContext.inputs);
+      const inputCount = initialSlate.raw.getInputs?.()?.length ?? 0;
+      console.log('[Grin] Inputs added to S1 slate, verified count:', inputCount);
+      if (inputCount === 0) {
+        console.error('[Grin] CRITICAL: addInputsToSlate did not add inputs to slate!');
+      }
+    } else {
+      console.error('[Grin] CRITICAL: No inputs in sendContext! This sendContext was created before the fix.');
+      console.error('[Grin] Please cancel this transaction and create a new one.');
+      return { success: false, error: 'Transaction state is outdated. Please cancel and create a new send.' };
+    }
+
+    // Add change output to the reconstructed slate - compact S1 serialization doesn't include outputs
+    if (sendContext.changeOutput?.proof) {
+      console.log('[Grin] Adding change output to reconstructed S1 slate');
+      console.log('[Grin] Change commitment:', sendContext.changeOutput.commitment.substring(0, 16) + '...');
+      await addOutputsToSlate(initialSlate, [{
+        commitment: sendContext.changeOutput.commitment,
+        proof: sendContext.changeOutput.proof,
+      }]);
+      const outputCount = initialSlate.raw.getOutputs?.()?.length ?? 0;
+      console.log('[Grin] Outputs added to S1 slate, verified count:', outputCount);
+    } else if (sendContext.changeOutput) {
+      // Old sendContext without proof - need to cancel and recreate
+      console.error('[Grin] CRITICAL: sendContext.changeOutput missing proof. Created before fix.');
+      return { success: false, error: 'Transaction state is outdated (missing output proof). Please cancel and create a new send.' };
+    } else {
+      console.log('[Grin] No change output (exact amount send)');
+    }
+
+    // Check sender's offset - for new transactions, offset is zero (not created for compact slates)
+    // For old transactions, we stored a non-zero offset but can't use it (receiver didn't know about it)
+    if (sendContext.senderOffset) {
+      const isZeroOffset = sendContext.senderOffset === '0'.repeat(64);
+      console.log('[Grin] Sender offset:', isZeroOffset ? 'zero (correct)' : sendContext.senderOffset.substring(0, 16) + '... (non-zero)');
+      if (!isZeroOffset) {
+        // Old transaction with non-zero offset - this won't work because receiver used zero
+        console.warn('[Grin] Non-zero offset detected. This transaction may have been created before the fix.');
+        console.warn('[Grin] The receiver used zero offset, so finalization may fail.');
+      }
+    } else {
+      console.log('[Grin] No senderOffset stored - using zero offset (default)');
+    }
 
     // Finalize the slate (S2 -> S3)
     const finalizedSlate = await finalizeSlate(
       grinWasmKeys,
       slatepackString,
-      { id: sendContext.slateId, amount: BigInt(0), fee: BigInt(0), state: 'S1', raw: null } as any, // Placeholder - finalizeSlate will decode the actual slate
+      initialSlate,
       secretKey,
       secretNonce
     );
@@ -2329,24 +2425,28 @@ async function handleGrinFinalizeAndBroadcast(
     secretKey.fill(0);
     secretNonce.fill(0);
 
-    // Encode the finalized slate for broadcast
-    const finalizedSlatepack = await encodeSlatepack(grinWasmKeys, finalizedSlate, 'send');
+    // Get the transaction JSON for broadcast
+    // Using tx JSON instead of slatepack avoids format compatibility issues
+    const { getTransactionJson } = await import('@/lib/grin');
+    const txJson = getTransactionJson(finalizedSlate);
+    console.log('[Grin] Transaction JSON for broadcast:', JSON.stringify(txJson).substring(0, 100) + '...');
 
     // Broadcast to network via backend
     const broadcastResult = await api.broadcastGrinTransaction({
+      userId: authState.userId,
       slateId: sendContext.slateId,
-      slatepack: finalizedSlatepack,
+      tx: txJson,
     });
 
     if (broadcastResult.error) {
       // Unlock inputs on failure
-      await api.unlockGrinOutputs({ outputIds: sendContext.inputIds });
+      await api.unlockGrinOutputs({ userId: authState.userId, txSlateId: sendContext.slateId });
       return { success: false, error: `Broadcast failed: ${broadcastResult.error}` };
     }
 
     // Mark inputs as spent
     await api.spendGrinOutputs({
-      outputIds: sendContext.inputIds,
+      userId: authState.userId,
       txSlateId: sendContext.slateId,
     });
 
@@ -2364,6 +2464,7 @@ async function handleGrinFinalizeAndBroadcast(
 
     // Update transaction status
     await api.updateGrinTransaction({
+      userId: authState.userId,
       slateId: sendContext.slateId,
       status: 'finalized',
     });
@@ -2379,7 +2480,10 @@ async function handleGrinFinalizeAndBroadcast(
 
     // Try to unlock inputs on error
     try {
-      await api.unlockGrinOutputs({ outputIds: sendContext.inputIds });
+      const auth = await getAuthState();
+      if (auth?.userId) {
+        await api.unlockGrinOutputs({ userId: auth.userId, txSlateId: sendContext.slateId });
+      }
     } catch {
       // Ignore unlock errors
     }
@@ -2387,6 +2491,49 @@ async function handleGrinFinalizeAndBroadcast(
     return {
       success: false,
       error: err instanceof Error ? err.message : 'Failed to finalize transaction',
+    };
+  }
+}
+
+/**
+ * Cancel a Grin send transaction.
+ * Unlocks the inputs and marks the transaction as cancelled.
+ */
+async function handleGrinCancelSend(
+  slateId: string,
+  _inputIds: string[] // Deprecated - backend now looks up outputs by slate_id
+): Promise<MessageResponse<{ cancelled: boolean }>> {
+  if (!isUnlocked) {
+    return { success: false, error: 'Wallet is locked' };
+  }
+
+  const authState = await getAuthState();
+  if (!authState?.userId) {
+    return { success: false, error: 'Not authenticated' };
+  }
+
+  try {
+    // Unlock the inputs (backend finds them by slate_id)
+    await api.unlockGrinOutputs({ userId: authState.userId, txSlateId: slateId });
+
+    // Mark transaction as cancelled
+    await api.updateGrinTransaction({
+      userId: authState.userId,
+      slateId,
+      status: 'cancelled',
+    });
+
+    console.log(`[Grin] Cancelled send slate ${slateId}`);
+
+    return {
+      success: true,
+      data: { cancelled: true },
+    };
+  } catch (err) {
+    console.error('[Grin] Failed to cancel send:', err);
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Failed to cancel transaction',
     };
   }
 }

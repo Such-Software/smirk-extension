@@ -6,6 +6,9 @@ import {
   formatBalance,
   formatBalanceFull,
   sendMessage,
+  saveGrinSendState,
+  restoreGrinSendState,
+  clearGrinSendState,
   type BalanceData,
 } from '../shared';
 
@@ -29,7 +32,6 @@ export function GrinSendView({
   onSlateCreated: () => void;
 }) {
   // Form state
-  const [recipientAddress, setRecipientAddress] = useState('');
   const [amount, setAmount] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
@@ -45,6 +47,10 @@ export function GrinSendView({
   // Step 3: Finalizing and broadcasting
   const [finalizing, setFinalizing] = useState(false);
   const [broadcast, setBroadcast] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+
+  // Track the amount in nanogrin for persistence
+  const [amountNanogrin, setAmountNanogrin] = useState(0);
 
   // WASM initialization
   const [initializingWasm, setInitializingWasm] = useState(false);
@@ -54,13 +60,28 @@ export function GrinSendView({
   const availableBalance = balance?.confirmed ?? 0;
   const divisor = ATOMIC_DIVISORS[asset];
 
-  // Default fee: 0.01 GRIN = 10,000,000 nanogrin
-  const DEFAULT_FEE = 10000000;
+  // Estimated fee for display - actual fee calculated dynamically based on inputs
+  // Grin fee = weight * baseFee (500,000 nanogrin)
+  // Weight = inputs*1 + outputs*21 + kernels*3
+  // For 1 input, 2 outputs, 1 kernel: 1 + 42 + 3 = 46 => 23M nanogrin (~0.023 GRIN)
+  const ESTIMATED_FEE = 25000000; // 0.025 GRIN - conservative estimate for balance check
 
-  // Initialize Grin WASM wallet on mount
+  // Initialize Grin WASM wallet and restore any pending send state on mount
   useEffect(() => {
     initializeGrinWallet();
+    restoreSendState();
   }, []);
+
+  // Restore pending send state from session storage
+  const restoreSendState = async () => {
+    const savedState = await restoreGrinSendState();
+    if (savedState) {
+      console.log('[GrinSendView] Restoring saved send state for slate:', savedState.sendContext.slateId);
+      setSlatepack(savedState.slatepack);
+      setSendContext(savedState.sendContext);
+      setAmountNanogrin(savedState.amount);
+    }
+  };
 
   const initializeGrinWallet = async () => {
     setInitializingWasm(true);
@@ -94,8 +115,8 @@ export function GrinSendView({
     }
 
     // Convert to nanogrin
-    const amountNanogrin = Math.round(amountFloat * divisor);
-    const totalRequired = amountNanogrin + DEFAULT_FEE;
+    const amountNano = Math.round(amountFloat * divisor);
+    const totalRequired = amountNano + ESTIMATED_FEE;
 
     if (totalRequired > availableBalance) {
       setError('Insufficient balance (including fee)');
@@ -105,29 +126,29 @@ export function GrinSendView({
     setCreating(true);
 
     try {
-      // Validate recipient address if provided (optional for encryption)
-      const recipient = recipientAddress.trim() || undefined;
-      if (recipient && !recipient.startsWith('grin1')) {
-        setError('Invalid slatepack address. Must start with grin1...');
-        setCreating(false);
-        return;
-      }
-
-      // Create the send transaction
+      // Create the send transaction (unencrypted slatepack)
       const result = await sendMessage<{
         slatepack: string;
         slateId: string;
         sendContext: GrinSendContext;
       }>({
         type: 'GRIN_CREATE_SEND',
-        amount: amountNanogrin,
-        fee: DEFAULT_FEE,
-        recipientAddress: recipient,
+        amount: amountNano,
+        fee: ESTIMATED_FEE,
       });
 
       setSlatepack(result.slatepack);
       setSendContext(result.sendContext);
+      setAmountNanogrin(amountNano);
       console.log('Created send slate:', result.slateId);
+
+      // Persist state so it survives popup close
+      await saveGrinSendState({
+        slatepack: result.slatepack,
+        sendContext: result.sendContext,
+        amount: amountNano,
+        fee: ESTIMATED_FEE,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create transaction');
     } finally {
@@ -138,7 +159,7 @@ export function GrinSendView({
   const handleMax = () => {
     if (availableBalance > 0) {
       // Reserve for fee
-      const maxAmount = Math.max(0, availableBalance - DEFAULT_FEE);
+      const maxAmount = Math.max(0, availableBalance - ESTIMATED_FEE);
       setAmount(formatBalanceFull(maxAmount, asset));
     }
   };
@@ -167,11 +188,39 @@ export function GrinSendView({
         sendContext,
       });
 
+      // Clear persisted state on success
+      await clearGrinSendState();
       setBroadcast(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to finalize transaction');
     } finally {
       setFinalizing(false);
+    }
+  };
+
+  // Cancel an in-progress send (unlocks outputs on backend)
+  const handleCancel = async () => {
+    if (!sendContext) return;
+
+    setCancelling(true);
+    setError('');
+
+    try {
+      await sendMessage<{ cancelled: boolean }>({
+        type: 'GRIN_CANCEL_SEND',
+        slateId: sendContext.slateId,
+        inputIds: sendContext.inputIds,
+      });
+
+      // Clear persisted state
+      await clearGrinSendState();
+
+      // Go back to main screen and refresh balance/history
+      // Use onSlateCreated since it triggers balance refresh (unlike onBack which just changes screen)
+      onSlateCreated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to cancel transaction');
+      setCancelling(false);
     }
   };
 
@@ -298,11 +347,20 @@ export function GrinSendView({
 
           <button
             class="btn btn-primary"
-            style={{ width: '100%' }}
+            style={{ width: '100%', marginBottom: '8px' }}
             onClick={handleFinalize}
-            disabled={!responseSlatepack.trim() || finalizing}
+            disabled={!responseSlatepack.trim() || finalizing || cancelling}
           >
             {finalizing ? 'Finalizing...' : 'Finalize & Broadcast'}
+          </button>
+
+          <button
+            class="btn btn-secondary"
+            style={{ width: '100%' }}
+            onClick={handleCancel}
+            disabled={finalizing || cancelling}
+          >
+            {cancelling ? 'Cancelling...' : 'Cancel Transaction'}
           </button>
         </div>
       </>
@@ -328,24 +386,6 @@ export function GrinSendView({
           </div>
         ) : (
           <form onSubmit={handleSend}>
-            {/* Info about interactive transactions */}
-            <div
-              style={{
-                background: '#27272a',
-                borderRadius: '8px',
-                padding: '12px',
-                marginBottom: '16px',
-                fontSize: '12px',
-                color: '#a1a1aa',
-                lineHeight: '1.5',
-              }}
-            >
-              <strong style={{ color: '#fff' }}>Interactive Transaction</strong>
-              <br />
-              Grin transactions require the recipient to sign. You'll receive a
-              slatepack to share with them, then paste their response to complete.
-            </div>
-
             {/* Available Balance */}
             <div
               style={{
@@ -362,22 +402,6 @@ export function GrinSendView({
               <div style={{ fontSize: '18px', fontWeight: 600 }}>
                 {formatBalance(availableBalance, asset)} {ASSETS[asset].symbol}
               </div>
-            </div>
-
-            {/* Recipient Address (optional) */}
-            <div class="form-group">
-              <label style={{ display: 'block', fontSize: '12px', color: '#a1a1aa', marginBottom: '4px' }}>
-                Recipient Address <span style={{ color: '#71717a' }}>(optional, for encryption)</span>
-              </label>
-              <input
-                type="text"
-                class="form-input"
-                placeholder="grin1..."
-                value={recipientAddress}
-                onInput={(e) => setRecipientAddress((e.target as HTMLInputElement).value)}
-                disabled={creating}
-                style={{ fontFamily: 'monospace', fontSize: '11px' }}
-              />
             </div>
 
             {/* Amount */}
@@ -418,7 +442,7 @@ export function GrinSendView({
                 color: '#a1a1aa',
               }}
             >
-              Network fee: ~0.01 GRIN
+              Network fee: ~0.02-0.05 GRIN (varies by inputs)
             </div>
 
             {error && <p style={{ color: '#ef4444', fontSize: '13px', marginBottom: '12px' }}>{error}</p>}
@@ -432,9 +456,24 @@ export function GrinSendView({
               {creating ? (
                 <span class="spinner" style={{ margin: '0 auto' }} />
               ) : (
-                'Create Transaction'
+                'Create Slatepack'
               )}
             </button>
+
+            {/* Info about interactive transactions */}
+            <div
+              style={{
+                marginTop: '16px',
+                fontSize: '11px',
+                color: '#71717a',
+                lineHeight: '1.5',
+                textAlign: 'center',
+              }}
+            >
+              You'll get a slatepack to share with the recipient.
+              <br />
+              They sign it and return - then you finalize.
+            </div>
           </form>
         )}
       </div>

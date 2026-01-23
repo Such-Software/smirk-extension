@@ -1,12 +1,34 @@
 /**
- * Background service worker for Smirk extension.
+ * Background Service Worker - Main Entry Point
  *
- * Handles:
- * - Wallet state management
- * - Crypto operations
- * - API communication
- * - Message passing between popup/content scripts
+ * This is the main entry point for the Smirk extension's background script.
+ * It handles:
+ * - Message routing between popup/content scripts and handlers
+ * - Service worker lifecycle (initialization, alarms)
+ * - Authentication token management
+ *
+ * Architecture:
+ * The background script is split into modules for maintainability:
+ * - state.ts: Global state, session persistence, pending transactions
+ * - settings.ts: User settings, auto-lock timer
+ * - wallet.ts: Wallet creation, restore, unlock/lock
+ * - balance.ts: Balance queries for all assets
+ * - send.ts: BTC/LTC transaction building and sending
+ * - grin-handlers.ts: Grin WASM operations (receive, send, finalize)
+ * - tips.ts: Tip decryption and claiming
+ * - smirk-api.ts: window.smirk website integration API
+ *
+ * Message Flow:
+ * 1. Popup/content script sends message via chrome.runtime.sendMessage
+ * 2. runtime.onMessage listener receives message
+ * 3. handleMessage routes to appropriate handler based on message.type
+ * 4. Handler returns response
+ * 5. Response sent back to caller
  */
+
+// =============================================================================
+// Service Worker Polyfill
+// =============================================================================
 
 // Polyfill window for WASM modules that expect browser context
 // Service workers don't have window, but some WASM modules require it
@@ -14,310 +36,296 @@ if (typeof globalThis.window === 'undefined') {
   (globalThis as unknown as { window: typeof globalThis }).window = globalThis;
 }
 
-import type { MessageType, MessageResponse, WalletState, AssetType, TipInfo, UserSettings } from '@/types';
-import {
-  getPublicKey,
-  encryptPrivateKey,
-  decryptPrivateKey,
-  decryptTipPayload,
-  decryptPublicTipPayload,
-  decodeUrlFragmentKey,
-  deriveKeyFromPassword,
-  bytesToHex,
-  encrypt,
-  decrypt,
-  randomBytes,
-} from '@/lib/crypto';
-// Note: monero-crypto (calculateVerifiedBalance) runs in popup for UI responsiveness
-import {
-  generateMnemonicPhrase,
-  isValidMnemonic,
-  deriveAllKeys,
-  mnemonicToWords,
-  getVerificationIndices,
-  computeSeedFingerprint,
-} from '@/lib/hd';
-import {
-  btcAddress,
-  ltcAddress,
-  xmrAddress,
-  wowAddress,
-  grinSlatpackAddress,
-  hexToBytes,
-} from '@/lib/address';
-import { createSignedTransaction, maxSendable as maxSendableUtxo, type Utxo } from '@/lib/btc-tx';
-import {
-  getWalletState,
-  saveWalletState,
-  DEFAULT_WALLET_STATE,
-  getOnboardingState,
-  saveOnboardingState,
-  clearOnboardingState,
-  saveAuthState,
-  getAuthState,
-  getConnectedSites,
-  isOriginConnected,
-  addConnectedSite,
-  touchConnectedSite,
-  removeConnectedSite,
-  type ConnectedSite,
-} from '@/lib/storage';
-import type { OnboardingState } from '@/types';
+// =============================================================================
+// Imports
+// =============================================================================
+
+import type { MessageType, MessageResponse, TipInfo, OnboardingState, UserSettings } from '@/types';
+import { runtime, alarms } from '@/lib/browser';
+import { getAuthState, saveAuthState, getWalletState } from '@/lib/storage';
 import { api } from '@/lib/api';
-import { runtime, notifications, alarms, storage, windows } from '@/lib/browser';
+
+// State management
 import {
-  initGrinWallet,
-  initGrinWalletFromExtendedKey,
-  signSlate,
-  encodeSlatepack,
-  createSendTransaction,
-  finalizeSlate,
-  type GrinKeys,
-  type GrinOutput,
-} from '@/lib/grin';
-import { mnemonicToSeed } from '@/lib/hd';
+  initializationPromise,
+  setInitializationPromise,
+  restoreSessionKeys,
+  cachedAutoLockMinutes,
+  setCachedAutoLockMinutes,
+  AUTO_LOCK_ALARM,
+} from './state';
 
-// Pending claim data from content script
-let pendingClaim: { linkId: string; fragmentKey?: string } | null = null;
+// Settings and auto-lock
+import {
+  handleGetSettings,
+  handleUpdateSettings,
+  handleResetAutoLockTimer,
+  resetAutoLockTimer,
+  handleAutoLockAlarm,
+} from './settings';
 
-// Temporary mnemonic during wallet creation (cleared after confirmation)
-let pendingMnemonic: string | null = null;
+// Wallet operations
+import {
+  handleGetWalletState,
+  handleGenerateMnemonic,
+  handleConfirmMnemonic,
+  handleRestoreWallet,
+  handleCreateWallet,
+  handleUnlockWallet,
+  handleLockWallet,
+  handleRevealSeed,
+  handleGetOnboardingState,
+  handleSaveOnboardingState,
+  handleClearOnboardingState,
+  handleGetAddresses,
+} from './wallet';
 
-// In-memory decrypted keys (cleared on lock)
-let unlockedKeys: Map<AssetType, Uint8Array> = new Map();
-// View keys for XMR/WOW (needed for balance queries)
-let unlockedViewKeys: Map<'xmr' | 'wow', Uint8Array> = new Map();
-let isUnlocked = false;
-// Cached Grin WASM wallet keys (derived from mnemonic when needed)
-let grinWasmKeys: GrinKeys | null = null;
-// Decrypted BIP39 seed (64 bytes) - kept for backwards compatibility
-let unlockedSeed: Uint8Array | null = null;
-// Decrypted mnemonic string for Grin WASM operations - cleared on lock
-let unlockedMnemonic: string | null = null;
+// Balance operations
+import {
+  handleGetBalance,
+  handleGetHistory,
+  handleEstimateFee,
+  handleGetWalletKeys,
+} from './balance';
 
-// Pending approval requests from window.smirk API
-interface PendingApprovalRequest {
-  id: string;
-  type: 'connect' | 'sign';
-  origin: string;
-  siteName: string;
-  favicon?: string;
-  message?: string; // For sign requests
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-  windowId?: number; // ID of the approval popup window
-}
-const pendingApprovals = new Map<string, PendingApprovalRequest>();
-let approvalRequestId = 0;
+// Send operations
+import {
+  handleGetUtxos,
+  handleMaxSendableUtxo,
+  handleSendTx,
+  handleAddPendingTx,
+  handleGetPendingTxs,
+} from './send';
 
-// Auto-lock alarm name (uses chrome.alarms API for persistence across service worker restarts)
-const AUTO_LOCK_ALARM = 'smirk_auto_lock';
-let cachedAutoLockMinutes: number | null = null; // Cache to avoid reading storage on every activity
+// Grin operations
+import {
+  handleInitGrinWallet,
+  handleGetGrinPendingSlatepacks,
+  handleGrinSignSlate,
+  handleGrinFinalizeSlate,
+  handleGrinSignSlatepack,
+  handleGrinCancelSlate,
+  handleGrinCreateSend,
+  handleGrinFinalizeAndBroadcast,
+  handleGrinCancelSend,
+} from './grin-handlers';
 
-// Promise that resolves when background initialization is complete
-// Messages wait for this before processing to avoid race conditions
-let initializationPromise: Promise<void> | null = null;
+// Tips operations
+import {
+  handleDecryptTip,
+  handleOpenClaimPopup,
+  handleGetPendingClaim,
+  handleClearPendingClaim,
+  handleGetTipInfo,
+  handleClaimTip,
+} from './tips';
 
-// Session storage key for persisting unlock state across service worker restarts
-const SESSION_KEYS_KEY = 'smirk_session_keys';
+// window.smirk API operations
+import {
+  handleSmirkApi,
+  handleApprovalResponse,
+  handleGetPendingApproval,
+  handleGetConnectedSites,
+  handleDisconnectSite,
+} from './smirk-api';
 
-// Storage key for pending outgoing transactions (not yet confirmed)
-const PENDING_TXS_KEY = 'smirk_pending_txs';
-
-interface SessionKeysData {
-  unlockedKeys: Record<string, string>; // asset -> hex-encoded key
-  unlockedViewKeys: Record<string, string>; // 'xmr' | 'wow' -> hex-encoded key
-  grinExtendedPrivateKey?: string; // hex-encoded 64-byte key for Grin WASM operations
-  mnemonic?: string; // BIP39 mnemonic for Grin init (session storage clears on browser close)
-}
-
-interface PendingTx {
-  txHash: string;
-  asset: AssetType;
-  amount: number; // atomic units sent (including fee)
-  fee: number;
-  timestamp: number; // when sent
-}
+// =============================================================================
+// Message Handler
+// =============================================================================
 
 /**
- * Add a pending outgoing transaction.
- * This is subtracted from displayed balance until confirmed.
- */
-async function addPendingTx(tx: PendingTx): Promise<void> {
-  const result = await storage.local.get(PENDING_TXS_KEY) as Record<string, PendingTx[] | undefined>;
-  const pending: PendingTx[] = result[PENDING_TXS_KEY] || [];
-  pending.push(tx);
-  await storage.local.set({ [PENDING_TXS_KEY]: pending });
-  console.log(`[PendingTx] Added pending tx: ${tx.txHash} (${tx.amount} ${tx.asset})`);
-}
-
-/**
- * Clean up old pending transactions.
- * After the confirmation time passes, LWS should reflect the spend,
- * so we can remove from our pending list.
+ * Main message router.
  *
- * XMR: ~20 minutes for 10 confirmations
- * WOW: ~2 minutes for 10 confirmations (12s blocks)
+ * Routes incoming messages to appropriate handlers based on message.type.
+ * All handlers return a MessageResponse with success status and data/error.
+ *
+ * @param message - Message from popup or content script
+ * @returns Handler response
  */
-async function cleanupOldPendingTxs(): Promise<void> {
-  const now = Date.now();
-  const result = await storage.local.get(PENDING_TXS_KEY) as Record<string, PendingTx[] | undefined>;
-  const pending: PendingTx[] = result[PENDING_TXS_KEY] || [];
+async function handleMessage(message: MessageType): Promise<MessageResponse> {
+  switch (message.type) {
+    // =========================================================================
+    // Wallet State
+    // =========================================================================
+    case 'GET_WALLET_STATE':
+      return handleGetWalletState();
 
-  // Age thresholds in ms (conservative to avoid removing too early)
-  const ageThresholds: Record<string, number> = {
-    xmr: 30 * 60 * 1000, // 30 minutes for XMR
-    wow: 5 * 60 * 1000,  // 5 minutes for WOW
-  };
+    // =========================================================================
+    // Wallet Creation
+    // =========================================================================
+    case 'GENERATE_MNEMONIC':
+      return handleGenerateMnemonic();
 
-  const updated = pending.filter(tx => {
-    const threshold = ageThresholds[tx.asset] || 30 * 60 * 1000;
-    const age = now - tx.timestamp;
-    if (age > threshold) {
-      console.log(`[PendingTx] Removing old pending tx ${tx.txHash} (age: ${Math.round(age / 60000)}min)`);
-      return false;
-    }
-    return true;
-  });
+    case 'CONFIRM_MNEMONIC':
+      return handleConfirmMnemonic(message.password, message.verifiedWords, message.words);
 
-  if (updated.length < pending.length) {
-    await storage.local.set({ [PENDING_TXS_KEY]: updated });
+    case 'RESTORE_WALLET':
+      return handleRestoreWallet(message.mnemonic, message.password);
+
+    case 'CREATE_WALLET':
+      return handleCreateWallet(message.password);
+
+    // =========================================================================
+    // Wallet Lock/Unlock
+    // =========================================================================
+    case 'UNLOCK_WALLET':
+      return handleUnlockWallet(message.password);
+
+    case 'LOCK_WALLET':
+      return handleLockWallet();
+
+    case 'REVEAL_SEED':
+      return handleRevealSeed(message.password);
+
+    // =========================================================================
+    // Onboarding State
+    // =========================================================================
+    case 'GET_ONBOARDING_STATE':
+      return handleGetOnboardingState();
+
+    case 'SAVE_ONBOARDING_STATE':
+      return handleSaveOnboardingState(message.state as OnboardingState);
+
+    case 'CLEAR_ONBOARDING_STATE':
+      return handleClearOnboardingState();
+
+    // =========================================================================
+    // Settings
+    // =========================================================================
+    case 'GET_SETTINGS':
+      return handleGetSettings();
+
+    case 'UPDATE_SETTINGS':
+      return handleUpdateSettings(message.settings as Partial<UserSettings>);
+
+    case 'RESET_AUTO_LOCK_TIMER':
+      return handleResetAutoLockTimer();
+
+    // =========================================================================
+    // Addresses
+    // =========================================================================
+    case 'GET_ADDRESSES':
+      return handleGetAddresses();
+
+    // =========================================================================
+    // Balance & History
+    // =========================================================================
+    case 'GET_BALANCE':
+      return handleGetBalance(message.asset);
+
+    case 'GET_HISTORY':
+      return handleGetHistory(message.asset);
+
+    case 'GET_WALLET_KEYS':
+      return handleGetWalletKeys(message.asset);
+
+    case 'ESTIMATE_FEE':
+      return handleEstimateFee(message.asset);
+
+    // =========================================================================
+    // BTC/LTC Send Operations
+    // =========================================================================
+    case 'GET_UTXOS':
+      return handleGetUtxos(message.asset, message.address);
+
+    case 'MAX_SENDABLE_UTXO':
+      return handleMaxSendableUtxo(message.asset, message.feeRate);
+
+    case 'SEND_TX':
+      return handleSendTx(message.asset, message.recipientAddress, message.amount, message.feeRate, message.sweep);
+
+    case 'ADD_PENDING_TX':
+      return handleAddPendingTx(message.txHash, message.asset, message.amount, message.fee);
+
+    case 'GET_PENDING_TXS':
+      return handleGetPendingTxs(message.asset);
+
+    // =========================================================================
+    // Grin WASM Operations
+    // =========================================================================
+    case 'INIT_GRIN_WALLET':
+      return handleInitGrinWallet();
+
+    case 'GET_GRIN_PENDING_SLATEPACKS':
+      return handleGetGrinPendingSlatepacks();
+
+    case 'GRIN_SIGN_SLATE':
+      return handleGrinSignSlate(message.relayId, message.slatepack);
+
+    case 'GRIN_FINALIZE_SLATE':
+      return handleGrinFinalizeSlate(message.relayId, message.slatepack);
+
+    case 'GRIN_SIGN_SLATEPACK':
+      return handleGrinSignSlatepack(message.slatepack);
+
+    case 'GRIN_CANCEL_SLATE':
+      return handleGrinCancelSlate(message.relayId);
+
+    case 'GRIN_CREATE_SEND':
+      return handleGrinCreateSend(message.amount, message.fee, message.recipientAddress);
+
+    case 'GRIN_FINALIZE_AND_BROADCAST':
+      return handleGrinFinalizeAndBroadcast(message.slatepack, message.sendContext);
+
+    case 'GRIN_CANCEL_SEND':
+      return handleGrinCancelSend(message.slateId, message.inputIds);
+
+    // =========================================================================
+    // Tips
+    // =========================================================================
+    case 'DECRYPT_TIP':
+      return handleDecryptTip(message.tipInfo as TipInfo);
+
+    case 'OPEN_CLAIM_POPUP':
+      return handleOpenClaimPopup(message.linkId, message.fragmentKey);
+
+    case 'GET_TIP_INFO':
+      return handleGetTipInfo(message.linkId);
+
+    case 'CLAIM_TIP':
+      return handleClaimTip(message.linkId, message.fragmentKey);
+
+    case 'GET_PENDING_CLAIM':
+      return handleGetPendingClaim();
+
+    case 'CLEAR_PENDING_CLAIM':
+      return handleClearPendingClaim();
+
+    // =========================================================================
+    // window.smirk API
+    // =========================================================================
+    case 'SMIRK_API':
+      return handleSmirkApi(message.method, message.params, message.origin, message.siteName, message.favicon);
+
+    case 'SMIRK_APPROVAL_RESPONSE':
+      return handleApprovalResponse(message.requestId, message.approved);
+
+    case 'GET_PENDING_APPROVAL':
+      return handleGetPendingApproval(message.requestId);
+
+    case 'GET_CONNECTED_SITES':
+      return handleGetConnectedSites();
+
+    case 'DISCONNECT_SITE':
+      return handleDisconnectSite(message.origin);
+
+    // =========================================================================
+    // Unknown
+    // =========================================================================
+    default:
+      return { success: false, error: 'Unknown message type' };
   }
 }
 
-/**
- * Get pending outgoing transactions for an asset.
- * Also cleans up old pending transactions that should be confirmed by now.
- */
-async function getPendingTxs(asset: AssetType): Promise<PendingTx[]> {
-  // Clean up old pending txs first
-  await cleanupOldPendingTxs();
-
-  const result = await storage.local.get(PENDING_TXS_KEY) as Record<string, PendingTx[] | undefined>;
-  const pending: PendingTx[] = result[PENDING_TXS_KEY] || [];
-  return pending.filter(tx => tx.asset === asset);
-}
+// =============================================================================
+// Message Listener
+// =============================================================================
 
 /**
- * Remove a pending transaction by hash (when confirmed).
- */
-async function removePendingTx(txHash: string): Promise<void> {
-  const result = await storage.local.get(PENDING_TXS_KEY) as Record<string, PendingTx[] | undefined>;
-  const pending: PendingTx[] = result[PENDING_TXS_KEY] || [];
-  const updated = pending.filter(tx => tx.txHash !== txHash);
-  await storage.local.set({ [PENDING_TXS_KEY]: updated });
-  if (updated.length < pending.length) {
-    console.log(`[PendingTx] Removed confirmed tx: ${txHash}`);
-  }
-}
-
-/**
- * Get total pending outgoing amount for an asset.
- */
-async function getPendingOutgoingAmount(asset: AssetType): Promise<number> {
-  const pending = await getPendingTxs(asset);
-  return pending.reduce((sum, tx) => sum + tx.amount + tx.fee, 0);
-}
-
-/**
- * Persist decrypted keys to session storage.
- * Session storage survives service worker restarts but clears on browser close.
- */
-async function persistSessionKeys(): Promise<void> {
-  const keysData: Record<string, string> = {};
-  const viewKeysData: Record<string, string> = {};
-
-  for (const [asset, key] of unlockedKeys) {
-    keysData[asset] = bytesToHex(key);
-  }
-  for (const [asset, key] of unlockedViewKeys) {
-    viewKeysData[asset] = bytesToHex(key);
-  }
-
-  const sessionData: SessionKeysData = {
-    unlockedKeys: keysData,
-    unlockedViewKeys: viewKeysData,
-  };
-
-  // Include Grin extended private key if available (for Grin WASM operations after restart)
-  if (grinWasmKeys?.extendedPrivateKey) {
-    sessionData.grinExtendedPrivateKey = bytesToHex(grinWasmKeys.extendedPrivateKey);
-  }
-
-  // Include mnemonic for Grin first-time init after service worker restart
-  // Session storage clears on browser close, so this is reasonably safe
-  if (unlockedMnemonic) {
-    sessionData.mnemonic = unlockedMnemonic;
-  }
-
-  await storage.session.set({
-    [SESSION_KEYS_KEY]: sessionData,
-  });
-  console.log('[Session] Persisted keys to session storage');
-}
-
-/**
- * Restore decrypted keys from session storage after service worker restart.
- * Returns true if keys were restored, false otherwise.
- */
-async function restoreSessionKeys(): Promise<boolean> {
-  const data = await storage.session.get<{ [SESSION_KEYS_KEY]?: SessionKeysData }>([SESSION_KEYS_KEY]);
-  const sessionData = data[SESSION_KEYS_KEY];
-
-  if (!sessionData) {
-    console.log('[Session] No session keys found');
-    return false;
-  }
-
-  // Restore unlocked keys
-  for (const [asset, hexKey] of Object.entries(sessionData.unlockedKeys)) {
-    unlockedKeys.set(asset as AssetType, hexToBytes(hexKey));
-  }
-
-  // Restore view keys
-  for (const [asset, hexKey] of Object.entries(sessionData.unlockedViewKeys)) {
-    unlockedViewKeys.set(asset as 'xmr' | 'wow', hexToBytes(hexKey));
-  }
-
-  // Restore mnemonic for Grin first-time init
-  if (sessionData.mnemonic) {
-    unlockedMnemonic = sessionData.mnemonic;
-    console.log('[Session] Restored mnemonic from session storage');
-  }
-
-  // Restore Grin extended private key (for Grin WASM operations)
-  // This allows Grin wallet to work after service worker restart without re-deriving
-  if (sessionData.grinExtendedPrivateKey) {
-    try {
-      const extendedKey = hexToBytes(sessionData.grinExtendedPrivateKey);
-      grinWasmKeys = await initGrinWalletFromExtendedKey(extendedKey);
-      console.log('[Session] Restored Grin WASM keys from extended private key');
-    } catch (err) {
-      console.warn('[Session] Failed to restore Grin WASM keys:', err);
-      // Non-fatal - mnemonic is restored, so Grin can be re-initialized
-    }
-  }
-
-  if (unlockedKeys.size > 0) {
-    isUnlocked = true;
-    console.log('[Session] Restored keys from session storage, assets:', Array.from(unlockedKeys.keys()));
-    return true;
-  }
-
-  return false;
-}
-
-/**
- * Clear session keys on lock.
- */
-async function clearSessionKeys(): Promise<void> {
-  await storage.session.remove([SESSION_KEYS_KEY]);
-  console.log('[Session] Cleared session keys');
-}
-
-/**
- * Handles messages from popup and content scripts.
- * Waits for initialization to complete before processing to avoid race conditions.
+ * Main message listener.
+ *
+ * Waits for initialization to complete before processing messages
+ * to avoid race conditions with session restoration.
  */
 runtime.onMessage.addListener(
   (message: unknown, _sender, sendResponse: (response: unknown) => void) => {
@@ -338,1242 +346,13 @@ runtime.onMessage.addListener(
   }
 );
 
-async function handleMessage(message: MessageType): Promise<MessageResponse> {
-  switch (message.type) {
-    case 'GET_WALLET_STATE':
-      return handleGetWalletState();
-
-    case 'GENERATE_MNEMONIC':
-      return handleGenerateMnemonic();
-
-    case 'CONFIRM_MNEMONIC':
-      return handleConfirmMnemonic(message.password, message.verifiedWords, message.words);
-
-    case 'RESTORE_WALLET':
-      return handleRestoreWallet(message.mnemonic, message.password);
-
-    case 'CREATE_WALLET':
-      return handleCreateWallet(message.password);
-
-    case 'UNLOCK_WALLET':
-      return handleUnlockWallet(message.password);
-
-    case 'LOCK_WALLET':
-      return handleLockWallet();
-
-    case 'DECRYPT_TIP':
-      return handleDecryptTip(message.tipInfo as TipInfo);
-
-    case 'GET_BALANCE':
-      return handleGetBalance(message.asset);
-
-    case 'GET_ADDRESSES':
-      return handleGetAddresses();
-
-    case 'OPEN_CLAIM_POPUP':
-      return handleOpenClaimPopup(message.linkId, message.fragmentKey);
-
-    case 'GET_TIP_INFO':
-      return handleGetTipInfo(message.linkId);
-
-    case 'CLAIM_TIP':
-      return handleClaimTip(message.linkId, message.fragmentKey);
-
-    case 'GET_PENDING_CLAIM':
-      return handleGetPendingClaim();
-
-    case 'CLEAR_PENDING_CLAIM':
-      pendingClaim = null;
-      return { success: true, data: { cleared: true } };
-
-    case 'GET_ONBOARDING_STATE':
-      return handleGetOnboardingState();
-
-    case 'SAVE_ONBOARDING_STATE':
-      return handleSaveOnboardingState(message.state);
-
-    case 'CLEAR_ONBOARDING_STATE':
-      return handleClearOnboardingState();
-
-    case 'GET_SETTINGS':
-      return handleGetSettings();
-
-    case 'UPDATE_SETTINGS':
-      return handleUpdateSettings(message.settings);
-
-    case 'RESET_AUTO_LOCK_TIMER':
-      return handleResetAutoLockTimer();
-
-    case 'GET_UTXOS':
-      return handleGetUtxos(message.asset, message.address);
-
-    case 'SEND_TX':
-      return handleSendTx(message.asset, message.recipientAddress, message.amount, message.feeRate, message.sweep);
-
-    case 'MAX_SENDABLE_UTXO':
-      return handleMaxSendableUtxo(message.asset, message.feeRate);
-
-    case 'GET_HISTORY':
-      return handleGetHistory(message.asset);
-
-    case 'ESTIMATE_FEE':
-      return handleEstimateFee(message.asset);
-
-    case 'GET_WALLET_KEYS':
-      return handleGetWalletKeys(message.asset);
-
-    case 'REVEAL_SEED':
-      return handleRevealSeed(message.password);
-
-    case 'ADD_PENDING_TX':
-      return handleAddPendingTx(message.txHash, message.asset, message.amount, message.fee);
-
-    case 'GET_PENDING_TXS':
-      return handleGetPendingTxs(message.asset);
-
-    // Grin WASM wallet operations
-    case 'INIT_GRIN_WALLET':
-      return handleInitGrinWallet();
-
-    case 'GET_GRIN_PENDING_SLATEPACKS':
-      return handleGetGrinPendingSlatepacks();
-
-    case 'GRIN_SIGN_SLATE':
-      return handleGrinSignSlate(message.relayId, message.slatepack);
-
-    case 'GRIN_FINALIZE_SLATE':
-      return handleGrinFinalizeSlate(message.relayId, message.slatepack);
-
-    case 'GRIN_CANCEL_SLATE':
-      return handleGrinCancelSlate(message.relayId);
-
-    // Direct slatepack operations (no relay)
-    case 'GRIN_SIGN_SLATEPACK':
-      return handleGrinSignSlatepack(message.slatepack);
-
-    // Grin send transaction (creates S1 slatepack)
-    case 'GRIN_CREATE_SEND':
-      return handleGrinCreateSend(message.amount, message.fee, message.recipientAddress);
-
-    // Grin finalize transaction (S2 -> S3 -> broadcast)
-    case 'GRIN_FINALIZE_AND_BROADCAST':
-      return handleGrinFinalizeAndBroadcast(message.slatepack, message.sendContext);
-
-    // Grin cancel send (unlocks outputs, cancels transaction)
-    case 'GRIN_CANCEL_SEND':
-      return handleGrinCancelSend(message.slateId, message.inputIds);
-
-    // Website API (window.smirk) requests
-    case 'SMIRK_API':
-      return handleSmirkApi(message.method, message.params, message.origin, message.siteName, message.favicon);
-
-    // Approval popup responses
-    case 'SMIRK_APPROVAL_RESPONSE':
-      return handleApprovalResponse(message.requestId, message.approved);
-
-    // Get pending approval request (for approval popup)
-    case 'GET_PENDING_APPROVAL':
-      return handleGetPendingApproval(message.requestId);
-
-    // Get connected sites list
-    case 'GET_CONNECTED_SITES':
-      return handleGetConnectedSites();
-
-    // Disconnect a site
-    case 'DISCONNECT_SITE':
-      return handleDisconnectSite(message.origin);
-
-    default:
-      return { success: false, error: 'Unknown message type' };
-  }
-}
-
-async function handleGetWalletState(): Promise<MessageResponse<{
-  isUnlocked: boolean;
-  hasWallet: boolean;
-  assets: AssetType[];
-  needsBackup: boolean;
-}>> {
-  const state = await getWalletState();
-  const hasWallet = !!state.encryptedSeed;
-  const assets = (Object.keys(state.keys) as AssetType[]).filter(
-    (k) => state.keys[k] !== undefined
-  );
-
-  return {
-    success: true,
-    data: {
-      isUnlocked,
-      hasWallet,
-      assets,
-      needsBackup: hasWallet && !state.backupConfirmed,
-    },
-  };
-}
-
-/**
- * Step 1 of wallet creation: Generate mnemonic and return words + verification indices.
- */
-async function handleGenerateMnemonic(): Promise<MessageResponse<{
-  words: string[];
-  verifyIndices: number[];
-}>> {
-  // Generate new mnemonic
-  pendingMnemonic = generateMnemonicPhrase();
-  const words = mnemonicToWords(pendingMnemonic);
-  const verifyIndices = getVerificationIndices(words.length, 3);
-
-  return {
-    success: true,
-    data: { words, verifyIndices },
-  };
-}
-
-/**
- * Step 2 of wallet creation: Verify user wrote down seed and create wallet.
- */
-async function handleConfirmMnemonic(
-  password: string,
-  verifiedWords: Record<number, string>,
-  wordsFromPopup?: string[]
-): Promise<MessageResponse<{ created: boolean; assets: AssetType[] }>> {
-  // If pendingMnemonic was lost (service worker restart), reconstruct from passed words
-  let mnemonic = pendingMnemonic;
-  if (!mnemonic && wordsFromPopup && wordsFromPopup.length > 0) {
-    mnemonic = wordsFromPopup.join(' ');
-    // Validate the reconstructed mnemonic
-    if (!isValidMnemonic(mnemonic)) {
-      return { success: false, error: 'Invalid mnemonic. Please start over.' };
-    }
-  }
-
-  if (!mnemonic) {
-    return { success: false, error: 'No pending mnemonic. Start over.' };
-  }
-
-  if (!password || password.length < 8) {
-    return { success: false, error: 'Password must be at least 8 characters' };
-  }
-
-  // Verify the words match
-  const words = mnemonicToWords(mnemonic);
-  for (const [idx, word] of Object.entries(verifiedWords)) {
-    if (words[parseInt(idx)] !== word.toLowerCase().trim()) {
-      return { success: false, error: 'Word verification failed. Please check your backup.' };
-    }
-  }
-
-  // Set state to 'creating' so popup can show progress if reopened
-  await saveOnboardingState({ step: 'creating', createdAt: Date.now() });
-
-  // Create wallet from mnemonic
-  const result = await createWalletFromMnemonic(mnemonic, password, true);
-
-  // Clear pending mnemonic
-  pendingMnemonic = null;
-
-  // Clear onboarding state on success
-  if (result.success) {
-    await clearOnboardingState();
-  }
-
-  return result;
-}
-
-/**
- * Restore wallet from existing mnemonic.
- */
-async function handleRestoreWallet(
-  mnemonic: string,
-  password: string
-): Promise<MessageResponse<{ created: boolean; assets: AssetType[] }>> {
-  if (!isValidMnemonic(mnemonic)) {
-    return { success: false, error: 'Invalid recovery phrase' };
-  }
-
-  if (!password || password.length < 8) {
-    return { success: false, error: 'Password must be at least 8 characters' };
-  }
-
-  // Check if this wallet was previously created in Smirk
-  const fingerprint = computeSeedFingerprint(mnemonic);
-  const derivedKeys = deriveAllKeys(mnemonic);
-
-  // Build keys array for restore check
-  const keysToCheck: Array<{ asset: string; publicKey: string; publicSpendKey?: string }> = [
-    { asset: 'btc', publicKey: bytesToHex(getPublicKey(derivedKeys.btc.privateKey)) },
-    { asset: 'ltc', publicKey: bytesToHex(getPublicKey(derivedKeys.ltc.privateKey)) },
-    {
-      asset: 'xmr',
-      publicKey: bytesToHex(derivedKeys.xmr.publicSpendKey),
-      publicSpendKey: bytesToHex(derivedKeys.xmr.publicViewKey),
-    },
-    {
-      asset: 'wow',
-      publicKey: bytesToHex(derivedKeys.wow.publicSpendKey),
-      publicSpendKey: bytesToHex(derivedKeys.wow.publicViewKey),
-    },
-    { asset: 'grin', publicKey: bytesToHex(derivedKeys.grin.publicKey) },
-  ];
-
-  const checkResult = await api.checkRestore({ fingerprint, keys: keysToCheck });
-
-  // REQUIRE successful check - don't allow restore if we can't verify
-  if (checkResult.error) {
-    console.error('Failed to check restore status:', checkResult.error);
-    return {
-      success: false,
-      error: 'Unable to verify wallet. Please check your connection and try again.',
-    };
-  }
-
-  if (!checkResult.data) {
-    return {
-      success: false,
-      error: 'Unable to verify wallet. Please try again.',
-    };
-  }
-
-  if (!checkResult.data.exists) {
-    // Wallet was not created in Smirk - reject restore
-    return {
-      success: false,
-      error: 'This wallet was not created in Smirk. Please create a new wallet instead.',
-    };
-  }
-
-  if (checkResult.data.keysValid === false) {
-    // Keys don't match - this shouldn't happen with correct derivation
-    return {
-      success: false,
-      error: checkResult.data.error || 'Key derivation mismatch. Please try again.',
-    };
-  }
-
-  // exists=true and keysValid=true - proceed with restore
-  console.log('Restore check passed for user:', checkResult.data.userId);
-
-  // Set state to 'creating' so popup can show progress if reopened
-  await saveOnboardingState({ step: 'creating', createdAt: Date.now() });
-
-  // Pass isRestore=true so LWS registration uses stored heights
-  const result = await createWalletFromMnemonic(mnemonic, password, true, true);
-
-  // Clear onboarding state on success
-  if (result.success) {
-    await clearOnboardingState();
-  }
-
-  return result;
-}
-
-/**
- * Core wallet creation from mnemonic.
- * @param isRestore - If true, this is a wallet restore (use stored heights for LWS start)
- */
-async function createWalletFromMnemonic(
-  mnemonic: string,
-  password: string,
-  backupConfirmed: boolean,
-  isRestore: boolean = false
-): Promise<MessageResponse<{ created: boolean; assets: AssetType[] }>> {
-  // Derive all keys from mnemonic
-  const derivedKeys = deriveAllKeys(mnemonic);
-
-  // Derive encryption key ONCE and reuse for all keys
-  // This is 8x faster than calling encryptPrivateKey for each key (100k PBKDF2 iterations each)
-  const masterSalt = randomBytes(16);
-  const encryptionKey = await deriveKeyFromPassword(password, masterSalt);
-  const saltHex = bytesToHex(masterSalt);
-
-  // Helper to encrypt with pre-derived key
-  const encryptWithKey = (data: Uint8Array): string => bytesToHex(encrypt(data, encryptionKey));
-
-  // Encrypt mnemonic for storage
-  const mnemonicBytes = new TextEncoder().encode(mnemonic);
-  const encryptedMnemonic = encryptWithKey(mnemonicBytes);
-
-  // Encrypt BIP39 seed (64 bytes) for Grin WASM operations
-  const bip39Seed = mnemonicToSeed(mnemonic);
-  const encryptedBip39Seed = encryptWithKey(bip39Seed);
-
-  // Fetch current blockchain heights for wallet birthday (run in parallel with key setup)
-  let walletBirthday: WalletState['walletBirthday'];
-  try {
-    const heightsResult = await api.getBlockchainHeights();
-    if (heightsResult.data) {
-      walletBirthday = {
-        timestamp: Date.now(),
-        heights: {
-          btc: heightsResult.data.btc ?? undefined,
-          ltc: heightsResult.data.ltc ?? undefined,
-          xmr: heightsResult.data.xmr ?? undefined,
-          wow: heightsResult.data.wow ?? undefined,
-        },
-      };
-    } else {
-      // Backend unavailable - store timestamp only, heights will be missing
-      console.warn('Could not fetch blockchain heights:', heightsResult.error);
-      walletBirthday = { timestamp: Date.now(), heights: {} };
-    }
-  } catch (err) {
-    console.warn('Failed to fetch blockchain heights:', err);
-    walletBirthday = { timestamp: Date.now(), heights: {} };
-  }
-
-  // Build wallet state
-  const state: WalletState = {
-    ...DEFAULT_WALLET_STATE,
-    encryptedSeed: encryptedMnemonic,
-    seedSalt: saltHex,
-    encryptedBip39Seed,
-    backupConfirmed,
-    walletBirthday,
-  };
-
-  const assets: AssetType[] = ['btc', 'ltc', 'xmr', 'wow', 'grin'];
-  const now = Date.now();
-
-  // Store BTC key
-  const btcPub = getPublicKey(derivedKeys.btc.privateKey);
-  state.keys.btc = {
-    asset: 'btc',
-    publicKey: bytesToHex(btcPub),
-    privateKey: encryptWithKey(derivedKeys.btc.privateKey),
-    privateKeySalt: saltHex,
-    createdAt: now,
-  };
-  unlockedKeys.set('btc', derivedKeys.btc.privateKey);
-
-  // Store LTC key
-  const ltcPub = getPublicKey(derivedKeys.ltc.privateKey);
-  state.keys.ltc = {
-    asset: 'ltc',
-    publicKey: bytesToHex(ltcPub),
-    privateKey: encryptWithKey(derivedKeys.ltc.privateKey),
-    privateKeySalt: saltHex,
-    createdAt: now,
-  };
-  unlockedKeys.set('ltc', derivedKeys.ltc.privateKey);
-
-  // Store XMR keys
-  state.keys.xmr = {
-    asset: 'xmr',
-    publicKey: bytesToHex(derivedKeys.xmr.publicSpendKey), // Primary public key
-    privateKey: encryptWithKey(derivedKeys.xmr.privateSpendKey),
-    privateKeySalt: saltHex,
-    publicSpendKey: bytesToHex(derivedKeys.xmr.publicSpendKey),
-    publicViewKey: bytesToHex(derivedKeys.xmr.publicViewKey),
-    privateViewKey: encryptWithKey(derivedKeys.xmr.privateViewKey),
-    privateViewKeySalt: saltHex,
-    createdAt: now,
-  };
-  unlockedKeys.set('xmr', derivedKeys.xmr.privateSpendKey);
-  unlockedViewKeys.set('xmr', derivedKeys.xmr.privateViewKey);
-
-  // Store WOW keys
-  state.keys.wow = {
-    asset: 'wow',
-    publicKey: bytesToHex(derivedKeys.wow.publicSpendKey),
-    privateKey: encryptWithKey(derivedKeys.wow.privateSpendKey),
-    privateKeySalt: saltHex,
-    publicSpendKey: bytesToHex(derivedKeys.wow.publicSpendKey),
-    publicViewKey: bytesToHex(derivedKeys.wow.publicViewKey),
-    privateViewKey: encryptWithKey(derivedKeys.wow.privateViewKey),
-    privateViewKeySalt: saltHex,
-    createdAt: now,
-  };
-  unlockedKeys.set('wow', derivedKeys.wow.privateSpendKey);
-  unlockedViewKeys.set('wow', derivedKeys.wow.privateViewKey);
-
-  // Store Grin key (ed25519 for slatepack addresses)
-  state.keys.grin = {
-    asset: 'grin',
-    publicKey: bytesToHex(derivedKeys.grin.publicKey),
-    privateKey: encryptWithKey(derivedKeys.grin.privateKey),
-    privateKeySalt: saltHex,
-    createdAt: now,
-  };
-  unlockedKeys.set('grin', derivedKeys.grin.privateKey);
-
-  await saveWalletState(state);
-  isUnlocked = true;
-
-  // Persist keys to session storage (survives service worker restarts)
-  await persistSessionKeys();
-
-  // Start auto-lock timer
-  startAutoLockTimer();
-
-  // Compute seed fingerprint for wallet identification
-  const seedFingerprint = computeSeedFingerprint(mnemonic);
-
-  // Register with backend, then register with LWS (LWS requires user_id from backend)
-  // This is non-blocking - wallet works offline too
-  registerWithBackend(state, seedFingerprint)
-    .then((userId) => {
-      // Now register XMR/WOW with LWS using the user_id
-      // For new wallets: LWS starts from current block
-      // For restored wallets: use wallet birthday heights to avoid scanning from genesis
-      return registerWithLws(userId, state, derivedKeys, isRestore);
-    })
-    .catch((err) => {
-      console.warn('Failed to register with backend/LWS:', err);
-      // Continue working - we can retry later
-    });
-
-  return { success: true, data: { created: true, assets } };
-}
-
-/**
- * Register wallet with backend server.
- * Registers public keys and creates user account.
- * @returns The user ID from the backend
- */
-async function registerWithBackend(state: WalletState, seedFingerprint?: string): Promise<string> {
-  // Collect all public keys
-  const keys: Array<{ asset: string; publicKey: string; publicSpendKey?: string }> = [];
-
-  if (state.keys.btc) {
-    keys.push({ asset: 'btc', publicKey: state.keys.btc.publicKey });
-  }
-  if (state.keys.ltc) {
-    keys.push({ asset: 'ltc', publicKey: state.keys.ltc.publicKey });
-  }
-  if (state.keys.xmr) {
-    // For XMR: send public spend key (main identity) and public view key
-    keys.push({
-      asset: 'xmr',
-      publicKey: state.keys.xmr.publicSpendKey || state.keys.xmr.publicKey,
-      publicSpendKey: state.keys.xmr.publicViewKey, // Backend uses this for encrypted tips
-    });
-  }
-  if (state.keys.wow) {
-    keys.push({
-      asset: 'wow',
-      publicKey: state.keys.wow.publicSpendKey || state.keys.wow.publicKey,
-      publicSpendKey: state.keys.wow.publicViewKey,
-    });
-  }
-  if (state.keys.grin) {
-    // Grin: ed25519 public key for slatepack address
-    keys.push({
-      asset: 'grin',
-      publicKey: state.keys.grin.publicKey,
-    });
-  }
-
-  if (keys.length === 0) {
-    console.warn('No keys to register with backend');
-    return;
-  }
-
-  const result = await api.extensionRegister({
-    keys,
-    walletBirthday: state.walletBirthday?.timestamp,
-    seedFingerprint,
-  });
-
-  if (result.error) {
-    throw new Error(result.error);
-  }
-
-  // Store auth tokens
-  const auth = result.data!;
-  await saveAuthState({
-    accessToken: auth.accessToken,
-    refreshToken: auth.refreshToken,
-    expiresAt: Date.now() + auth.expiresIn * 1000,
-    userId: auth.user.id,
-  });
-
-  // Set token on API client for future requests
-  api.setAccessToken(auth.accessToken);
-
-  console.log('Registered with backend:', auth.user.isNew ? 'new user' : 'existing user');
-
-  return auth.user.id;
-}
-
-/**
- * Register XMR/WOW wallets with LWS for balance scanning.
- * Uses the private view key to register with the Light Wallet Server.
- *
- * @param userId - User ID from backend registration (required for LWS registration)
- * @param isRestore - If true, use wallet birthday heights as start_height to avoid scanning from genesis
- */
-async function registerWithLws(
-  userId: string,
-  state: WalletState,
-  derivedKeys: { xmr: { privateViewKey: Uint8Array; publicSpendKey: Uint8Array; publicViewKey: Uint8Array }; wow: { privateViewKey: Uint8Array; publicSpendKey: Uint8Array; publicViewKey: Uint8Array } },
-  isRestore: boolean = false
-): Promise<void> {
-  // Get start heights from wallet birthday (for restore scenarios)
-  const xmrStartHeight = isRestore ? state.walletBirthday?.heights?.xmr : undefined;
-  const wowStartHeight = isRestore ? state.walletBirthday?.heights?.wow : undefined;
-
-  // Register XMR with LWS
-  if (state.keys.xmr?.publicSpendKey && state.keys.xmr?.publicViewKey) {
-    const xmrAddress = getAddressForAsset('xmr', state.keys.xmr);
-    const xmrViewKey = bytesToHex(derivedKeys.xmr.privateViewKey);
-
-    const xmrResult = await api.registerLws(userId, 'xmr', xmrAddress, xmrViewKey, xmrStartHeight);
-    if (xmrResult.error) {
-      console.warn('Failed to register XMR with LWS:', xmrResult.error);
-    } else {
-      console.log('XMR registered with LWS:', xmrResult.data?.message, xmrStartHeight ? `(start_height: ${xmrStartHeight})` : '(from current)');
-    }
-  }
-
-  // Register WOW with LWS
-  if (state.keys.wow?.publicSpendKey && state.keys.wow?.publicViewKey) {
-    const wowAddress = getAddressForAsset('wow', state.keys.wow);
-    const wowViewKey = bytesToHex(derivedKeys.wow.privateViewKey);
-
-    const wowResult = await api.registerLws(userId, 'wow', wowAddress, wowViewKey, wowStartHeight);
-    if (wowResult.error) {
-      console.warn('Failed to register WOW with LWS:', wowResult.error);
-    } else {
-      console.log('WOW registered with LWS:', wowResult.data?.message, wowStartHeight ? `(start_height: ${wowStartHeight})` : '(from current)');
-    }
-  }
-}
-
-// Legacy create wallet (for backwards compat, redirects to mnemonic flow)
-async function handleCreateWallet(password: string): Promise<MessageResponse<{
-  created: boolean;
-  assets: AssetType[];
-}>> {
-  // Generate mnemonic and create wallet directly (skip verification for legacy)
-  const mnemonic = generateMnemonicPhrase();
-  return createWalletFromMnemonic(mnemonic, password, false);
-}
-
-async function handleUnlockWallet(password: string): Promise<MessageResponse<{
-  unlocked: boolean;
-}>> {
-  const state = await getWalletState();
-
-  if (!state.encryptedSeed) {
-    return { success: false, error: 'No wallet found' };
-  }
-
-  // Try to decrypt the first key to verify password
-  const firstAsset = (Object.keys(state.keys) as AssetType[]).find(
-    (k) => state.keys[k] !== undefined
-  );
-
-  if (!firstAsset || !state.keys[firstAsset]) {
-    return { success: false, error: 'No keys found' };
-  }
-
-  try {
-    const key = state.keys[firstAsset]!;
-    const decrypted = await decryptPrivateKey(
-      key.privateKey,
-      key.privateKeySalt,
-      password
-    );
-
-    // Password correct - decrypt all keys
-    unlockedKeys.clear();
-    unlockedViewKeys.clear();
-
-    for (const asset of Object.keys(state.keys) as AssetType[]) {
-      const assetKey = state.keys[asset];
-      if (assetKey) {
-        const privateKey = await decryptPrivateKey(
-          assetKey.privateKey,
-          assetKey.privateKeySalt,
-          password
-        );
-        unlockedKeys.set(asset, privateKey);
-
-        // Also decrypt view keys for XMR/WOW (needed for balance queries)
-        if ((asset === 'xmr' || asset === 'wow') && assetKey.privateViewKey && assetKey.privateViewKeySalt) {
-          const viewKey = await decryptPrivateKey(
-            assetKey.privateViewKey,
-            assetKey.privateViewKeySalt,
-            password
-          );
-          unlockedViewKeys.set(asset, viewKey);
-        }
-      }
-    }
-
-    // Decrypt mnemonic for Grin WASM operations (MWC Seed class needs the mnemonic, not BIP39 seed)
-    if (state.encryptedSeed && state.seedSalt) {
-      try {
-        const mnemonicBytes = await decryptPrivateKey(state.encryptedSeed, state.seedSalt, password);
-        unlockedMnemonic = new TextDecoder().decode(mnemonicBytes);
-      } catch (err) {
-        console.warn('Failed to decrypt mnemonic:', err);
-      }
-    }
-
-    // Decrypt BIP39 seed (kept for backwards compatibility with other operations)
-    if (state.encryptedBip39Seed && state.seedSalt) {
-      try {
-        unlockedSeed = await decryptPrivateKey(state.encryptedBip39Seed, state.seedSalt, password);
-      } catch (err) {
-        console.warn('Failed to decrypt BIP39 seed:', err);
-      }
-    }
-
-    // Migration: derive Grin key and BIP39 seed if missing (for wallets created before Grin support)
-    if ((!state.keys.grin || !state.encryptedBip39Seed) && unlockedMnemonic) {
-      try {
-        // Derive encryption key from password
-        const saltBytes = hexToBytes(state.seedSalt!);
-        const encKey = await deriveKeyFromPassword(password, saltBytes);
-        const encryptWithKey = (data: Uint8Array) => bytesToHex(encrypt(data, encKey));
-
-        // Migrate: encrypt and store BIP39 seed if missing
-        if (!state.encryptedBip39Seed) {
-          const bip39Seed = mnemonicToSeed(unlockedMnemonic);
-          state.encryptedBip39Seed = encryptWithKey(bip39Seed);
-          unlockedSeed = bip39Seed;
-          console.log('Migrated wallet: added encrypted BIP39 seed');
-        }
-
-        // Migrate: derive and store Grin key if missing
-        if (!state.keys.grin) {
-          const derivedKeys = deriveAllKeys(unlockedMnemonic);
-          state.keys.grin = {
-            asset: 'grin',
-            publicKey: bytesToHex(derivedKeys.grin.publicKey),
-            privateKey: encryptWithKey(derivedKeys.grin.privateKey),
-            privateKeySalt: state.seedSalt!,
-            createdAt: Date.now(),
-          };
-          unlockedKeys.set('grin', derivedKeys.grin.privateKey);
-          console.log('Migrated wallet: added Grin key');
-        }
-
-        // Save updated state
-        await saveWalletState(state);
-      } catch (err) {
-        console.warn('Failed to migrate wallet:', err);
-      }
-    }
-
-    isUnlocked = true;
-
-    // Persist keys to session storage (survives service worker restarts)
-    await persistSessionKeys();
-
-    // Start auto-lock timer
-    startAutoLockTimer();
-
-    return { success: true, data: { unlocked: true } };
-  } catch {
-    return { success: false, error: 'Invalid password' };
-  }
-}
-
-async function handleLockWallet(): Promise<MessageResponse<{ locked: boolean }>> {
-  unlockedKeys.clear();
-  unlockedViewKeys.clear();
-  grinWasmKeys = null;
-  unlockedSeed = null;
-  unlockedMnemonic = null;
-  isUnlocked = false;
-  await clearSessionKeys();
-  stopAutoLockTimer();
-  return { success: true, data: { locked: true } };
-}
-
-/**
- * Reveal seed phrase after password verification.
- * Requires re-entering password for security even if wallet is unlocked.
- */
-async function handleRevealSeed(password: string): Promise<MessageResponse<{ words: string[] }>> {
-  const state = await getWalletState();
-
-  if (!state.encryptedSeed || !state.seedSalt) {
-    return { success: false, error: 'No wallet found' };
-  }
-
-  try {
-    // Decrypt the mnemonic using provided password
-    const mnemonicBytes = await decryptPrivateKey(state.encryptedSeed, state.seedSalt, password);
-    const mnemonic = new TextDecoder().decode(mnemonicBytes);
-
-    // Split into words
-    const words = mnemonic.trim().split(/\s+/);
-
-    if (words.length !== 12 && words.length !== 24) {
-      return { success: false, error: 'Invalid seed format' };
-    }
-
-    return { success: true, data: { words } };
-  } catch {
-    return { success: false, error: 'Invalid password' };
-  }
-}
-
-async function handleDecryptTip(
-  tipInfo: TipInfo
-): Promise<MessageResponse<{ privateKey: string }>> {
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked' };
-  }
-
-  if (!tipInfo.encryptedKey) {
-    return { success: false, error: 'No encrypted key in tip' };
-  }
-
-  try {
-    let decryptedKey: Uint8Array;
-
-    if (tipInfo.isEncrypted && tipInfo.ephemeralPubkey) {
-      // Encrypted tip - use our private key for ECDH
-      const recipientKey = unlockedKeys.get(tipInfo.asset);
-      if (!recipientKey) {
-        return { success: false, error: `No ${tipInfo.asset} key available` };
-      }
-
-      decryptedKey = decryptTipPayload(
-        tipInfo.encryptedKey,
-        tipInfo.ephemeralPubkey,
-        recipientKey
-      );
-    } else {
-      // Public tip - key should be in URL fragment
-      // This would typically be passed from the content script
-      return { success: false, error: 'Public tip requires URL fragment key' };
-    }
-
-    return { success: true, data: { privateKey: bytesToHex(decryptedKey) } };
-  } catch {
-    return { success: false, error: 'Failed to decrypt tip' };
-  }
-}
-
-/**
- * Get balance for a specific asset via backend API.
- * Returns UTXO format for BTC/LTC/Grin, or LWS raw format for XMR/WOW.
- * XMR/WOW balances require client-side WASM verification in the popup.
- */
-async function handleGetBalance(
-  asset: AssetType
-): Promise<MessageResponse<
-  | { asset: AssetType; confirmed: number; unconfirmed: number; total: number }
-  | {
-      asset: 'xmr' | 'wow';
-      total_received: number;
-      locked_balance: number;
-      pending_balance: number;
-      spent_outputs: Array<{ amount: number; key_image: string; tx_pub_key: string; out_index: number }>;
-      viewKeyHex: string;
-      publicSpendKey: string;
-      spendKeyHex: string;
-      needsVerification: true;
-    }
->> {
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked' };
-  }
-
-  const state = await getWalletState();
-  const key = state.keys[asset];
-
-  if (!key) {
-    return { success: false, error: `No ${asset} key found` };
-  }
-
-  try {
-    // Get the address for this asset
-    const address = getAddressForAsset(asset, key);
-
-    if (asset === 'btc' || asset === 'ltc') {
-      // Use Electrum endpoint for UTXO coins
-      const result = await api.getUtxoBalance(asset, address);
-
-      if (result.error) {
-        return { success: false, error: result.error };
-      }
-
-      return {
-        success: true,
-        data: {
-          asset,
-          confirmed: result.data!.confirmed,
-          unconfirmed: result.data!.unconfirmed,
-          total: result.data!.total,
-        },
-      };
-    } else if (asset === 'xmr' || asset === 'wow') {
-      // Use LWS endpoint for Cryptonote coins
-      // Return raw data + keys so popup can verify spent outputs with WASM
-      const viewKey = unlockedViewKeys.get(asset);
-      if (!viewKey) {
-        return { success: false, error: `No ${asset} view key available` };
-      }
-
-      const spendKey = unlockedKeys.get(asset);
-      if (!spendKey) {
-        return { success: false, error: `No ${asset} spend key available` };
-      }
-
-      const viewKeyHex = bytesToHex(viewKey);
-      const spendKeyHex = bytesToHex(spendKey);
-      const publicSpendKey = key.publicSpendKey;
-
-      if (!publicSpendKey) {
-        return { success: false, error: `No ${asset} public spend key found` };
-      }
-
-      const result = await api.getLwsBalance(asset, address, viewKeyHex);
-
-      if (result.error) {
-        return { success: false, error: result.error };
-      }
-
-      // Return raw LWS data + keys for popup to verify with WASM
-      // WASM can't run in service worker, so popup does the verification
-      return {
-        success: true,
-        data: {
-          asset,
-          // Raw LWS data
-          total_received: result.data!.total_received,
-          locked_balance: result.data!.locked_balance,
-          pending_balance: result.data!.pending_balance,
-          spent_outputs: result.data!.spent_outputs,
-          // Keys needed for verification (popup will use these with WASM)
-          viewKeyHex,
-          publicSpendKey,
-          spendKeyHex,
-          // Flag to indicate this needs client-side verification
-          needsVerification: true,
-        },
-      };
-    } else if (asset === 'grin') {
-      // Grin is non-custodial - balance tracked in backend grin_transactions table
-      const authState = await getAuthState();
-      if (!authState?.userId) {
-        return { success: false, error: 'Not authenticated' };
-      }
-
-      const result = await api.getGrinUserBalance(authState.userId);
-
-      if (result.error) {
-        return { success: false, error: result.error };
-      }
-
-      return {
-        success: true,
-        data: {
-          asset,
-          confirmed: result.data!.confirmed,
-          unconfirmed: result.data!.pending,
-          total: result.data!.total,
-        },
-      };
-    } else {
-      return { success: false, error: `Unknown asset: ${asset}` };
-    }
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Failed to fetch balance',
-    };
-  }
-}
-
-/**
- * Get all wallet addresses.
- */
-async function handleGetAddresses(): Promise<MessageResponse<{
-  addresses: Array<{
-    asset: AssetType;
-    address: string;
-    publicKey: string;
-  }>;
-}>> {
-  const state = await getWalletState();
-  const addresses: Array<{ asset: AssetType; address: string; publicKey: string }> = [];
-
-  for (const asset of ['btc', 'ltc', 'xmr', 'wow', 'grin'] as AssetType[]) {
-    const key = state.keys[asset];
-    if (key) {
-      const address = getAddressForAsset(asset, key);
-      addresses.push({
-        asset,
-        address,
-        publicKey: key.publicKey,
-      });
-    }
-  }
-
-  return { success: true, data: { addresses } };
-}
-
-/**
- * Derive address from wallet key for a specific asset.
- */
-function getAddressForAsset(asset: AssetType, key: { publicKey: string; publicSpendKey?: string; publicViewKey?: string }): string {
-  switch (asset) {
-    case 'btc':
-      return btcAddress(hexToBytes(key.publicKey));
-    case 'ltc':
-      return ltcAddress(hexToBytes(key.publicKey));
-    case 'xmr':
-      if (!key.publicSpendKey || !key.publicViewKey) {
-        return 'Address unavailable';
-      }
-      return xmrAddress(hexToBytes(key.publicSpendKey), hexToBytes(key.publicViewKey));
-    case 'wow':
-      if (!key.publicSpendKey || !key.publicViewKey) {
-        return 'Address unavailable';
-      }
-      return wowAddress(hexToBytes(key.publicSpendKey), hexToBytes(key.publicViewKey));
-    case 'grin':
-      // Grin slatepack address from ed25519 public key
-      // Must be 64 hex chars (32 bytes)
-      if (!key.publicKey || key.publicKey.length !== 64) {
-        return 'Address unavailable';
-      }
-      return grinSlatpackAddress(hexToBytes(key.publicKey));
-    default:
-      return 'Unknown asset';
-  }
-}
-
-async function handleOpenClaimPopup(
-  linkId: string,
-  fragmentKey?: string
-): Promise<MessageResponse<{ opened: boolean }>> {
-  // Store pending claim data
-  pendingClaim = { linkId, fragmentKey };
-
-  // Open popup (this triggers the popup to check for pending claims)
-  // Note: chrome.action.openPopup() requires user gesture in MV3
-  // We'll store the claim data and show a notification instead
-  await notifications.create(undefined, {
-    type: 'basic',
-    iconUrl: 'icons/icon128.png',
-    title: 'Tip Ready to Claim!',
-    message: 'Click the Smirk Wallet icon to claim your tip.',
-  });
-
-  return { success: true, data: { opened: true } };
-}
-
-async function handleGetTipInfo(
-  linkId: string
-): Promise<MessageResponse<{ tip: TipInfo }>> {
-  const result = await api.getTip(linkId);
-
-  if (result.error) {
-    return { success: false, error: result.error };
-  }
-
-  return { success: true, data: { tip: result.data! } };
-}
-
-async function handleGetPendingClaim(): Promise<MessageResponse<{
-  pending: boolean;
-  linkId?: string;
-  fragmentKey?: string;
-}>> {
-  if (pendingClaim) {
-    return {
-      success: true,
-      data: {
-        pending: true,
-        linkId: pendingClaim.linkId,
-        fragmentKey: pendingClaim.fragmentKey,
-      },
-    };
-  }
-  return { success: true, data: { pending: false } };
-}
-
-async function handleClaimTip(
-  linkId: string,
-  fragmentKey?: string
-): Promise<MessageResponse<{ claimed: boolean; txHash?: string }>> {
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked' };
-  }
-
-  // 1. Fetch tip info from backend
-  const tipResult = await api.getTip(linkId);
-  if (tipResult.error || !tipResult.data) {
-    return { success: false, error: tipResult.error || 'Failed to fetch tip' };
-  }
-
-  const tip = tipResult.data;
-
-  if (tip.status !== 'funded' && tip.status !== 'pending') {
-    return { success: false, error: `Tip is not claimable (status: ${tip.status})` };
-  }
-
-  // 2. Decrypt the tip private key
-  let tipPrivateKey: Uint8Array;
-
-  try {
-    if (tip.isEncrypted && tip.ephemeralPubkey) {
-      // Encrypted tip - recipient-specific
-      const recipientKey = unlockedKeys.get(tip.asset);
-      if (!recipientKey) {
-        return { success: false, error: `No ${tip.asset} key available` };
-      }
-
-      tipPrivateKey = decryptTipPayload(
-        tip.encryptedKey,
-        tip.ephemeralPubkey,
-        recipientKey
-      );
-    } else if (fragmentKey) {
-      // Public tip - use URL fragment key
-      const keyBytes = decodeUrlFragmentKey(fragmentKey);
-      tipPrivateKey = decryptPublicTipPayload(tip.encryptedKey, keyBytes);
-    } else {
-      return { success: false, error: 'No decryption key available' };
-    }
-  } catch (err) {
-    return { success: false, error: 'Failed to decrypt tip key' };
-  }
-
-  // 3. Sweep funds to our wallet
-  // For now, just log the private key - actual sweep requires blockchain interaction
-  console.log('Decrypted tip key:', bytesToHex(tipPrivateKey));
-
-  // TODO: Create sweep transaction based on asset type
-  // - BTC/LTC: Create and broadcast transaction to our address
-  // - XMR/WOW: Import key into wallet and transfer
-  // - Grin: Slate-based receive flow
-
-  // 4. Mark as claimed on backend (once sweep tx is broadcast)
-  // const claimResult = await api.claimTip(linkId, txHash);
-
-  // Clear pending claim
-  pendingClaim = null;
-
-  return {
-    success: true,
-    data: {
-      claimed: true,
-      // txHash: actualTxHash
-    },
-  };
-}
-
-async function handleGetOnboardingState(): Promise<MessageResponse<{ state: OnboardingState | null }>> {
-  const state = await getOnboardingState();
-  return { success: true, data: { state } };
-}
-
-async function handleSaveOnboardingState(
-  state: OnboardingState
-): Promise<MessageResponse<{ saved: boolean }>> {
-  await saveOnboardingState(state);
-  return { success: true, data: { saved: true } };
-}
-
-async function handleClearOnboardingState(): Promise<MessageResponse<{ cleared: boolean }>> {
-  await clearOnboardingState();
-  return { success: true, data: { cleared: true } };
-}
-
-// ============================================================================
-// Settings Handlers
-// ============================================================================
-
-async function handleGetSettings(): Promise<MessageResponse<{ settings: UserSettings }>> {
-  const state = await getWalletState();
-  return { success: true, data: { settings: state.settings } };
-}
-
-async function handleUpdateSettings(
-  updates: Partial<UserSettings>
-): Promise<MessageResponse<{ settings: UserSettings }>> {
-  const state = await getWalletState();
-
-  // Merge updates with existing settings
-  state.settings = {
-    ...state.settings,
-    ...updates,
-  };
-
-  // Validate autoLockMinutes
-  if (updates.autoLockMinutes !== undefined) {
-    const minutes = updates.autoLockMinutes;
-    if (minutes < 0 || minutes > 240) {
-      return { success: false, error: 'Auto-lock time must be between 0 and 240 minutes' };
-    }
-    state.settings.autoLockMinutes = minutes;
-
-    // Update cache and restart auto-lock timer with new setting
-    cachedAutoLockMinutes = minutes;
-    if (isUnlocked) {
-      resetAutoLockTimer();
-    }
-  }
-
-  await saveWalletState(state);
-  return { success: true, data: { settings: state.settings } };
-}
-
-async function handleResetAutoLockTimer(): Promise<MessageResponse<{ reset: boolean }>> {
-  console.log('[AutoLock] handleResetAutoLockTimer called, isUnlocked:', isUnlocked, 'cachedAutoLockMinutes:', cachedAutoLockMinutes);
-  if (isUnlocked) {
-    // If cache is null (service worker restarted), load from storage first
-    if (cachedAutoLockMinutes === null) {
-      const state = await getWalletState();
-      cachedAutoLockMinutes = state.settings.autoLockMinutes;
-      console.log('[AutoLock] Loaded from storage:', cachedAutoLockMinutes);
-    }
-    resetAutoLockTimer();
-  }
-  return { success: true, data: { reset: true } };
-}
-
-/**
- * Resets the auto-lock timer using cached settings.
- * Uses chrome.alarms API which persists across service worker restarts.
- */
-function resetAutoLockTimer() {
-  console.log('[AutoLock] resetAutoLockTimer called, cachedAutoLockMinutes:', cachedAutoLockMinutes, 'isUnlocked:', isUnlocked);
-  // Use cached value - if not set, don't start timer (will be set on unlock)
-  if (cachedAutoLockMinutes === null || cachedAutoLockMinutes === 0 || !isUnlocked) {
-    console.log('[AutoLock] Clearing alarm (cache null, 0, or locked)');
-    alarms.clear(AUTO_LOCK_ALARM);
-    return;
-  }
-
-  // Create alarm that fires after the configured minutes
-  // delayInMinutes must be at least 1 minute in Chrome
-  const delayMinutes = Math.max(1, cachedAutoLockMinutes);
-  console.log('[AutoLock] Creating alarm with delayMinutes:', delayMinutes);
-  alarms.create(AUTO_LOCK_ALARM, { delayInMinutes: delayMinutes });
-}
-
-/**
- * Starts the auto-lock timer, loading settings from storage.
- * Call this on unlock or when settings change.
- */
-async function startAutoLockTimer() {
-  const state = await getWalletState();
-  cachedAutoLockMinutes = state.settings.autoLockMinutes;
-  console.log('[AutoLock] startAutoLockTimer loaded cachedAutoLockMinutes:', cachedAutoLockMinutes);
-
-  // Now use the fast path
-  resetAutoLockTimer();
-}
-
-/**
- * Stops the auto-lock timer.
- */
-function stopAutoLockTimer() {
-  alarms.clear(AUTO_LOCK_ALARM);
-}
+// =============================================================================
+// Auto-Lock Alarm Handler
+// =============================================================================
 
 /**
  * Handle auto-lock alarm firing.
+ *
  * Note: This runs when service worker wakes from the alarm, potentially before
  * initializeBackground() restores session state. We must clear session storage
  * directly to ensure the wallet stays locked even if the handler runs early.
@@ -1581,1102 +360,42 @@ function stopAutoLockTimer() {
 alarms.onAlarm.addListener(async (alarm) => {
   console.log('[AutoLock] Alarm fired:', alarm.name);
   if (alarm.name === AUTO_LOCK_ALARM) {
-    console.log(`[AutoLock] Auto-locking wallet due to inactivity`);
-    // Clear in-memory state
-    unlockedKeys.clear();
-    unlockedViewKeys.clear();
-    isUnlocked = false;
-    // Clear session storage directly - this is the source of truth across restarts
-    // Must await to ensure it completes before service worker sleeps again
-    await clearSessionKeys();
-    console.log('[AutoLock] Wallet locked and session cleared');
+    await handleAutoLockAlarm();
   }
 });
 
-// ============================================================================
-// UTXO / Send Handlers (BTC/LTC)
-// ============================================================================
+// =============================================================================
+// Installation Handler
+// =============================================================================
 
 /**
- * Get UTXOs for a BTC or LTC address.
+ * Handle extension installation.
  */
-async function handleGetUtxos(
-  asset: 'btc' | 'ltc',
-  address: string
-): Promise<MessageResponse<{ utxos: Utxo[] }>> {
-  const result = await api.getUtxos(asset, address);
-
-  if (result.error) {
-    return { success: false, error: result.error };
-  }
-
-  return { success: true, data: { utxos: result.data!.utxos } };
-}
-
-/**
- * Calculate maximum sendable amount for BTC/LTC.
- * Fetches UTXOs and calculates max after fees.
- */
-async function handleMaxSendableUtxo(
-  asset: 'btc' | 'ltc',
-  feeRate: number
-): Promise<MessageResponse<{ maxAmount: number }>> {
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked' };
-  }
-
-  const state = await getWalletState();
-  const key = state.keys[asset];
-  if (!key) {
-    return { success: false, error: `No ${asset} key found` };
-  }
-
-  const address = getAddressForAsset(asset, key);
-
-  // Fetch UTXOs
-  const utxoResult = await api.getUtxos(asset, address);
-  if (utxoResult.error || !utxoResult.data) {
-    return { success: false, error: utxoResult.error || 'Failed to fetch UTXOs' };
-  }
-
-  const utxos = utxoResult.data.utxos;
-  if (utxos.length === 0) {
-    return { success: true, data: { maxAmount: 0 } };
-  }
-
-  // Calculate max sendable using btc-tx helper
-  const maxAmount = maxSendableUtxo(utxos, feeRate);
-
-  return { success: true, data: { maxAmount } };
-}
-
-/**
- * Send BTC or LTC transaction.
- * Builds, signs, and broadcasts a transaction to the given recipient.
- * If sweep is true, sends all UTXOs with no change output (empties the wallet).
- */
-async function handleSendTx(
-  asset: 'btc' | 'ltc',
-  recipientAddress: string,
-  amount: number,
-  feeRate: number,
-  sweep: boolean = false
-): Promise<MessageResponse<{ txid: string; fee: number; actualAmount: number }>> {
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked' };
-  }
-
-  const privateKey = unlockedKeys.get(asset);
-  if (!privateKey) {
-    return { success: false, error: `No ${asset} key available` };
-  }
-
-  const state = await getWalletState();
-  const key = state.keys[asset];
-  if (!key) {
-    return { success: false, error: `No ${asset} key found` };
-  }
-
-  // Get our address (for change output)
-  const changeAddress = getAddressForAsset(asset, key);
-
-  // Fetch UTXOs
-  const utxoResult = await api.getUtxos(asset, changeAddress);
-  if (utxoResult.error || !utxoResult.data) {
-    return { success: false, error: utxoResult.error || 'Failed to fetch UTXOs' };
-  }
-
-  const utxos = utxoResult.data.utxos;
-  if (utxos.length === 0) {
-    return { success: false, error: 'No UTXOs available' };
-  }
-
-  try {
-    // Build and sign transaction (sweep mode uses all UTXOs, no change)
-    const { txHex, fee, actualAmount } = createSignedTransaction(
-      asset,
-      utxos,
-      recipientAddress,
-      amount,
-      changeAddress,
-      privateKey,
-      feeRate,
-      sweep
-    );
-
-    // Broadcast transaction
-    const broadcastResult = await api.broadcastTx(asset, txHex);
-    if (broadcastResult.error) {
-      return { success: false, error: broadcastResult.error };
-    }
-
-    console.log(`[Send] ${asset.toUpperCase()} tx broadcast:`, broadcastResult.data!.txid, sweep ? '(sweep)' : '');
-
-    return { success: true, data: { txid: broadcastResult.data!.txid, fee, actualAmount } };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Failed to create transaction',
-    };
-  }
-}
-
-/**
- * Get transaction history for any asset.
- * BTC/LTC use Electrum, XMR/WOW use LWS.
- */
-async function handleGetHistory(
-  asset: AssetType
-): Promise<MessageResponse<{ transactions: Array<{ txid: string; height: number; fee?: number; is_pending?: boolean; total_received?: number; total_sent?: number }> }>> {
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked' };
-  }
-
-  const state = await getWalletState();
-  const key = state.keys[asset];
-  if (!key) {
-    return { success: false, error: `No ${asset} key found` };
-  }
-
-  const address = getAddressForAsset(asset, key);
-
-  if (asset === 'btc' || asset === 'ltc') {
-    // Electrum-based history
-    const result = await api.getHistory(asset, address);
-    if (result.error) {
-      return { success: false, error: result.error };
-    }
-    return { success: true, data: { transactions: result.data!.transactions } };
-  } else if (asset === 'xmr' || asset === 'wow') {
-    // LWS-based history
-    const viewKey = unlockedViewKeys.get(asset);
-    if (!viewKey) {
-      return { success: false, error: `No ${asset} view key available` };
-    }
-
-    const result = await api.getLwsHistory(asset, address, bytesToHex(viewKey));
-    if (result.error) {
-      return { success: false, error: result.error };
-    }
-
-    // Map LWS format to common format
-    const transactions = result.data!.transactions.map(tx => ({
-      txid: tx.txid,
-      height: tx.height,
-      is_pending: tx.is_pending,
-      total_received: tx.total_received,
-      total_sent: tx.total_sent,
-    }));
-
-    return { success: true, data: { transactions } };
-  } else if (asset === 'grin') {
-    // Grin history from backend grin_transactions table
-    const authState = await getAuthState();
-    if (!authState?.userId) {
-      return { success: false, error: 'Not authenticated' };
-    }
-
-    const result = await api.getGrinUserHistory(authState.userId);
-    if (result.error) {
-      return { success: false, error: result.error };
-    }
-
-    // Map to common format - use slate_id as txid equivalent
-    const transactions = result.data!.transactions.map(tx => ({
-      txid: tx.slate_id,
-      height: tx.status === 'confirmed' ? 1 : 0, // Placeholder - we don't track block height yet
-      is_pending: tx.status === 'pending' || tx.status === 'signed',
-      is_cancelled: tx.status === 'cancelled',
-      status: tx.status,
-      direction: tx.direction,
-      total_received: tx.direction === 'receive' ? tx.amount : 0,
-      total_sent: tx.direction === 'send' ? tx.amount + tx.fee : 0,
-      kernel_excess: tx.kernel_excess ?? undefined,
-    }));
-
-    return { success: true, data: { transactions } };
-  } else {
-    return { success: false, error: `History not supported for ${asset}` };
-  }
-}
-
-/**
- * Estimate fee rates for BTC or LTC.
- */
-async function handleEstimateFee(
-  asset: 'btc' | 'ltc'
-): Promise<MessageResponse<{ fast: number | null; normal: number | null; slow: number | null }>> {
-  const result = await api.estimateFee(asset);
-
-  if (result.error) {
-    return { success: false, error: result.error };
-  }
-
-  return {
-    success: true,
-    data: {
-      fast: result.data!.fast,
-      normal: result.data!.normal,
-      slow: result.data!.slow,
-    },
-  };
-}
-
-/**
- * Get wallet keys for XMR/WOW (needed for client-side tx signing).
- * Returns address, view key, and spend key.
- */
-async function handleGetWalletKeys(
-  asset: 'xmr' | 'wow'
-): Promise<MessageResponse<{ address: string; viewKey: string; spendKey: string }>> {
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked' };
-  }
-
-  const spendKey = unlockedKeys.get(asset);
-  const viewKey = unlockedViewKeys.get(asset);
-
-  if (!spendKey || !viewKey) {
-    return { success: false, error: `No ${asset} keys available` };
-  }
-
-  const state = await getWalletState();
-  const key = state.keys[asset];
-  if (!key) {
-    return { success: false, error: `No ${asset} key found` };
-  }
-
-  // Get address
-  const address = getAddressForAsset(asset, key);
-
-  return {
-    success: true,
-    data: {
-      address,
-      viewKey: bytesToHex(viewKey),
-      spendKey: bytesToHex(spendKey),
-    },
-  };
-}
-
-/**
- * Add a pending outgoing transaction to track.
- */
-async function handleAddPendingTx(
-  txHash: string,
-  asset: AssetType,
-  amount: number,
-  fee: number
-): Promise<MessageResponse<{ added: boolean }>> {
-  await addPendingTx({
-    txHash,
-    asset,
-    amount,
-    fee,
-    timestamp: Date.now(),
-  });
-  return { success: true, data: { added: true } };
-}
-
-/**
- * Get pending outgoing transactions for an asset.
- */
-async function handleGetPendingTxs(
-  asset: AssetType
-): Promise<MessageResponse<{ pending: Array<{ txHash: string; amount: number; fee: number; timestamp: number }> }>> {
-  const pending = await getPendingTxs(asset);
-  return {
-    success: true,
-    data: {
-      pending: pending.map(tx => ({
-        txHash: tx.txHash,
-        amount: tx.amount,
-        fee: tx.fee,
-        timestamp: tx.timestamp,
-      })),
-    },
-  };
-}
-
-// ============================================================================
-// Grin WASM Wallet Handlers
-// ============================================================================
-
-/**
- * Initialize the Grin WASM wallet and return the slatepack address.
- * This derives the proper Grin keys using the MWC wallet's derivation.
- *
- * Keys can be initialized from:
- * 1. Cached grinWasmKeys (already initialized this session)
- * 2. Session storage (restored after service worker restart)
- * 3. Mnemonic (fresh unlock - derives keys and persists to session)
- */
-async function handleInitGrinWallet(): Promise<MessageResponse<{
-  slatepackAddress: string;
-}>> {
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked' };
-  }
-
-  // Return cached keys if already initialized (or restored from session)
-  if (grinWasmKeys) {
-    return {
-      success: true,
-      data: { slatepackAddress: grinWasmKeys.slatepackAddress },
-    };
-  }
-
-  // MWC Seed class requires the mnemonic string, not the 64-byte BIP39 seed
-  // Valid seed lengths for MWC are 16/20/24/28/32 bytes (raw entropy), not 64 bytes
-  if (!unlockedMnemonic) {
-    return { success: false, error: 'Mnemonic not available - please re-unlock wallet' };
-  }
-
-  try {
-    // Initialize Grin WASM wallet with mnemonic
-    grinWasmKeys = await initGrinWallet(unlockedMnemonic);
-
-    // Persist the extended key to session storage so it survives service worker restarts
-    // NOTE: We only store the extended key, NOT the mnemonic - this limits exposure to Grin only
-    await persistSessionKeys();
-
-    return {
-      success: true,
-      data: { slatepackAddress: grinWasmKeys.slatepackAddress },
-    };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Failed to initialize Grin wallet',
-    };
-  }
-}
-
-/**
- * Get pending slatepacks for the current user.
- */
-async function handleGetGrinPendingSlatepacks(): Promise<MessageResponse<{
-  pendingToSign: Array<{
-    id: string;
-    slateId: string;
-    senderUserId: string;
-    amount: number;
-    slatepack: string;
-    createdAt: string;
-    expiresAt: string;
-  }>;
-  pendingToFinalize: Array<{
-    id: string;
-    slateId: string;
-    senderUserId: string;
-    amount: number;
-    slatepack: string;
-    createdAt: string;
-    expiresAt: string;
-  }>;
-}>> {
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked' };
-  }
-
-  try {
-    const authState = await getAuthState();
-    if (!authState?.userId) {
-      return { success: false, error: 'Not authenticated' };
-    }
-
-    const result = await api.getGrinPendingSlatepacks(authState.userId);
-    if (result.error) {
-      return { success: false, error: result.error };
-    }
-
-    return {
-      success: true,
-      data: {
-        pendingToSign: result.data!.pending_to_sign.map(s => ({
-          id: s.id,
-          slateId: s.slate_id,
-          senderUserId: s.sender_user_id,
-          amount: s.amount,
-          slatepack: s.slatepack,
-          createdAt: s.created_at,
-          expiresAt: s.expires_at,
-        })),
-        pendingToFinalize: result.data!.pending_to_finalize.map(s => ({
-          id: s.id,
-          slateId: s.slate_id,
-          senderUserId: s.sender_user_id,
-          amount: s.amount,
-          slatepack: s.slatepack,
-          createdAt: s.created_at,
-          expiresAt: s.expires_at,
-        })),
-      },
-    };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Failed to fetch pending slatepacks',
-    };
-  }
-}
-
-/**
- * Sign an incoming slate as recipient.
- * Decodes the slatepack, signs it with our keys, encodes response, and submits to relay.
- */
-async function handleGrinSignSlate(
-  relayId: string,
-  slatepack: string
-): Promise<MessageResponse<{ signed: boolean }>> {
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked' };
-  }
-
-  try {
-    // Ensure Grin WASM wallet is initialized
-    if (!grinWasmKeys) {
-      if (!unlockedMnemonic) {
-        return { success: false, error: 'Mnemonic not available - please re-unlock wallet' };
-      }
-      grinWasmKeys = await initGrinWallet(unlockedMnemonic);
-    }
-
-    // Get auth state for user ID
-    const authState = await getAuthState();
-    if (!authState?.userId) {
-      return { success: false, error: 'Not authenticated' };
-    }
-
-    // Get the next available child index for key derivation
-    // This ensures we don't reuse blinding factors (which would create duplicate commitments)
-    const outputsResult = await api.getGrinOutputs(authState.userId);
-    if (outputsResult.error) {
-      return { success: false, error: `Failed to fetch outputs: ${outputsResult.error}` };
-    }
-    const nextChildIndex = outputsResult.data?.next_child_index ?? 0;
-    console.log(`[Grin] Using next_child_index: ${nextChildIndex}`);
-
-    // Sign the slate (decodes, adds our signature, returns S2 slate and output info)
-    const { slate: signedSlate, outputInfo } = await signSlate(grinWasmKeys, slatepack, nextChildIndex);
-
-    // Encode the signed slate as a slatepack response for the sender
-    const signedSlatepack = await encodeSlatepack(grinWasmKeys, signedSlate, 'response');
-
-    // Submit signed slatepack to relay
-    const result = await api.signGrinSlatepack({
-      relayId,
-      userId: authState.userId,
-      signedSlatepack,
-    });
-
-    if (result.error) {
-      return { success: false, error: result.error };
-    }
-
-    // Record the received output to the backend so balance is updated
-    try {
-      const recordResult = await api.recordGrinOutput({
-        userId: authState.userId,
-        keyId: outputInfo.keyId,
-        nChild: outputInfo.nChild,
-        amount: Number(outputInfo.amount),
-        commitment: outputInfo.commitment,
-        txSlateId: signedSlate.id,
-      });
-      if (recordResult.error) {
-        console.warn('[Grin] Failed to record output (non-fatal):', recordResult.error);
-      } else {
-        console.log(`[Grin] Recorded output ${outputInfo.commitment} for ${outputInfo.amount} nanogrin`);
-      }
-    } catch (recordErr) {
-      console.warn('[Grin] Failed to record output (non-fatal):', recordErr);
-    }
-
-    console.log(`[Grin] Signed slate ${signedSlate.id}, amount: ${signedSlate.amount} nanogrin`);
-
-    return { success: true, data: { signed: true } };
-  } catch (err) {
-    console.error('[Grin] Failed to sign slate:', err);
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Failed to sign slate',
-    };
-  }
-}
-
-/**
- * Finalize a slate and broadcast.
- * Decodes the signed slatepack from recipient, finalizes it, and submits for broadcast.
- *
- * NOTE: This requires the original S1 slate and sender's secret nonce from when the
- * transaction was initiated. Currently not implemented - the relay workflow has the
- * sender finalize client-side, but we'd need to store slate state to support this.
- *
- * TODO: Implement slate state storage for sender-initiated transactions
- */
-async function handleGrinFinalizeSlate(
-  _relayId: string,
-  _slatepack: string
-): Promise<MessageResponse<{ broadcast: boolean; txid?: string }>> {
-  // Finalization requires the original S1 slate and sender's secret nonce
-  // which we don't currently store. This flow needs additional implementation.
-  return {
-    success: false,
-    error: 'Grin send/finalize flow not yet implemented. Use receive flow for now.',
-  };
-}
-
-/**
- * Sign a slatepack directly (no relay).
- * This is for the standard Grin receive flow:
- * 1. Sender creates S1 slatepack and gives it to receiver (out of band)
- * 2. Receiver pastes S1 here, signs it, gets S2 slatepack back
- * 3. Receiver gives S2 back to sender (out of band)
- * 4. Sender finalizes and broadcasts
- */
-async function handleGrinSignSlatepack(
-  slatepackString: string
-): Promise<MessageResponse<{ signedSlatepack: string; slateId: string; amount: number }>> {
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked' };
-  }
-
-  try {
-    // Ensure Grin WASM wallet is initialized
-    if (!grinWasmKeys) {
-      if (!unlockedMnemonic) {
-        return { success: false, error: 'Mnemonic not available - please re-unlock wallet' };
-      }
-      grinWasmKeys = await initGrinWallet(unlockedMnemonic);
-    }
-
-    // Get auth state for user ID (needed to record output)
-    const authState = await getAuthState();
-    if (!authState?.userId) {
-      return { success: false, error: 'Not authenticated' };
-    }
-
-    // Get the next available child index for key derivation
-    // This ensures we don't reuse blinding factors (which would create duplicate commitments)
-    const outputsResult = await api.getGrinOutputs(authState.userId);
-    if (outputsResult.error) {
-      return { success: false, error: `Failed to fetch outputs: ${outputsResult.error}` };
-    }
-    const nextChildIndex = outputsResult.data?.next_child_index ?? 0;
-    console.log(`[Grin] Using next_child_index: ${nextChildIndex}`);
-
-    // Sign the slate (decodes S1, adds our signature, returns S2 slate and output info)
-    const { slate: signedSlate, outputInfo } = await signSlate(grinWasmKeys, slatepackString, nextChildIndex);
-
-    // Encode the signed slate as a slatepack response
-    const signedSlatepack = await encodeSlatepack(grinWasmKeys, signedSlate, 'response');
-
-    console.log(`[Grin] Signed slatepack, amount: ${signedSlate.amount} nanogrin, output: ${outputInfo.commitment}`);
-
-    // Record the received output to the backend so balance is updated
-    // The output is created when we sign (receive) - it will be spendable after tx confirms
-    console.log('[Grin] Recording output to backend...', {
-      userId: authState.userId,
-      keyId: outputInfo.keyId,
-      nChild: outputInfo.nChild,
-      amount: Number(outputInfo.amount),
-      commitment: outputInfo.commitment,
-      txSlateId: signedSlate.id,
-    });
-    try {
-      const recordResult = await api.recordGrinOutput({
-        userId: authState.userId,
-        keyId: outputInfo.keyId,
-        nChild: outputInfo.nChild,
-        amount: Number(outputInfo.amount),
-        commitment: outputInfo.commitment,
-        txSlateId: signedSlate.id,
-      });
-      console.log('[Grin] recordGrinOutput result:', JSON.stringify(recordResult));
-      if (recordResult.error) {
-        console.error('[Grin] Failed to record output:', recordResult.error);
-      } else {
-        console.log(`[Grin] Recorded output ${outputInfo.commitment} for ${outputInfo.amount} nanogrin, id: ${recordResult.data?.id}`);
-      }
-    } catch (recordErr) {
-      // Non-fatal - the signing worked, we just couldn't record the output
-      // User can still give slatepack to sender, balance will be wrong until fixed
-      console.error('[Grin] Exception recording output:', recordErr);
-    }
-
-    // Record the transaction so it shows up in balance and history
-    // Status starts as 'pending' - will become 'confirmed' when tx is mined
-    console.log('[Grin] Recording transaction to backend...', {
-      userId: authState.userId,
-      slateId: signedSlate.id,
-      amount: Number(signedSlate.amount),
-      direction: 'receive',
-    });
-    try {
-      const txResult = await api.recordGrinTransaction({
-        userId: authState.userId,
-        slateId: signedSlate.id,
-        amount: Number(signedSlate.amount),
-        fee: 0, // Receiver doesn't pay fee
-        direction: 'receive',
-      });
-      console.log('[Grin] recordGrinTransaction result:', JSON.stringify(txResult));
-      if (txResult.error) {
-        console.error('[Grin] Failed to record transaction:', txResult.error);
-      } else {
-        console.log(`[Grin] Recorded receive transaction ${signedSlate.id}, id: ${txResult.data?.id}`);
-      }
-    } catch (txErr) {
-      console.error('[Grin] Exception recording transaction:', txErr);
-    }
-
-    return {
-      success: true,
-      data: {
-        signedSlatepack,
-        slateId: signedSlate.id,
-        amount: Number(signedSlate.amount),
-      },
-    };
-  } catch (err) {
-    console.error('[Grin] Failed to sign slatepack:', err);
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Failed to sign slatepack',
-    };
-  }
-}
-
-/**
- * Cancel a pending slatepack.
- */
-async function handleGrinCancelSlate(
-  relayId: string
-): Promise<MessageResponse<{ success: boolean }>> {
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked' };
-  }
-
-  try {
-    const authState = await getAuthState();
-    if (!authState?.userId) {
-      return { success: false, error: 'Not authenticated' };
-    }
-
-    const result = await api.cancelGrinSlatepack({
-      relayId,
-      userId: authState.userId,
-    });
-
-    if (result.error) {
-      return { success: false, error: result.error };
-    }
-
-    return { success: true, data: { success: true } };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Failed to cancel slatepack',
-    };
-  }
-}
-
-/**
- * Create a Grin send transaction (S1 slatepack).
- * Fetches UTXOs from backend, builds transaction with proper inputs/outputs.
- */
-async function handleGrinCreateSend(
-  amount: number,
-  fee: number,
-  recipientAddress?: string
-): Promise<MessageResponse<{
-  slatepack: string;
-  slateId: string;
-  sendContext: import('@/types').GrinSendContext;
-}>> {
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked' };
-  }
-
-  try {
-    // Ensure Grin WASM wallet is initialized
-    if (!grinWasmKeys) {
-      if (!unlockedMnemonic) {
-        return { success: false, error: 'Mnemonic not available - please re-unlock wallet' };
-      }
-      grinWasmKeys = await initGrinWallet(unlockedMnemonic);
-    }
-
-    // Get auth state for user ID
-    const authState = await getAuthState();
-    if (!authState?.userId) {
-      return { success: false, error: 'Not authenticated' };
-    }
-
-    // Fetch UTXOs from backend
-    const outputsResult = await api.getGrinOutputs(authState.userId);
-    if (outputsResult.error) {
-      return { success: false, error: `Failed to fetch outputs: ${outputsResult.error}` };
-    }
-
-    const { outputs: rawOutputs, next_child_index: nextChildIndex } = outputsResult.data!;
-
-    // Filter to only unspent outputs and convert to GrinOutput format
-    const outputs: GrinOutput[] = rawOutputs
-      .filter(o => o.status === 'unspent')
-      .map(o => ({
-        id: o.id,
-        keyId: o.key_id,
-        nChild: o.n_child,
-        amount: BigInt(o.amount),
-        commitment: o.commitment,
-        isCoinbase: o.is_coinbase,
-        blockHeight: o.block_height ?? undefined,
-      }));
-
-    if (outputs.length === 0) {
-      return { success: false, error: 'No unspent outputs available' };
-    }
-
-    // Get current blockchain height
-    const heightsResult = await api.getBlockchainHeights();
-    if (heightsResult.error || !heightsResult.data?.grin) {
-      return { success: false, error: 'Failed to get blockchain height' };
-    }
-    const currentHeight = BigInt(heightsResult.data.grin);
-
-    // Create the send transaction
-    const result = await createSendTransaction(
-      grinWasmKeys,
-      outputs,
-      BigInt(amount),
-      BigInt(fee),
-      currentHeight,
-      nextChildIndex,
-      recipientAddress
-    );
-
-    // Record the transaction FIRST (so lock can reference it)
-    await api.recordGrinTransaction({
-      userId: authState.userId,
-      slateId: result.slate.id,
-      amount,
-      fee,
-      direction: 'send',
-      counterpartyAddress: recipientAddress,
-    });
-
-    // Lock the inputs on the backend (must be after recordGrinTransaction)
-    // This sets spent_in_tx_id to link outputs to the transaction
-    await api.lockGrinOutputs({
-      userId: authState.userId,
-      outputIds: result.inputIds,
-      txSlateId: result.slate.id,
-    });
-
-    // Build send context for later finalization
-    // Include serialized S1 slate - needed to decode compact S2 response
-    const serializedS1Base64 = result.slate.serialized
-      ? btoa(String.fromCharCode(...result.slate.serialized))
-      : '';
-
-    // Extract inputs from the raw slate - needed for finalization since compact S2 doesn't include them
-    console.log('[Grin] result.slate.raw type:', typeof result.slate.raw);
-    console.log('[Grin] result.slate.raw.getInputs type:', typeof result.slate.raw.getInputs);
-    const rawInputs = result.slate.raw.getInputs?.() || [];
-    console.log('[Grin] rawInputs from slate:', rawInputs, 'length:', rawInputs.length);
-    if (rawInputs.length === 0) {
-      console.error('[Grin] CRITICAL: No inputs extracted from slate.raw.getInputs()!');
-    }
-    const inputs = rawInputs.map((input: any) => ({
-      commitment: bytesToHex(input.getCommit()),
-      features: input.getFeatures(),
-    }));
-    console.log(`[Grin] Storing ${inputs.length} inputs in sendContext for finalization`);
-
-    // Extract offset from slate - compact S1 serialization writes zero but we need the real value
-    const rawOffset = result.slate.raw.getOffset?.();
-    const senderOffset = rawOffset ? bytesToHex(rawOffset) : '';
-    console.log(`[Grin] Storing sender offset: ${senderOffset.substring(0, 16)}...`);
-
-    const sendContext: import('@/types').GrinSendContext = {
-      slateId: result.slate.id,
-      secretKey: bytesToHex(result.secretKey),
-      secretNonce: bytesToHex(result.secretNonce),
-      inputIds: result.inputIds,
-      serializedS1Slate: serializedS1Base64,
-      inputs,
-      senderOffset,
-      changeOutput: result.changeOutput ? {
-        keyId: result.changeOutput.keyId,
-        nChild: result.changeOutput.nChild,
-        amount: Number(result.changeOutput.amount),
-        commitment: result.changeOutput.commitment,
-        proof: result.changeOutput.proof,
-      } : undefined,
-    };
-
-    // Clear sensitive data from memory
-    result.secretKey.fill(0);
-    result.secretNonce.fill(0);
-
-    console.log(`[Grin] Created send slate ${result.slate.id}, amount: ${amount} nanogrin`);
-
-    return {
-      success: true,
-      data: {
-        slatepack: result.slatepack,
-        slateId: result.slate.id,
-        sendContext,
-      },
-    };
-  } catch (err) {
-    console.error('[Grin] Failed to create send transaction:', err);
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Failed to create send transaction',
-    };
-  }
-}
-
-/**
- * Finalize a Grin transaction and broadcast it.
- * Takes S2 slatepack from receiver, finalizes to S3, broadcasts to network.
- */
-async function handleGrinFinalizeAndBroadcast(
-  slatepackString: string,
-  sendContext: import('@/types').GrinSendContext
-): Promise<MessageResponse<{ broadcast: boolean; txid?: string }>> {
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked' };
-  }
-
-  try {
-    // Ensure Grin WASM wallet is initialized
-    if (!grinWasmKeys) {
-      if (!unlockedMnemonic) {
-        return { success: false, error: 'Mnemonic not available - please re-unlock wallet' };
-      }
-      grinWasmKeys = await initGrinWallet(unlockedMnemonic);
-    }
-
-    const authState = await getAuthState();
-    if (!authState?.userId) {
-      return { success: false, error: 'Not authenticated' };
-    }
-
-    // Decode sendContext secrets
-    const secretKey = hexToBytes(sendContext.secretKey);
-    const secretNonce = hexToBytes(sendContext.secretNonce);
-
-    // Reconstruct the S1 slate from serialized data
-    // This is needed because compact S2 slates don't include all fields (amount, fee, etc.)
-    // and the parser falls back to the initial slate
-    if (!sendContext.serializedS1Slate) {
-      return { success: false, error: 'Missing serialized S1 slate - cannot finalize' };
-    }
-
-    // Decode base64 to Uint8Array
-    const serializedBytes = Uint8Array.from(atob(sendContext.serializedS1Slate), c => c.charCodeAt(0));
-    // Create slate from serialized data
-    const { reconstructSlateFromSerialized, addInputsToSlate, addOutputsToSlate } = await import('@/lib/grin');
-    const initialSlate = await reconstructSlateFromSerialized(serializedBytes);
-    console.log('[Grin] Reconstructed S1 slate for finalization, id:', initialSlate.id);
-
-    // Add inputs to the reconstructed slate - compact S1 serialization doesn't include them
-    console.log('[Grin] sendContext.inputs:', sendContext.inputs);
-    if (sendContext.inputs && sendContext.inputs.length > 0) {
-      console.log('[Grin] Adding', sendContext.inputs.length, 'inputs to reconstructed S1 slate');
-      console.log('[Grin] Input commitments:', sendContext.inputs.map(i => i.commitment.substring(0, 16) + '...'));
-      await addInputsToSlate(initialSlate, sendContext.inputs);
-      const inputCount = initialSlate.raw.getInputs?.()?.length ?? 0;
-      console.log('[Grin] Inputs added to S1 slate, verified count:', inputCount);
-      if (inputCount === 0) {
-        console.error('[Grin] CRITICAL: addInputsToSlate did not add inputs to slate!');
-      }
-    } else {
-      console.error('[Grin] CRITICAL: No inputs in sendContext! This sendContext was created before the fix.');
-      console.error('[Grin] Please cancel this transaction and create a new one.');
-      return { success: false, error: 'Transaction state is outdated. Please cancel and create a new send.' };
-    }
-
-    // Add change output to the reconstructed slate - compact S1 serialization doesn't include outputs
-    if (sendContext.changeOutput?.proof) {
-      console.log('[Grin] Adding change output to reconstructed S1 slate');
-      console.log('[Grin] Change commitment:', sendContext.changeOutput.commitment.substring(0, 16) + '...');
-      await addOutputsToSlate(initialSlate, [{
-        commitment: sendContext.changeOutput.commitment,
-        proof: sendContext.changeOutput.proof,
-      }]);
-      const outputCount = initialSlate.raw.getOutputs?.()?.length ?? 0;
-      console.log('[Grin] Outputs added to S1 slate, verified count:', outputCount);
-    } else if (sendContext.changeOutput) {
-      // Old sendContext without proof - need to cancel and recreate
-      console.error('[Grin] CRITICAL: sendContext.changeOutput missing proof. Created before fix.');
-      return { success: false, error: 'Transaction state is outdated (missing output proof). Please cancel and create a new send.' };
-    } else {
-      console.log('[Grin] No change output (exact amount send)');
-    }
-
-    // Check sender's offset - for new transactions, offset is zero (not created for compact slates)
-    // For old transactions, we stored a non-zero offset but can't use it (receiver didn't know about it)
-    if (sendContext.senderOffset) {
-      const isZeroOffset = sendContext.senderOffset === '0'.repeat(64);
-      console.log('[Grin] Sender offset:', isZeroOffset ? 'zero (correct)' : sendContext.senderOffset.substring(0, 16) + '... (non-zero)');
-      if (!isZeroOffset) {
-        // Old transaction with non-zero offset - this won't work because receiver used zero
-        console.warn('[Grin] Non-zero offset detected. This transaction may have been created before the fix.');
-        console.warn('[Grin] The receiver used zero offset, so finalization may fail.');
-      }
-    } else {
-      console.log('[Grin] No senderOffset stored - using zero offset (default)');
-    }
-
-    // Finalize the slate (S2 -> S3)
-    const finalizedSlate = await finalizeSlate(
-      grinWasmKeys,
-      slatepackString,
-      initialSlate,
-      secretKey,
-      secretNonce
-    );
-
-    // Clear sensitive data
-    secretKey.fill(0);
-    secretNonce.fill(0);
-
-    // Get the transaction JSON for broadcast
-    // Using tx JSON instead of slatepack avoids format compatibility issues
-    const { getTransactionJson } = await import('@/lib/grin');
-    const txJson = getTransactionJson(finalizedSlate);
-    console.log('[Grin] Transaction JSON for broadcast:', JSON.stringify(txJson).substring(0, 100) + '...');
-
-    // Broadcast to network via backend
-    const broadcastResult = await api.broadcastGrinTransaction({
-      userId: authState.userId,
-      slateId: sendContext.slateId,
-      tx: txJson,
-    });
-
-    if (broadcastResult.error) {
-      // Unlock inputs on failure
-      await api.unlockGrinOutputs({ userId: authState.userId, txSlateId: sendContext.slateId });
-      return { success: false, error: `Broadcast failed: ${broadcastResult.error}` };
-    }
-
-    // Mark inputs as spent
-    await api.spendGrinOutputs({
-      userId: authState.userId,
-      txSlateId: sendContext.slateId,
-    });
-
-    // Record change output if any
-    if (sendContext.changeOutput) {
-      await api.recordGrinOutput({
-        userId: authState.userId,
-        keyId: sendContext.changeOutput.keyId,
-        nChild: sendContext.changeOutput.nChild,
-        amount: sendContext.changeOutput.amount,
-        commitment: sendContext.changeOutput.commitment,
-        txSlateId: sendContext.slateId,
-      });
-    }
-
-    // Update transaction status
-    await api.updateGrinTransaction({
-      userId: authState.userId,
-      slateId: sendContext.slateId,
-      status: 'finalized',
-    });
-
-    console.log(`[Grin] Finalized and broadcast slate ${sendContext.slateId}`);
-
-    return {
-      success: true,
-      data: { broadcast: true },
-    };
-  } catch (err) {
-    console.error('[Grin] Failed to finalize and broadcast:', err);
-
-    // Try to unlock inputs on error
-    try {
-      const auth = await getAuthState();
-      if (auth?.userId) {
-        await api.unlockGrinOutputs({ userId: auth.userId, txSlateId: sendContext.slateId });
-      }
-    } catch {
-      // Ignore unlock errors
-    }
-
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Failed to finalize transaction',
-    };
-  }
-}
-
-/**
- * Cancel a Grin send transaction.
- * Unlocks the inputs and marks the transaction as cancelled.
- */
-async function handleGrinCancelSend(
-  slateId: string,
-  _inputIds: string[] // Deprecated - backend now looks up outputs by slate_id
-): Promise<MessageResponse<{ cancelled: boolean }>> {
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked' };
-  }
-
-  const authState = await getAuthState();
-  if (!authState?.userId) {
-    return { success: false, error: 'Not authenticated' };
-  }
-
-  try {
-    // Unlock the inputs (backend finds them by slate_id)
-    await api.unlockGrinOutputs({ userId: authState.userId, txSlateId: slateId });
-
-    // Mark transaction as cancelled
-    await api.updateGrinTransaction({
-      userId: authState.userId,
-      slateId,
-      status: 'cancelled',
-    });
-
-    console.log(`[Grin] Cancelled send slate ${slateId}`);
-
-    return {
-      success: true,
-      data: { cancelled: true },
-    };
-  } catch (err) {
-    console.error('[Grin] Failed to cancel send:', err);
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Failed to cancel transaction',
-    };
-  }
-}
-
-// Listen for extension installation
 runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
     console.log('Smirk Wallet installed');
   }
 });
 
-// Initialize on startup - load auth state and restore session
-async function initializeBackground() {
-  // Debug: Log stored auto-lock setting on startup
-  const walletState = await getWalletState();
-  console.log('[AutoLock] Stored autoLockMinutes on startup:', walletState.settings.autoLockMinutes);
+// =============================================================================
+// Initialization
+// =============================================================================
 
+/**
+ * Initialize background service worker.
+ *
+ * Called on startup to:
+ * 1. Restore unlock state from session storage (if any)
+ * 2. Restore auto-lock timer if wallet was unlocked
+ * 3. Refresh authentication token if expired
+ */
+async function initializeBackground(): Promise<void> {
   // Try to restore unlock state from session storage (survives service worker restarts)
   const restored = await restoreSessionKeys();
   if (restored) {
     // Also restore cached auto-lock minutes so timer works correctly
-    cachedAutoLockMinutes = walletState.settings.autoLockMinutes;
+    const walletState = await getWalletState();
+    setCachedAutoLockMinutes(walletState.settings.autoLockMinutes);
     console.log('[Session] Restored unlock state, cachedAutoLockMinutes:', cachedAutoLockMinutes);
 
     // Check if there's already an alarm set; if not, create one
@@ -2690,6 +409,7 @@ async function initializeBackground() {
     }
   }
 
+  // Restore authentication state
   const authState = await getAuthState();
   if (authState) {
     // Check if token is expired
@@ -2715,466 +435,15 @@ async function initializeBackground() {
   }
 }
 
-// ============================================================================
-// window.smirk API Handlers
-// ============================================================================
-
-/**
- * Main handler for window.smirk API requests from content script.
- */
-async function handleSmirkApi(
-  method: string,
-  params: unknown,
-  origin: string,
-  siteName: string,
-  favicon?: string
-): Promise<MessageResponse> {
-  console.log(`[SmirkAPI] ${method} from ${origin}`);
-
-  switch (method) {
-    case 'connect':
-      return handleSmirkConnect(origin, siteName, favicon);
-
-    case 'isConnected':
-      return handleSmirkIsConnected(origin);
-
-    case 'disconnect':
-      return handleSmirkDisconnect(origin);
-
-    case 'signMessage': {
-      const { message } = params as { message: string };
-      return handleSmirkSignMessage(origin, siteName, favicon, message);
-    }
-
-    case 'getPublicKeys':
-      return handleSmirkGetPublicKeys(origin);
-
-    default:
-      return { success: false, error: `Unknown method: ${method}` };
-  }
-}
-
-/**
- * Handle connect request - prompts user for approval, returns public keys.
- */
-async function handleSmirkConnect(
-  origin: string,
-  siteName: string,
-  favicon?: string
-): Promise<MessageResponse> {
-  // Check if wallet exists and is unlocked
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked. Please unlock your Smirk wallet first.' };
-  }
-
-  // Check if already connected
-  const connected = await isOriginConnected(origin);
-  if (connected) {
-    // Already connected, just return public keys
-    await touchConnectedSite(origin);
-    return await getPublicKeysResponse();
-  }
-
-  // Not connected - need user approval
-  return openApprovalPopup('connect', origin, siteName, favicon);
-}
-
-/**
- * Handle isConnected request.
- */
-async function handleSmirkIsConnected(origin: string): Promise<MessageResponse<boolean>> {
-  const connected = await isOriginConnected(origin);
-  return { success: true, data: connected };
-}
-
-/**
- * Handle disconnect request.
- */
-async function handleSmirkDisconnect(origin: string): Promise<MessageResponse> {
-  await removeConnectedSite(origin);
-  return { success: true, data: { disconnected: true } };
-}
-
-/**
- * Handle signMessage request - prompts user for approval, returns signatures.
- */
-async function handleSmirkSignMessage(
-  origin: string,
-  siteName: string,
-  favicon: string | undefined,
-  message: string
-): Promise<MessageResponse> {
-  // Check if wallet is unlocked
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked. Please unlock your Smirk wallet first.' };
-  }
-
-  // Check if connected
-  const connected = await isOriginConnected(origin);
-  if (!connected) {
-    return { success: false, error: 'Site is not connected. Call connect() first.' };
-  }
-
-  // Need user approval for signing
-  return openApprovalPopup('sign', origin, siteName, favicon, message);
-}
-
-/**
- * Handle getPublicKeys request - returns public keys only if already connected.
- */
-async function handleSmirkGetPublicKeys(origin: string): Promise<MessageResponse> {
-  const connected = await isOriginConnected(origin);
-  if (!connected) {
-    return { success: true, data: null };
-  }
-
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked' };
-  }
-
-  await touchConnectedSite(origin);
-  return await getPublicKeysResponse();
-}
-
-/**
- * Opens an approval popup and returns a promise that resolves when user responds.
- */
-function openApprovalPopup(
-  type: 'connect' | 'sign',
-  origin: string,
-  siteName: string,
-  favicon?: string,
-  message?: string
-): Promise<MessageResponse> {
-  return new Promise((resolve, reject) => {
-    const id = `${++approvalRequestId}`;
-
-    // Store the pending request
-    pendingApprovals.set(id, {
-      id,
-      type,
-      origin,
-      siteName,
-      favicon,
-      message,
-      resolve,
-      reject,
-    });
-
-    // Open approval popup
-    const popupUrl = runtime.getURL(`popup.html?mode=approve&requestId=${id}`);
-
-    windows.create({
-      url: popupUrl,
-      type: 'popup',
-      width: 400,
-      height: type === 'sign' ? 500 : 400,
-      focused: true,
-    }).then((window) => {
-      if (window?.id) {
-        const pending = pendingApprovals.get(id);
-        if (pending) {
-          pending.windowId = window.id;
-        }
-      }
-    }).catch((err) => {
-      pendingApprovals.delete(id);
-      reject(err);
-    });
-
-    // Timeout after 5 minutes
-    setTimeout(() => {
-      if (pendingApprovals.has(id)) {
-        pendingApprovals.delete(id);
-        resolve({ success: false, error: 'Approval request timed out' });
-      }
-    }, 5 * 60 * 1000);
-  });
-}
-
-/**
- * Handle approval response from popup.
- */
-async function handleApprovalResponse(
-  requestId: string,
-  approved: boolean
-): Promise<MessageResponse> {
-  const pending = pendingApprovals.get(requestId);
-  if (!pending) {
-    return { success: false, error: 'No pending approval request found' };
-  }
-
-  pendingApprovals.delete(requestId);
-
-  // Close the approval window if it's still open
-  if (pending.windowId) {
-    try {
-      await windows.remove(pending.windowId);
-    } catch {
-      // Window may already be closed
-    }
-  }
-
-  if (!approved) {
-    pending.resolve({ success: false, error: 'User rejected the request' });
-    return { success: true, data: { handled: true } };
-  }
-
-  // User approved
-  if (pending.type === 'connect') {
-    // Add to connected sites
-    await addConnectedSite({
-      origin: pending.origin,
-      name: pending.siteName,
-      favicon: pending.favicon,
-      connectedAt: Date.now(),
-      lastUsed: Date.now(),
-    });
-
-    // Return public keys
-    pending.resolve(await getPublicKeysResponse());
-  } else if (pending.type === 'sign') {
-    // Sign the message with all keys
-    try {
-      const signatures = await signMessageWithAllKeys(pending.message!);
-      pending.resolve({
-        success: true,
-        data: {
-          message: pending.message,
-          signatures,
-        },
-      });
-    } catch (err) {
-      pending.resolve({
-        success: false,
-        error: err instanceof Error ? err.message : 'Signing failed',
-      });
-    }
-  }
-
-  return { success: true, data: { handled: true } };
-}
-
-/**
- * Get pending approval request info for the approval popup.
- */
-async function handleGetPendingApproval(requestId: string): Promise<MessageResponse> {
-  const pending = pendingApprovals.get(requestId);
-  if (!pending) {
-    return { success: false, error: 'No pending approval request found' };
-  }
-
-  return {
-    success: true,
-    data: {
-      id: pending.id,
-      type: pending.type,
-      origin: pending.origin,
-      siteName: pending.siteName,
-      favicon: pending.favicon,
-      message: pending.message,
-    },
-  };
-}
-
-/**
- * Get list of connected sites.
- */
-async function handleGetConnectedSites(): Promise<MessageResponse<{ sites: ConnectedSite[] }>> {
-  const sites = await getConnectedSites();
-  return { success: true, data: { sites } };
-}
-
-/**
- * Disconnect a specific site.
- */
-async function handleDisconnectSite(origin: string): Promise<MessageResponse> {
-  await removeConnectedSite(origin);
-  return { success: true, data: { disconnected: true } };
-}
-
-/**
- * Get public keys response for all assets.
- */
-async function getPublicKeysResponse(): Promise<MessageResponse> {
-  const state = await getWalletState();
-
-  const publicKeys: Record<string, string> = {
-    btc: state.keys.btc?.publicKey || '',
-    ltc: state.keys.ltc?.publicKey || '',
-    xmr: state.keys.xmr?.publicSpendKey || state.keys.xmr?.publicKey || '',
-    wow: state.keys.wow?.publicSpendKey || state.keys.wow?.publicKey || '',
-    grin: state.keys.grin?.publicKey || '',
-  };
-
-  return {
-    success: true,
-    data: publicKeys,
-  };
-}
-
-/**
- * Sign a message with all wallet keys.
- * Returns array of signatures.
- *
- * BTC/LTC: ECDSA signature (secp256k1) - Bitcoin message signing format
- * XMR/WOW/Grin: Ed25519 signature using spend/slatepack key
- */
-async function signMessageWithAllKeys(message: string): Promise<Array<{
-  asset: AssetType;
-  signature: string;
-  publicKey: string;
-}>> {
-  // Import crypto libraries
-  const { secp256k1 } = await import('@noble/curves/secp256k1');
-  const { ed25519 } = await import('@noble/curves/ed25519');
-  const { sha256 } = await import('@noble/hashes/sha256');
-
-  const state = await getWalletState();
-  const signatures: Array<{ asset: AssetType; signature: string; publicKey: string }> = [];
-
-  // Helper to convert bytes to hex
-  function toHex(bytes: Uint8Array): string {
-    return Array.from(bytes)
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
-  }
-
-  // Helper to create Bitcoin-style message hash
-  // Format: SHA256(SHA256("\x18Bitcoin Signed Message:\n" + varint(len) + message))
-  function bitcoinMessageHash(msg: string): Uint8Array {
-    const prefix = '\x18Bitcoin Signed Message:\n';
-    const encoder = new TextEncoder();
-    const messageBytes = encoder.encode(msg);
-    const prefixBytes = encoder.encode(prefix);
-
-    // Encode length as varint (for simplicity, assume < 253 bytes)
-    const lenByte = new Uint8Array([messageBytes.length]);
-
-    // Concatenate: prefix + length + message
-    const fullMessage = new Uint8Array(prefixBytes.length + 1 + messageBytes.length);
-    fullMessage.set(prefixBytes, 0);
-    fullMessage.set(lenByte, prefixBytes.length);
-    fullMessage.set(messageBytes, prefixBytes.length + 1);
-
-    // Double SHA256
-    return sha256(sha256(fullMessage));
-  }
-
-  // Helper to create Ed25519 message hash (just SHA256 of the message)
-  function ed25519MessageHash(msg: string): Uint8Array {
-    const encoder = new TextEncoder();
-    return sha256(encoder.encode(msg));
-  }
-
-  // Sign with BTC key (ECDSA secp256k1)
-  if (unlockedKeys.has('btc') && state.keys.btc) {
-    try {
-      const privateKey = unlockedKeys.get('btc')!;
-      const msgHash = bitcoinMessageHash(message);
-      const sig = secp256k1.sign(msgHash, privateKey);
-      signatures.push({
-        asset: 'btc',
-        signature: sig.toCompactHex(),
-        publicKey: state.keys.btc.publicKey,
-      });
-    } catch (err) {
-      console.error('[SignMessage] BTC signing failed:', err);
-      signatures.push({ asset: 'btc', signature: '', publicKey: state.keys.btc.publicKey });
-    }
-  }
-
-  // Sign with LTC key (ECDSA secp256k1, same format as BTC)
-  if (unlockedKeys.has('ltc') && state.keys.ltc) {
-    try {
-      const privateKey = unlockedKeys.get('ltc')!;
-      const msgHash = bitcoinMessageHash(message);
-      const sig = secp256k1.sign(msgHash, privateKey);
-      signatures.push({
-        asset: 'ltc',
-        signature: sig.toCompactHex(),
-        publicKey: state.keys.ltc.publicKey,
-      });
-    } catch (err) {
-      console.error('[SignMessage] LTC signing failed:', err);
-      signatures.push({ asset: 'ltc', signature: '', publicKey: state.keys.ltc.publicKey });
-    }
-  }
-
-  // Sign with XMR key (Ed25519 using private spend key)
-  if (unlockedKeys.has('xmr') && state.keys.xmr) {
-    try {
-      const privateKey = unlockedKeys.get('xmr')!; // Already Uint8Array
-      const publicKey = state.keys.xmr.publicSpendKey || state.keys.xmr.publicKey;
-      const msgHash = ed25519MessageHash(message);
-      // Ed25519 sign expects message bytes, not hash - it does its own hashing internally
-      // But we hash the message first for domain separation
-      const sig = ed25519.sign(msgHash, privateKey);
-      signatures.push({
-        asset: 'xmr',
-        signature: toHex(sig),
-        publicKey,
-      });
-    } catch (err) {
-      console.error('[SignMessage] XMR signing failed:', err);
-      signatures.push({
-        asset: 'xmr',
-        signature: '',
-        publicKey: state.keys.xmr.publicSpendKey || state.keys.xmr.publicKey,
-      });
-    }
-  }
-
-  // Sign with WOW key (Ed25519 using private spend key, same format as XMR)
-  if (unlockedKeys.has('wow') && state.keys.wow) {
-    try {
-      const privateKey = unlockedKeys.get('wow')!; // Already Uint8Array
-      const publicKey = state.keys.wow.publicSpendKey || state.keys.wow.publicKey;
-      const msgHash = ed25519MessageHash(message);
-      const sig = ed25519.sign(msgHash, privateKey);
-      signatures.push({
-        asset: 'wow',
-        signature: toHex(sig),
-        publicKey,
-      });
-    } catch (err) {
-      console.error('[SignMessage] WOW signing failed:', err);
-      signatures.push({
-        asset: 'wow',
-        signature: '',
-        publicKey: state.keys.wow.publicSpendKey || state.keys.wow.publicKey,
-      });
-    }
-  }
-
-  // Sign with Grin key (Ed25519 using slatepack key)
-  if (unlockedKeys.has('grin') && state.keys.grin) {
-    try {
-      const privateKey = unlockedKeys.get('grin')!; // Already Uint8Array
-      const publicKey = state.keys.grin.publicKey;
-      const msgHash = ed25519MessageHash(message);
-      const sig = ed25519.sign(msgHash, privateKey);
-      signatures.push({
-        asset: 'grin',
-        signature: toHex(sig),
-        publicKey,
-      });
-    } catch (err) {
-      console.error('[SignMessage] Grin signing failed:', err);
-      signatures.push({
-        asset: 'grin',
-        signature: '',
-        publicKey: state.keys.grin.publicKey,
-      });
-    }
-  }
-
-  return signatures;
-}
+// =============================================================================
+// Start
+// =============================================================================
 
 // Start initialization and store the promise so message handlers can wait for it
-initializationPromise = initializeBackground().catch((err) => {
-  console.error('Background initialization failed:', err);
-});
+setInitializationPromise(
+  initializeBackground().catch((err) => {
+    console.error('Background initialization failed:', err);
+  })
+);
 
 console.log('Smirk Wallet background service worker started');

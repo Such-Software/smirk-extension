@@ -5,13 +5,6 @@
 ### High Priority
 
 1. **Refactor Large Files**
-   - `src/background/index.ts` (3180 lines) - Split into modules:
-     - `background/wallet.ts` - Wallet creation/restore handlers
-     - `background/balance.ts` - Balance fetching for all assets
-     - `background/send.ts` - Send transaction handlers
-     - `background/grin.ts` - Grin-specific operations
-     - `background/api-handlers.ts` - window.smirk API handlers
-     - `background/index.ts` - Main entry, message routing
    - `src/lib/grin/index.ts` (1473 lines)
    - `src/lib/api.ts` (892 lines)
    - `src/popup/components/WalletView.tsx` (665 lines)
@@ -116,6 +109,16 @@ Recipient creates I1 → Sender signs S2 → Recipient finalizes S3 + broadcasts
 
 ## Completed
 
+- [x] Refactor background/index.ts into modules (2026-01-23)
+  - `background/state.ts` - Global state, session persistence, pending txs
+  - `background/settings.ts` - User settings, auto-lock timer
+  - `background/wallet.ts` - Wallet creation, restore, unlock/lock
+  - `background/balance.ts` - Balance queries for all assets
+  - `background/send.ts` - BTC/LTC transaction building
+  - `background/grin-handlers.ts` - Grin WASM operations
+  - `background/tips.ts` - Tip decryption and claiming
+  - `background/smirk-api.ts` - window.smirk website integration
+  - `background/index.ts` - Message routing only
 - [x] Seed fingerprint & restore enforcement (2026-01-23)
 - [x] User ID passed to LWS registration (2026-01-23)
 - [x] Light mode styling fixes (2026-01-23)

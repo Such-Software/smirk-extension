@@ -1,16 +1,156 @@
 /**
  * Content script for Smirk extension.
  *
- * Injected into claim pages to:
- * - Detect tip claim URLs
- * - Extract URL fragment keys
- * - Communicate with background for claiming
+ * Responsibilities:
+ * 1. Inject window.smirk API into web pages
+ * 2. Relay messages between page and background script
+ * 3. Detect tip claim URLs and inject claim UI
+ *
+ * NOTE: Content scripts cannot use ES module imports, so browser API
+ * code is inlined here rather than imported from @/lib/browser.
  */
 
-import type { MessageResponse } from '@/types';
-import { runtime } from '@/lib/browser';
+// Inline browser API (content scripts can't import from chunks)
+declare const globalThis: typeof global & {
+  browser?: typeof chrome;
+  chrome?: typeof chrome;
+};
 
-// Check if we're on a tip claim page
+const isFirefox = typeof globalThis.browser !== 'undefined';
+const browserAPI = (isFirefox ? globalThis.browser : globalThis.chrome) as typeof chrome;
+
+const runtime = {
+  sendMessage<T = unknown>(message: unknown): Promise<T> {
+    if (isFirefox) {
+      return browserAPI.runtime.sendMessage(message) as Promise<T>;
+    }
+    return new Promise((resolve) => {
+      browserAPI.runtime.sendMessage(message, (response: T) => resolve(response));
+    });
+  },
+  getURL(path: string): string {
+    return browserAPI.runtime.getURL(path);
+  },
+};
+
+// Response type (inlined to avoid import)
+interface MessageResponse<T> {
+  success: boolean;
+  data?: T;
+  error?: string;
+}
+
+// ============================================================================
+// window.smirk API Injection
+// ============================================================================
+
+/**
+ * Injects the smirk-api.ts script into the page context.
+ * This is necessary because content scripts run in an isolated context
+ * and cannot directly modify window objects visible to the page.
+ */
+function injectSmirkAPI() {
+  const script = document.createElement('script');
+  script.src = runtime.getURL('inject.js');
+  script.type = 'module';
+
+  // Insert at document_start if possible, otherwise append to head/body
+  const parent = document.head || document.documentElement;
+  parent.insertBefore(script, parent.firstChild);
+
+  // Clean up after injection
+  script.onload = () => {
+    script.remove();
+  };
+}
+
+/**
+ * Listens for SMIRK_REQUEST messages from the injected script
+ * and relays them to the background script.
+ */
+function setupMessageRelay() {
+  window.addEventListener('message', async (event) => {
+    // Only accept messages from same window (our injected script)
+    if (event.source !== window) return;
+
+    const { type, id, method, params } = event.data;
+
+    // Only handle SMIRK_REQUEST messages
+    if (type !== 'SMIRK_REQUEST') return;
+
+    try {
+      // Get current page info for the request
+      const origin = window.location.origin;
+      const siteName = document.title || origin;
+      const favicon = getFavicon();
+
+      // Send to background script
+      const response = await runtime.sendMessage<MessageResponse<unknown>>({
+        type: 'SMIRK_API',
+        method,
+        params,
+        origin,
+        siteName,
+        favicon,
+      });
+
+      // Send response back to injected script
+      if (response?.success) {
+        window.postMessage(
+          {
+            type: 'SMIRK_RESPONSE',
+            id,
+            payload: response.data,
+          },
+          '*'
+        );
+      } else {
+        window.postMessage(
+          {
+            type: 'SMIRK_RESPONSE',
+            id,
+            error: response?.error || 'Unknown error',
+          },
+          '*'
+        );
+      }
+    } catch (err) {
+      // Send error back to injected script
+      window.postMessage(
+        {
+          type: 'SMIRK_RESPONSE',
+          id,
+          error: err instanceof Error ? err.message : 'Unknown error',
+        },
+        '*'
+      );
+    }
+  });
+}
+
+/**
+ * Gets the page's favicon URL.
+ */
+function getFavicon(): string | undefined {
+  // Try to find favicon link
+  const links = document.querySelectorAll<HTMLLinkElement>(
+    'link[rel="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]'
+  );
+
+  for (const link of links) {
+    if (link.href) {
+      return link.href;
+    }
+  }
+
+  // Fallback to /favicon.ico
+  return `${window.location.origin}/favicon.ico`;
+}
+
+// ============================================================================
+// Claim Page Detection (existing functionality)
+// ============================================================================
+
 const CLAIM_URL_PATTERN = /\/claim\/([a-zA-Z0-9_-]+)/;
 
 interface ClaimPageData {
@@ -122,19 +262,37 @@ function injectClaimUI(claimData: ClaimPageData) {
   document.body.appendChild(button);
 }
 
-// Initialize on page load
-function init() {
-  const claimData = extractClaimData();
+// ============================================================================
+// Initialization
+// ============================================================================
 
+function init() {
+  // Always inject the smirk API
+  injectSmirkAPI();
+  setupMessageRelay();
+
+  // Check for claim page
+  const claimData = extractClaimData();
   if (claimData) {
     console.log('Smirk: Detected claim page', claimData);
     injectClaimUI(claimData);
   }
 }
 
-// Run when DOM is ready
+// Run when DOM is ready - but inject API as early as possible
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
+  // Inject API immediately, don't wait for DOMContentLoaded
+  injectSmirkAPI();
+  setupMessageRelay();
+
+  // Wait for body to inject claim UI
+  document.addEventListener('DOMContentLoaded', () => {
+    const claimData = extractClaimData();
+    if (claimData) {
+      console.log('Smirk: Detected claim page', claimData);
+      injectClaimUI(claimData);
+    }
+  });
 } else {
   init();
 }

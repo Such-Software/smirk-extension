@@ -1,14 +1,26 @@
 import { render } from 'preact';
 import { useState, useEffect } from 'preact/hooks';
-import type { AssetType, TipInfo } from '@/types';
+import type { AssetType, TipInfo, UserSettings } from '@/types';
 import { sendMessage, clearScreenState } from './shared';
 import {
+  ApprovalView,
   ClaimView,
   Onboarding,
   ToastProvider,
   UnlockScreen,
   WalletView,
 } from './components';
+import { applyTheme } from './components/SettingsView';
+
+// Parse URL parameters
+function getUrlParams(): { mode?: string; requestId?: string; popup?: string } {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    mode: params.get('mode') || undefined,
+    requestId: params.get('requestId') || undefined,
+    popup: params.get('popup') || undefined,
+  };
+}
 
 function App() {
   const [loading, setLoading] = useState(true);
@@ -19,12 +31,43 @@ function App() {
     fragmentKey?: string;
   } | null>(null);
 
+  // Check if this is an approval popup
+  const urlParams = getUrlParams();
+  const isApprovalMode = urlParams.mode === 'approve' && urlParams.requestId;
+
   useEffect(() => {
+    // For approval mode, just load theme - we don't need full wallet state
+    if (isApprovalMode) {
+      loadTheme();
+      setLoading(false);
+      return;
+    }
     checkWalletState();
   }, []);
 
+  const loadTheme = async () => {
+    try {
+      const { settings } = await sendMessage<{ settings: UserSettings }>({ type: 'GET_SETTINGS' });
+      if (settings?.theme) {
+        applyTheme(settings.theme);
+      }
+    } catch {
+      // Ignore theme load errors
+    }
+  };
+
   const checkWalletState = async () => {
     try {
+      // Load and apply theme immediately
+      try {
+        const { settings } = await sendMessage<{ settings: UserSettings }>({ type: 'GET_SETTINGS' });
+        if (settings?.theme) {
+          applyTheme(settings.theme);
+        }
+      } catch {
+        // Settings may not exist yet for new wallets
+      }
+
       const state = await sendMessage<{
         isUnlocked: boolean;
         hasWallet: boolean;
@@ -102,6 +145,16 @@ function App() {
       <div class="lock-screen">
         <div class="spinner" />
       </div>
+    );
+  }
+
+  // Approval mode - show approval popup
+  if (isApprovalMode && urlParams.requestId) {
+    return (
+      <ApprovalView
+        requestId={urlParams.requestId}
+        onComplete={() => window.close()}
+      />
     );
   }
 

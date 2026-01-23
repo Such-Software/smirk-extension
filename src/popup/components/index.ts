@@ -1,3 +1,4 @@
+export { ApprovalView } from './ApprovalView';
 export { ClaimView } from './ClaimView';
 export { Onboarding } from './Onboarding';
 export { ReceiveView } from './ReceiveView';

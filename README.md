@@ -113,6 +113,43 @@ const responseSlatepack = await encodeSlatepack(keys, slate, 'response');
 // Give responseSlatepack back to sender (copy/paste)
 ```
 
+## Website Integration (window.smirk API)
+
+The extension injects a `window.smirk` API into web pages, enabling websites to request wallet connections and signatures (similar to MetaMask's `window.ethereum`).
+
+**API:**
+```typescript
+// Check if extension is installed
+if (window.smirk) {
+  // Request connection (shows approval popup)
+  const publicKeys = await window.smirk.connect();
+  // Returns: { btc, ltc, xmr, wow, grin } - public keys for all assets
+
+  // Check if already connected
+  const connected = await window.smirk.isConnected();
+
+  // Get public keys (only works if already connected)
+  const keys = await window.smirk.getPublicKeys();
+
+  // Request message signature (shows approval popup)
+  const result = await window.smirk.signMessage('Sign to authenticate');
+  // Returns: { message, signatures: [{ asset, signature, publicKey }, ...] }
+
+  // Disconnect (revoke site access)
+  await window.smirk.disconnect();
+}
+```
+
+**Signature Types:**
+- BTC/LTC: ECDSA (secp256k1) with Bitcoin message signing format
+- XMR/WOW: Ed25519 using private spend key
+- Grin: Ed25519 using slatepack key
+
+**Security:**
+- User must approve each connection and signature request
+- Connected origins are persisted to storage
+- Sites cannot access private keys or send transactions without explicit approval
+
 ## XMR/WOW Balance Verification
 
 For Monero and Wownero, the backend returns `total_received` plus a list of candidate spent outputs detected by the Light Wallet Server. The extension verifies these client-side:

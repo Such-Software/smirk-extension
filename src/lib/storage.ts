@@ -11,6 +11,7 @@ const STORAGE_KEYS = {
   AUTH_STATE: 'authState',
   ONBOARDING_STATE: 'onboardingState',
   GRIN_PENDING_RECEIVE: 'grinPendingReceive',
+  CONNECTED_SITES: 'connectedSites',
 } as const;
 
 /**
@@ -33,6 +34,7 @@ export const DEFAULT_WALLET_STATE: WalletState = {
     notifyOnTip: true,
     defaultAsset: 'btc',
     autoLockMinutes: 15, // Default: 15 minutes
+    theme: 'dark',
   },
 };
 
@@ -193,4 +195,86 @@ export async function saveGrinPendingReceive(state: GrinPendingReceive): Promise
  */
 export async function clearGrinPendingReceive(): Promise<void> {
   await storage.local.remove(STORAGE_KEYS.GRIN_PENDING_RECEIVE);
+}
+
+/**
+ * Connected site info - tracks which origins user has approved for window.smirk API.
+ */
+export interface ConnectedSite {
+  origin: string; // e.g., "https://smirk.cash"
+  name?: string; // Site name from <title> or manifest
+  favicon?: string; // Favicon URL
+  connectedAt: number; // Unix timestamp
+  lastUsed: number; // Unix timestamp of last API call
+}
+
+/**
+ * Gets all connected sites.
+ */
+export async function getConnectedSites(): Promise<ConnectedSite[]> {
+  const result = await storage.local.get<Record<string, ConnectedSite[]>>(STORAGE_KEYS.CONNECTED_SITES);
+  return result[STORAGE_KEYS.CONNECTED_SITES] ?? [];
+}
+
+/**
+ * Checks if an origin is connected (approved).
+ */
+export async function isOriginConnected(origin: string): Promise<boolean> {
+  const sites = await getConnectedSites();
+  return sites.some((site) => site.origin === origin);
+}
+
+/**
+ * Gets a connected site by origin.
+ */
+export async function getConnectedSite(origin: string): Promise<ConnectedSite | null> {
+  const sites = await getConnectedSites();
+  return sites.find((site) => site.origin === origin) ?? null;
+}
+
+/**
+ * Adds a connected site.
+ */
+export async function addConnectedSite(site: ConnectedSite): Promise<void> {
+  const sites = await getConnectedSites();
+  const existing = sites.findIndex((s) => s.origin === site.origin);
+
+  if (existing >= 0) {
+    // Update existing
+    sites[existing] = site;
+  } else {
+    // Add new
+    sites.push(site);
+  }
+
+  await storage.local.set({ [STORAGE_KEYS.CONNECTED_SITES]: sites });
+}
+
+/**
+ * Updates lastUsed timestamp for a connected site.
+ */
+export async function touchConnectedSite(origin: string): Promise<void> {
+  const sites = await getConnectedSites();
+  const site = sites.find((s) => s.origin === origin);
+
+  if (site) {
+    site.lastUsed = Date.now();
+    await storage.local.set({ [STORAGE_KEYS.CONNECTED_SITES]: sites });
+  }
+}
+
+/**
+ * Removes a connected site (disconnect).
+ */
+export async function removeConnectedSite(origin: string): Promise<void> {
+  const sites = await getConnectedSites();
+  const filtered = sites.filter((s) => s.origin !== origin);
+  await storage.local.set({ [STORAGE_KEYS.CONNECTED_SITES]: filtered });
+}
+
+/**
+ * Clears all connected sites.
+ */
+export async function clearAllConnectedSites(): Promise<void> {
+  await storage.local.remove(STORAGE_KEYS.CONNECTED_SITES);
 }

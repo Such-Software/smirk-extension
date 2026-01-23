@@ -607,27 +607,40 @@ async function handleRestoreWallet(
 
   const checkResult = await api.checkRestore({ fingerprint, keys: keysToCheck });
 
+  // REQUIRE successful check - don't allow restore if we can't verify
   if (checkResult.error) {
-    console.warn('Failed to check restore status:', checkResult.error);
-    // Continue anyway - backend might be unavailable
-  } else if (checkResult.data) {
-    if (!checkResult.data.exists) {
-      // Wallet was not created in Smirk - reject restore
-      return {
-        success: false,
-        error: 'This wallet was not created in Smirk. Please create a new wallet instead.',
-      };
-    }
-    if (checkResult.data.keysValid === false) {
-      // Keys don't match - this shouldn't happen with correct derivation
-      return {
-        success: false,
-        error: checkResult.data.error || 'Key derivation mismatch. Please try again.',
-      };
-    }
-    // exists=true and keysValid=true - proceed with restore
-    console.log('Restore check passed for user:', checkResult.data.userId);
+    console.error('Failed to check restore status:', checkResult.error);
+    return {
+      success: false,
+      error: 'Unable to verify wallet. Please check your connection and try again.',
+    };
   }
+
+  if (!checkResult.data) {
+    return {
+      success: false,
+      error: 'Unable to verify wallet. Please try again.',
+    };
+  }
+
+  if (!checkResult.data.exists) {
+    // Wallet was not created in Smirk - reject restore
+    return {
+      success: false,
+      error: 'This wallet was not created in Smirk. Please create a new wallet instead.',
+    };
+  }
+
+  if (checkResult.data.keysValid === false) {
+    // Keys don't match - this shouldn't happen with correct derivation
+    return {
+      success: false,
+      error: checkResult.data.error || 'Key derivation mismatch. Please try again.',
+    };
+  }
+
+  // exists=true and keysValid=true - proceed with restore
+  console.log('Restore check passed for user:', checkResult.data.userId);
 
   // Set state to 'creating' so popup can show progress if reopened
   await saveOnboardingState({ step: 'creating', createdAt: Date.now() });

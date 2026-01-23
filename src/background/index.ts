@@ -35,6 +35,7 @@ import {
   deriveAllKeys,
   mnemonicToWords,
   getVerificationIndices,
+  computeSeedFingerprint,
 } from '@/lib/hd';
 import {
   btcAddress,
@@ -583,6 +584,51 @@ async function handleRestoreWallet(
     return { success: false, error: 'Password must be at least 8 characters' };
   }
 
+  // Check if this wallet was previously created in Smirk
+  const fingerprint = computeSeedFingerprint(mnemonic);
+  const derivedKeys = deriveAllKeys(mnemonic);
+
+  // Build keys array for restore check
+  const keysToCheck: Array<{ asset: string; publicKey: string; publicSpendKey?: string }> = [
+    { asset: 'btc', publicKey: bytesToHex(getPublicKey(derivedKeys.btc.privateKey)) },
+    { asset: 'ltc', publicKey: bytesToHex(getPublicKey(derivedKeys.ltc.privateKey)) },
+    {
+      asset: 'xmr',
+      publicKey: bytesToHex(derivedKeys.xmr.publicSpendKey),
+      publicSpendKey: bytesToHex(derivedKeys.xmr.publicViewKey),
+    },
+    {
+      asset: 'wow',
+      publicKey: bytesToHex(derivedKeys.wow.publicSpendKey),
+      publicSpendKey: bytesToHex(derivedKeys.wow.publicViewKey),
+    },
+    { asset: 'grin', publicKey: bytesToHex(derivedKeys.grin.publicKey) },
+  ];
+
+  const checkResult = await api.checkRestore({ fingerprint, keys: keysToCheck });
+
+  if (checkResult.error) {
+    console.warn('Failed to check restore status:', checkResult.error);
+    // Continue anyway - backend might be unavailable
+  } else if (checkResult.data) {
+    if (!checkResult.data.exists) {
+      // Wallet was not created in Smirk - reject restore
+      return {
+        success: false,
+        error: 'This wallet was not created in Smirk. Please create a new wallet instead.',
+      };
+    }
+    if (checkResult.data.keysValid === false) {
+      // Keys don't match - this shouldn't happen with correct derivation
+      return {
+        success: false,
+        error: checkResult.data.error || 'Key derivation mismatch. Please try again.',
+      };
+    }
+    // exists=true and keysValid=true - proceed with restore
+    console.log('Restore check passed for user:', checkResult.data.userId);
+  }
+
   // Set state to 'creating' so popup can show progress if reopened
   await saveOnboardingState({ step: 'creating', createdAt: Date.now() });
 
@@ -735,8 +781,11 @@ async function createWalletFromMnemonic(
   // Start auto-lock timer
   startAutoLockTimer();
 
+  // Compute seed fingerprint for wallet identification
+  const seedFingerprint = computeSeedFingerprint(mnemonic);
+
   // Register with backend (non-blocking - wallet works offline too)
-  registerWithBackend(state).catch((err) => {
+  registerWithBackend(state, seedFingerprint).catch((err) => {
     console.warn('Failed to register with backend:', err);
     // Continue working - we can retry later
   });
@@ -755,7 +804,7 @@ async function createWalletFromMnemonic(
  * Register wallet with backend server.
  * Registers public keys and creates user account.
  */
-async function registerWithBackend(state: WalletState): Promise<void> {
+async function registerWithBackend(state: WalletState, seedFingerprint?: string): Promise<void> {
   // Collect all public keys
   const keys: Array<{ asset: string; publicKey: string; publicSpendKey?: string }> = [];
 
@@ -796,6 +845,7 @@ async function registerWithBackend(state: WalletState): Promise<void> {
   const result = await api.extensionRegister({
     keys,
     walletBirthday: state.walletBirthday?.timestamp,
+    seedFingerprint,
   });
 
   if (result.error) {

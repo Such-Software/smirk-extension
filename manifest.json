@@ -32,10 +32,12 @@
     {
       "matches": [
         "https://smirk.app/*",
-        "https://*.smirk.cash/*"
+        "https://*.smirk.cash/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
       ],
       "js": ["content.js"],
-      "run_at": "document_end"
+      "run_at": "document_start"
     }
   ],
   "icons": {
@@ -46,6 +48,7 @@
   "web_accessible_resources": [
     {
       "resources": [
+        "inject.js",
         "src/lib/grin/*.wasm",
         "src/lib/grin/*.js"
       ],

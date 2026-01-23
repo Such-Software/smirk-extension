@@ -1,6 +1,9 @@
 // Asset types supported by Smirk
 export type AssetType = 'btc' | 'ltc' | 'xmr' | 'wow' | 'grin';
 
+// Theme types
+export type Theme = 'dark' | 'light';
+
 // Wallet key pair stored in extension
 export interface WalletKey {
   asset: AssetType;
@@ -26,6 +29,8 @@ export interface UserSettings {
   defaultAsset: AssetType;
   // Auto-lock timeout in minutes (1-240), 0 = never auto-lock
   autoLockMinutes: number;
+  // UI theme
+  theme: Theme;
 }
 
 // Block heights at wallet creation (for efficient LWS sync)
@@ -180,7 +185,17 @@ export type MessageType =
   // Grin send transaction
   | { type: 'GRIN_CREATE_SEND'; amount: number; fee: number; recipientAddress?: string }
   | { type: 'GRIN_FINALIZE_AND_BROADCAST'; slatepack: string; sendContext: GrinSendContext }
-  | { type: 'GRIN_CANCEL_SEND'; slateId: string; inputIds: string[] };
+  | { type: 'GRIN_CANCEL_SEND'; slateId: string; inputIds: string[] }
+  // Website API (window.smirk) - from content script
+  | { type: 'SMIRK_API'; method: string; params?: unknown; origin: string; siteName: string; favicon?: string }
+  // Approval popup responses
+  | { type: 'SMIRK_APPROVAL_RESPONSE'; requestId: string; approved: boolean }
+  // Get pending approval request (for approval popup to display)
+  | { type: 'GET_PENDING_APPROVAL'; requestId: string }
+  // Get connected sites list
+  | { type: 'GET_CONNECTED_SITES' }
+  // Disconnect a site
+  | { type: 'DISCONNECT_SITE'; origin: string };
 
 /**
  * Context needed to finalize a Grin send transaction.

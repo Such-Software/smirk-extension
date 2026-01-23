@@ -54,10 +54,16 @@ import {
   clearOnboardingState,
   saveAuthState,
   getAuthState,
+  getConnectedSites,
+  isOriginConnected,
+  addConnectedSite,
+  touchConnectedSite,
+  removeConnectedSite,
+  type ConnectedSite,
 } from '@/lib/storage';
 import type { OnboardingState } from '@/types';
 import { api } from '@/lib/api';
-import { runtime, notifications, alarms, storage } from '@/lib/browser';
+import { runtime, notifications, alarms, storage, windows } from '@/lib/browser';
 import {
   initGrinWallet,
   initGrinWalletFromExtendedKey,
@@ -87,6 +93,21 @@ let grinWasmKeys: GrinKeys | null = null;
 let unlockedSeed: Uint8Array | null = null;
 // Decrypted mnemonic string for Grin WASM operations - cleared on lock
 let unlockedMnemonic: string | null = null;
+
+// Pending approval requests from window.smirk API
+interface PendingApprovalRequest {
+  id: string;
+  type: 'connect' | 'sign';
+  origin: string;
+  siteName: string;
+  favicon?: string;
+  message?: string; // For sign requests
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  windowId?: number; // ID of the approval popup window
+}
+const pendingApprovals = new Map<string, PendingApprovalRequest>();
+let approvalRequestId = 0;
 
 // Auto-lock alarm name (uses chrome.alarms API for persistence across service worker restarts)
 const AUTO_LOCK_ALARM = 'smirk_auto_lock';
@@ -440,6 +461,26 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
     // Grin cancel send (unlocks outputs, cancels transaction)
     case 'GRIN_CANCEL_SEND':
       return handleGrinCancelSend(message.slateId, message.inputIds);
+
+    // Website API (window.smirk) requests
+    case 'SMIRK_API':
+      return handleSmirkApi(message.method, message.params, message.origin, message.siteName, message.favicon);
+
+    // Approval popup responses
+    case 'SMIRK_APPROVAL_RESPONSE':
+      return handleApprovalResponse(message.requestId, message.approved);
+
+    // Get pending approval request (for approval popup)
+    case 'GET_PENDING_APPROVAL':
+      return handleGetPendingApproval(message.requestId);
+
+    // Get connected sites list
+    case 'GET_CONNECTED_SITES':
+      return handleGetConnectedSites();
+
+    // Disconnect a site
+    case 'DISCONNECT_SITE':
+      return handleDisconnectSite(message.origin);
 
     default:
       return { success: false, error: 'Unknown message type' };
@@ -2592,6 +2633,463 @@ async function initializeBackground() {
       }
     }
   }
+}
+
+// ============================================================================
+// window.smirk API Handlers
+// ============================================================================
+
+/**
+ * Main handler for window.smirk API requests from content script.
+ */
+async function handleSmirkApi(
+  method: string,
+  params: unknown,
+  origin: string,
+  siteName: string,
+  favicon?: string
+): Promise<MessageResponse> {
+  console.log(`[SmirkAPI] ${method} from ${origin}`);
+
+  switch (method) {
+    case 'connect':
+      return handleSmirkConnect(origin, siteName, favicon);
+
+    case 'isConnected':
+      return handleSmirkIsConnected(origin);
+
+    case 'disconnect':
+      return handleSmirkDisconnect(origin);
+
+    case 'signMessage': {
+      const { message } = params as { message: string };
+      return handleSmirkSignMessage(origin, siteName, favicon, message);
+    }
+
+    case 'getPublicKeys':
+      return handleSmirkGetPublicKeys(origin);
+
+    default:
+      return { success: false, error: `Unknown method: ${method}` };
+  }
+}
+
+/**
+ * Handle connect request - prompts user for approval, returns public keys.
+ */
+async function handleSmirkConnect(
+  origin: string,
+  siteName: string,
+  favicon?: string
+): Promise<MessageResponse> {
+  // Check if wallet exists and is unlocked
+  if (!isUnlocked) {
+    return { success: false, error: 'Wallet is locked. Please unlock your Smirk wallet first.' };
+  }
+
+  // Check if already connected
+  const connected = await isOriginConnected(origin);
+  if (connected) {
+    // Already connected, just return public keys
+    await touchConnectedSite(origin);
+    return await getPublicKeysResponse();
+  }
+
+  // Not connected - need user approval
+  return openApprovalPopup('connect', origin, siteName, favicon);
+}
+
+/**
+ * Handle isConnected request.
+ */
+async function handleSmirkIsConnected(origin: string): Promise<MessageResponse<boolean>> {
+  const connected = await isOriginConnected(origin);
+  return { success: true, data: connected };
+}
+
+/**
+ * Handle disconnect request.
+ */
+async function handleSmirkDisconnect(origin: string): Promise<MessageResponse> {
+  await removeConnectedSite(origin);
+  return { success: true, data: { disconnected: true } };
+}
+
+/**
+ * Handle signMessage request - prompts user for approval, returns signatures.
+ */
+async function handleSmirkSignMessage(
+  origin: string,
+  siteName: string,
+  favicon: string | undefined,
+  message: string
+): Promise<MessageResponse> {
+  // Check if wallet is unlocked
+  if (!isUnlocked) {
+    return { success: false, error: 'Wallet is locked. Please unlock your Smirk wallet first.' };
+  }
+
+  // Check if connected
+  const connected = await isOriginConnected(origin);
+  if (!connected) {
+    return { success: false, error: 'Site is not connected. Call connect() first.' };
+  }
+
+  // Need user approval for signing
+  return openApprovalPopup('sign', origin, siteName, favicon, message);
+}
+
+/**
+ * Handle getPublicKeys request - returns public keys only if already connected.
+ */
+async function handleSmirkGetPublicKeys(origin: string): Promise<MessageResponse> {
+  const connected = await isOriginConnected(origin);
+  if (!connected) {
+    return { success: true, data: null };
+  }
+
+  if (!isUnlocked) {
+    return { success: false, error: 'Wallet is locked' };
+  }
+
+  await touchConnectedSite(origin);
+  return await getPublicKeysResponse();
+}
+
+/**
+ * Opens an approval popup and returns a promise that resolves when user responds.
+ */
+function openApprovalPopup(
+  type: 'connect' | 'sign',
+  origin: string,
+  siteName: string,
+  favicon?: string,
+  message?: string
+): Promise<MessageResponse> {
+  return new Promise((resolve, reject) => {
+    const id = `${++approvalRequestId}`;
+
+    // Store the pending request
+    pendingApprovals.set(id, {
+      id,
+      type,
+      origin,
+      siteName,
+      favicon,
+      message,
+      resolve,
+      reject,
+    });
+
+    // Open approval popup
+    const popupUrl = runtime.getURL(`popup.html?mode=approve&requestId=${id}`);
+
+    windows.create({
+      url: popupUrl,
+      type: 'popup',
+      width: 400,
+      height: type === 'sign' ? 500 : 400,
+      focused: true,
+    }).then((window) => {
+      if (window?.id) {
+        const pending = pendingApprovals.get(id);
+        if (pending) {
+          pending.windowId = window.id;
+        }
+      }
+    }).catch((err) => {
+      pendingApprovals.delete(id);
+      reject(err);
+    });
+
+    // Timeout after 5 minutes
+    setTimeout(() => {
+      if (pendingApprovals.has(id)) {
+        pendingApprovals.delete(id);
+        resolve({ success: false, error: 'Approval request timed out' });
+      }
+    }, 5 * 60 * 1000);
+  });
+}
+
+/**
+ * Handle approval response from popup.
+ */
+async function handleApprovalResponse(
+  requestId: string,
+  approved: boolean
+): Promise<MessageResponse> {
+  const pending = pendingApprovals.get(requestId);
+  if (!pending) {
+    return { success: false, error: 'No pending approval request found' };
+  }
+
+  pendingApprovals.delete(requestId);
+
+  // Close the approval window if it's still open
+  if (pending.windowId) {
+    try {
+      await windows.remove(pending.windowId);
+    } catch {
+      // Window may already be closed
+    }
+  }
+
+  if (!approved) {
+    pending.resolve({ success: false, error: 'User rejected the request' });
+    return { success: true, data: { handled: true } };
+  }
+
+  // User approved
+  if (pending.type === 'connect') {
+    // Add to connected sites
+    await addConnectedSite({
+      origin: pending.origin,
+      name: pending.siteName,
+      favicon: pending.favicon,
+      connectedAt: Date.now(),
+      lastUsed: Date.now(),
+    });
+
+    // Return public keys
+    pending.resolve(await getPublicKeysResponse());
+  } else if (pending.type === 'sign') {
+    // Sign the message with all keys
+    try {
+      const signatures = await signMessageWithAllKeys(pending.message!);
+      pending.resolve({
+        success: true,
+        data: {
+          message: pending.message,
+          signatures,
+        },
+      });
+    } catch (err) {
+      pending.resolve({
+        success: false,
+        error: err instanceof Error ? err.message : 'Signing failed',
+      });
+    }
+  }
+
+  return { success: true, data: { handled: true } };
+}
+
+/**
+ * Get pending approval request info for the approval popup.
+ */
+async function handleGetPendingApproval(requestId: string): Promise<MessageResponse> {
+  const pending = pendingApprovals.get(requestId);
+  if (!pending) {
+    return { success: false, error: 'No pending approval request found' };
+  }
+
+  return {
+    success: true,
+    data: {
+      id: pending.id,
+      type: pending.type,
+      origin: pending.origin,
+      siteName: pending.siteName,
+      favicon: pending.favicon,
+      message: pending.message,
+    },
+  };
+}
+
+/**
+ * Get list of connected sites.
+ */
+async function handleGetConnectedSites(): Promise<MessageResponse<{ sites: ConnectedSite[] }>> {
+  const sites = await getConnectedSites();
+  return { success: true, data: { sites } };
+}
+
+/**
+ * Disconnect a specific site.
+ */
+async function handleDisconnectSite(origin: string): Promise<MessageResponse> {
+  await removeConnectedSite(origin);
+  return { success: true, data: { disconnected: true } };
+}
+
+/**
+ * Get public keys response for all assets.
+ */
+async function getPublicKeysResponse(): Promise<MessageResponse> {
+  const state = await getWalletState();
+
+  const publicKeys: Record<string, string> = {
+    btc: state.keys.btc?.publicKey || '',
+    ltc: state.keys.ltc?.publicKey || '',
+    xmr: state.keys.xmr?.publicSpendKey || state.keys.xmr?.publicKey || '',
+    wow: state.keys.wow?.publicSpendKey || state.keys.wow?.publicKey || '',
+    grin: state.keys.grin?.publicKey || '',
+  };
+
+  return {
+    success: true,
+    data: publicKeys,
+  };
+}
+
+/**
+ * Sign a message with all wallet keys.
+ * Returns array of signatures.
+ *
+ * BTC/LTC: ECDSA signature (secp256k1) - Bitcoin message signing format
+ * XMR/WOW/Grin: Ed25519 signature using spend/slatepack key
+ */
+async function signMessageWithAllKeys(message: string): Promise<Array<{
+  asset: AssetType;
+  signature: string;
+  publicKey: string;
+}>> {
+  // Import crypto libraries
+  const { secp256k1 } = await import('@noble/curves/secp256k1');
+  const { ed25519 } = await import('@noble/curves/ed25519');
+  const { sha256 } = await import('@noble/hashes/sha256');
+
+  const state = await getWalletState();
+  const signatures: Array<{ asset: AssetType; signature: string; publicKey: string }> = [];
+
+  // Helper to convert bytes to hex
+  function toHex(bytes: Uint8Array): string {
+    return Array.from(bytes)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+  // Helper to create Bitcoin-style message hash
+  // Format: SHA256(SHA256("\x18Bitcoin Signed Message:\n" + varint(len) + message))
+  function bitcoinMessageHash(msg: string): Uint8Array {
+    const prefix = '\x18Bitcoin Signed Message:\n';
+    const encoder = new TextEncoder();
+    const messageBytes = encoder.encode(msg);
+    const prefixBytes = encoder.encode(prefix);
+
+    // Encode length as varint (for simplicity, assume < 253 bytes)
+    const lenByte = new Uint8Array([messageBytes.length]);
+
+    // Concatenate: prefix + length + message
+    const fullMessage = new Uint8Array(prefixBytes.length + 1 + messageBytes.length);
+    fullMessage.set(prefixBytes, 0);
+    fullMessage.set(lenByte, prefixBytes.length);
+    fullMessage.set(messageBytes, prefixBytes.length + 1);
+
+    // Double SHA256
+    return sha256(sha256(fullMessage));
+  }
+
+  // Helper to create Ed25519 message hash (just SHA256 of the message)
+  function ed25519MessageHash(msg: string): Uint8Array {
+    const encoder = new TextEncoder();
+    return sha256(encoder.encode(msg));
+  }
+
+  // Sign with BTC key (ECDSA secp256k1)
+  if (unlockedKeys.has('btc') && state.keys.btc) {
+    try {
+      const privateKey = unlockedKeys.get('btc')!;
+      const msgHash = bitcoinMessageHash(message);
+      const sig = secp256k1.sign(msgHash, privateKey);
+      signatures.push({
+        asset: 'btc',
+        signature: sig.toCompactHex(),
+        publicKey: state.keys.btc.publicKey,
+      });
+    } catch (err) {
+      console.error('[SignMessage] BTC signing failed:', err);
+      signatures.push({ asset: 'btc', signature: '', publicKey: state.keys.btc.publicKey });
+    }
+  }
+
+  // Sign with LTC key (ECDSA secp256k1, same format as BTC)
+  if (unlockedKeys.has('ltc') && state.keys.ltc) {
+    try {
+      const privateKey = unlockedKeys.get('ltc')!;
+      const msgHash = bitcoinMessageHash(message);
+      const sig = secp256k1.sign(msgHash, privateKey);
+      signatures.push({
+        asset: 'ltc',
+        signature: sig.toCompactHex(),
+        publicKey: state.keys.ltc.publicKey,
+      });
+    } catch (err) {
+      console.error('[SignMessage] LTC signing failed:', err);
+      signatures.push({ asset: 'ltc', signature: '', publicKey: state.keys.ltc.publicKey });
+    }
+  }
+
+  // Sign with XMR key (Ed25519 using private spend key)
+  if (unlockedKeys.has('xmr') && state.keys.xmr) {
+    try {
+      const privateKey = unlockedKeys.get('xmr')!; // Already Uint8Array
+      const publicKey = state.keys.xmr.publicSpendKey || state.keys.xmr.publicKey;
+      const msgHash = ed25519MessageHash(message);
+      // Ed25519 sign expects message bytes, not hash - it does its own hashing internally
+      // But we hash the message first for domain separation
+      const sig = ed25519.sign(msgHash, privateKey);
+      signatures.push({
+        asset: 'xmr',
+        signature: toHex(sig),
+        publicKey,
+      });
+    } catch (err) {
+      console.error('[SignMessage] XMR signing failed:', err);
+      signatures.push({
+        asset: 'xmr',
+        signature: '',
+        publicKey: state.keys.xmr.publicSpendKey || state.keys.xmr.publicKey,
+      });
+    }
+  }
+
+  // Sign with WOW key (Ed25519 using private spend key, same format as XMR)
+  if (unlockedKeys.has('wow') && state.keys.wow) {
+    try {
+      const privateKey = unlockedKeys.get('wow')!; // Already Uint8Array
+      const publicKey = state.keys.wow.publicSpendKey || state.keys.wow.publicKey;
+      const msgHash = ed25519MessageHash(message);
+      const sig = ed25519.sign(msgHash, privateKey);
+      signatures.push({
+        asset: 'wow',
+        signature: toHex(sig),
+        publicKey,
+      });
+    } catch (err) {
+      console.error('[SignMessage] WOW signing failed:', err);
+      signatures.push({
+        asset: 'wow',
+        signature: '',
+        publicKey: state.keys.wow.publicSpendKey || state.keys.wow.publicKey,
+      });
+    }
+  }
+
+  // Sign with Grin key (Ed25519 using slatepack key)
+  if (unlockedKeys.has('grin') && state.keys.grin) {
+    try {
+      const privateKey = unlockedKeys.get('grin')!; // Already Uint8Array
+      const publicKey = state.keys.grin.publicKey;
+      const msgHash = ed25519MessageHash(message);
+      const sig = ed25519.sign(msgHash, privateKey);
+      signatures.push({
+        asset: 'grin',
+        signature: toHex(sig),
+        publicKey,
+      });
+    } catch (err) {
+      console.error('[SignMessage] Grin signing failed:', err);
+      signatures.push({
+        asset: 'grin',
+        signature: '',
+        publicKey: state.keys.grin.publicKey,
+      });
+    }
+  }
+
+  return signatures;
 }
 
 // Start initialization and store the promise so message handlers can wait for it

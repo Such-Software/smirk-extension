@@ -60,11 +60,25 @@ export default defineConfig({
         popup: resolve(__dirname, 'popup.html'),
         background: resolve(__dirname, 'src/background/index.ts'),
         content: resolve(__dirname, 'src/content/index.ts'),
+        inject: resolve(__dirname, 'src/inject/smirk-api.ts'),
       },
       output: {
         entryFileNames: '[name].js',
         chunkFileNames: 'chunks/[name]-[hash].js',
         assetFileNames: 'assets/[name]-[hash][extname]',
+        // Content scripts and inject scripts can't use ES module imports,
+        // so we need to inline shared code into them
+        manualChunks(id) {
+          // Don't create chunks for content script dependencies - inline them
+          // Only create chunks for popup and background shared code
+          if (id.includes('node_modules')) {
+            // Allow chunking for popup dependencies (preact, etc.)
+            if (id.includes('preact') || id.includes('@noble')) {
+              return undefined; // Let Vite decide
+            }
+          }
+          return undefined;
+        },
       },
     },
   },

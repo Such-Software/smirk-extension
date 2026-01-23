@@ -275,6 +275,15 @@ export const windows = {
       browserAPI.windows.getCurrent((window) => resolve(window));
     });
   },
+
+  async remove(windowId: number): Promise<void> {
+    if (isFirefox) {
+      return browserAPI.windows.remove(windowId);
+    }
+    return new Promise((resolve) => {
+      browserAPI.windows.remove(windowId, () => resolve());
+    });
+  },
 };
 
 // Re-export for convenience

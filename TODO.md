@@ -2,6 +2,19 @@
 
 ## High Priority
 
+### Website Integration (BLOCKER for smirk-website)
+- [x] **Inject `window.smirk` API** - Content script that exposes API to web pages (2026-01-22)
+  - [x] Content script injection on localhost and smirk.cash domains
+  - [x] `window.smirk.connect()` - Return public keys for all 5 assets
+  - [x] `window.smirk.signMessage(message)` - Sign with all 5 asset keys
+  - [x] `window.smirk.isConnected()` - Check if site is approved
+  - [x] `window.smirk.disconnect()` - Revoke site access
+  - [x] `window.smirk.getPublicKeys()` - Get public keys if connected
+- [x] **Approval popup UI** - User approves/denies connect and sign requests (2026-01-22)
+- [x] **Origin allowlist** - Persist approved origins in storage (2026-01-22)
+- [x] **Message passing** - Content script ↔ Background script for API calls (2026-01-22)
+- [ ] **Settings UI** - Show/manage connected sites in settings page
+
 ### UI/UX Improvements
 - [x] **Pop-out window feature** - Standalone window via ⧉ button in header (2026-01-22)
 - [x] **Copy feedback** - Toast notifications for all clipboard operations (2026-01-22)
@@ -17,7 +30,7 @@
 
 ### General
 - [ ] QR code scanning for addresses (camera permission)
-- [ ] Dark/light theme toggle
+- [x] Dark/light theme toggle (2026-01-22)
 - [ ] Configurable fee levels (low/medium/high)
 
 ### Security
@@ -58,3 +71,9 @@
 - [x] Screen state persistence across popup closes
 - [x] Mnemonic persistence in session storage for Grin wallet init
 - [x] kernel_excess tracking in backend and display in UI
+- [x] window.smirk API for website integration
+  - Inject script exposes connect(), signMessage(), isConnected(), disconnect(), getPublicKeys()
+  - Approval popup for connect and sign requests
+  - Origin allowlist persisted to storage
+  - BTC/LTC message signing with secp256k1 ECDSA
+  - XMR/WOW/Grin message signing with Ed25519

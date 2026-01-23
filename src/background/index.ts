@@ -347,7 +347,7 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
       return handleGenerateMnemonic();
 
     case 'CONFIRM_MNEMONIC':
-      return handleConfirmMnemonic(message.password, message.verifiedWords);
+      return handleConfirmMnemonic(message.password, message.verifiedWords, message.words);
 
     case 'RESTORE_WALLET':
       return handleRestoreWallet(message.mnemonic, message.password);
@@ -534,9 +534,20 @@ async function handleGenerateMnemonic(): Promise<MessageResponse<{
  */
 async function handleConfirmMnemonic(
   password: string,
-  verifiedWords: Record<number, string>
+  verifiedWords: Record<number, string>,
+  wordsFromPopup?: string[]
 ): Promise<MessageResponse<{ created: boolean; assets: AssetType[] }>> {
-  if (!pendingMnemonic) {
+  // If pendingMnemonic was lost (service worker restart), reconstruct from passed words
+  let mnemonic = pendingMnemonic;
+  if (!mnemonic && wordsFromPopup && wordsFromPopup.length > 0) {
+    mnemonic = wordsFromPopup.join(' ');
+    // Validate the reconstructed mnemonic
+    if (!isValidMnemonic(mnemonic)) {
+      return { success: false, error: 'Invalid mnemonic. Please start over.' };
+    }
+  }
+
+  if (!mnemonic) {
     return { success: false, error: 'No pending mnemonic. Start over.' };
   }
 
@@ -545,7 +556,7 @@ async function handleConfirmMnemonic(
   }
 
   // Verify the words match
-  const words = mnemonicToWords(pendingMnemonic);
+  const words = mnemonicToWords(mnemonic);
   for (const [idx, word] of Object.entries(verifiedWords)) {
     if (words[parseInt(idx)] !== word.toLowerCase().trim()) {
       return { success: false, error: 'Word verification failed. Please check your backup.' };
@@ -556,7 +567,7 @@ async function handleConfirmMnemonic(
   await saveOnboardingState({ step: 'creating', createdAt: Date.now() });
 
   // Create wallet from mnemonic
-  const result = await createWalletFromMnemonic(pendingMnemonic, password, true);
+  const result = await createWalletFromMnemonic(mnemonic, password, true);
 
   // Clear pending mnemonic
   pendingMnemonic = null;
@@ -797,18 +808,19 @@ async function createWalletFromMnemonic(
   // Compute seed fingerprint for wallet identification
   const seedFingerprint = computeSeedFingerprint(mnemonic);
 
-  // Register with backend (non-blocking - wallet works offline too)
-  registerWithBackend(state, seedFingerprint).catch((err) => {
-    console.warn('Failed to register with backend:', err);
-    // Continue working - we can retry later
-  });
-
-  // Register XMR/WOW with LWS for balance scanning (non-blocking)
-  // For new wallets: LWS starts from current block
-  // For restored wallets: use wallet birthday heights to avoid scanning from genesis
-  registerWithLws(state, derivedKeys, isRestore).catch((err) => {
-    console.warn('Failed to register with LWS:', err);
-  });
+  // Register with backend, then register with LWS (LWS requires user_id from backend)
+  // This is non-blocking - wallet works offline too
+  registerWithBackend(state, seedFingerprint)
+    .then((userId) => {
+      // Now register XMR/WOW with LWS using the user_id
+      // For new wallets: LWS starts from current block
+      // For restored wallets: use wallet birthday heights to avoid scanning from genesis
+      return registerWithLws(userId, state, derivedKeys, isRestore);
+    })
+    .catch((err) => {
+      console.warn('Failed to register with backend/LWS:', err);
+      // Continue working - we can retry later
+    });
 
   return { success: true, data: { created: true, assets } };
 }
@@ -816,8 +828,9 @@ async function createWalletFromMnemonic(
 /**
  * Register wallet with backend server.
  * Registers public keys and creates user account.
+ * @returns The user ID from the backend
  */
-async function registerWithBackend(state: WalletState, seedFingerprint?: string): Promise<void> {
+async function registerWithBackend(state: WalletState, seedFingerprint?: string): Promise<string> {
   // Collect all public keys
   const keys: Array<{ asset: string; publicKey: string; publicSpendKey?: string }> = [];
 
@@ -878,15 +891,19 @@ async function registerWithBackend(state: WalletState, seedFingerprint?: string)
   api.setAccessToken(auth.accessToken);
 
   console.log('Registered with backend:', auth.user.isNew ? 'new user' : 'existing user');
+
+  return auth.user.id;
 }
 
 /**
  * Register XMR/WOW wallets with LWS for balance scanning.
  * Uses the private view key to register with the Light Wallet Server.
  *
+ * @param userId - User ID from backend registration (required for LWS registration)
  * @param isRestore - If true, use wallet birthday heights as start_height to avoid scanning from genesis
  */
 async function registerWithLws(
+  userId: string,
   state: WalletState,
   derivedKeys: { xmr: { privateViewKey: Uint8Array; publicSpendKey: Uint8Array; publicViewKey: Uint8Array }; wow: { privateViewKey: Uint8Array; publicSpendKey: Uint8Array; publicViewKey: Uint8Array } },
   isRestore: boolean = false
@@ -900,7 +917,7 @@ async function registerWithLws(
     const xmrAddress = getAddressForAsset('xmr', state.keys.xmr);
     const xmrViewKey = bytesToHex(derivedKeys.xmr.privateViewKey);
 
-    const xmrResult = await api.registerLws('xmr', xmrAddress, xmrViewKey, xmrStartHeight);
+    const xmrResult = await api.registerLws(userId, 'xmr', xmrAddress, xmrViewKey, xmrStartHeight);
     if (xmrResult.error) {
       console.warn('Failed to register XMR with LWS:', xmrResult.error);
     } else {
@@ -913,7 +930,7 @@ async function registerWithLws(
     const wowAddress = getAddressForAsset('wow', state.keys.wow);
     const wowViewKey = bytesToHex(derivedKeys.wow.privateViewKey);
 
-    const wowResult = await api.registerLws('wow', wowAddress, wowViewKey, wowStartHeight);
+    const wowResult = await api.registerLws(userId, 'wow', wowAddress, wowViewKey, wowStartHeight);
     if (wowResult.error) {
       console.warn('Failed to register WOW with LWS:', wowResult.error);
     } else {

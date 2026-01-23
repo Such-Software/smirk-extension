@@ -445,12 +445,14 @@ export class SmirkApi {
 
   /**
    * Register wallet with LWS for balance scanning.
+   * @param userId - User ID from /auth/extension
    * @param asset - 'xmr' or 'wow'
    * @param address - Primary address
    * @param viewKey - Private view key (hex)
    * @param startHeight - Optional start height (for wallets created in the past)
    */
   async registerLws(
+    userId: string,
     asset: 'xmr' | 'wow',
     address: string,
     viewKey: string,
@@ -463,6 +465,7 @@ export class SmirkApi {
     return this.request('/wallet/lws/register', {
       method: 'POST',
       body: JSON.stringify({
+        user_id: userId,
         asset,
         address,
         view_key: viewKey,

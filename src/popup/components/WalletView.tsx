@@ -417,8 +417,8 @@ export function WalletView({ onLock }: { onLock: () => void }) {
         {grinPendingReceive && activeAsset === 'grin' && (
           <div
             style={{
-              background: '#422006',
-              border: '1px solid #f59e0b',
+              background: 'rgba(251, 191, 36, 0.1)',
+              border: '1px solid var(--color-yellow)',
               borderRadius: '8px',
               padding: '10px 12px',
               marginBottom: '12px',
@@ -429,10 +429,10 @@ export function WalletView({ onLock }: { onLock: () => void }) {
             }}
           >
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: '12px', color: '#fbbf24', fontWeight: 600 }}>
+              <div style={{ fontSize: '12px', color: 'var(--color-yellow)', fontWeight: 600 }}>
                 Pending Receive
               </div>
-              <div style={{ fontSize: '11px', color: '#fcd34d', marginTop: '2px' }}>
+              <div style={{ fontSize: '11px', color: 'var(--color-yellow)', marginTop: '2px', opacity: 0.8 }}>
                 Slatepack signed - send it back to finalize
               </div>
             </div>
@@ -495,7 +495,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
             )}
           </div>
           {currentBalance?.error && (
-            <div class="balance-usd" style={{ fontSize: '11px', color: '#ef4444' }}>
+            <div class="balance-usd" style={{ fontSize: '11px', color: 'var(--color-error)' }}>
               {currentBalance.error === 'Offline' ? 'Offline - cached value' : currentBalance.error}
             </div>
           )}
@@ -503,7 +503,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
           {currentBalance && !currentBalance.error && (currentBalance.locked ?? 0) > 0 && (
             <div
               class="balance-usd"
-              style={{ fontSize: '11px', color: '#f59e0b' }}
+              style={{ fontSize: '11px', color: 'var(--color-yellow)' }}
               title={`${formatBalanceFull(currentBalance.locked!, activeAsset)} ${ASSETS[activeAsset].symbol} waiting for confirmations`}
             >
               {formatBalance(currentBalance.locked!, activeAsset)} locked
@@ -513,7 +513,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
           {currentPendingOutgoing > 0 && (
             <div
               class="balance-usd"
-              style={{ fontSize: '11px', color: '#f59e0b' }}
+              style={{ fontSize: '11px', color: 'var(--color-yellow)' }}
               title={`${formatBalanceFull(currentPendingOutgoing, activeAsset)} ${ASSETS[activeAsset].symbol} sending`}
             >
               -{formatBalance(currentPendingOutgoing, activeAsset)} sending
@@ -523,7 +523,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
           {currentBalance && !currentBalance.error && currentBalance.unconfirmed !== 0 && (
             <div
               class="balance-usd"
-              style={{ fontSize: '11px', color: currentBalance.unconfirmed < 0 ? '#ef4444' : '#f59e0b' }}
+              style={{ fontSize: '11px', color: currentBalance.unconfirmed < 0 ? 'var(--color-error)' : 'var(--color-yellow)' }}
               title={`${formatBalanceFull(Math.abs(currentBalance.unconfirmed), activeAsset)} ${ASSETS[activeAsset].symbol} ${currentBalance.unconfirmed < 0 ? 'outgoing' : 'incoming'}`}
             >
               {currentBalance.unconfirmed > 0 ? '+' : ''}
@@ -581,7 +581,6 @@ export function WalletView({ onLock }: { onLock: () => void }) {
                     justifyContent: 'space-between',
                     alignItems: 'center',
                     padding: '8px 12px',
-                    background: '#27272a',
                     borderRadius: '6px',
                     marginBottom: '6px',
                     cursor: 'pointer',
@@ -603,7 +602,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
                     >
                       {displayId.substring(0, 12)}...{displayId.substring(displayId.length - 8)}
                     </div>
-                    <div style={{ fontSize: '10px', color: isCancelled ? '#ef4444' : '#71717a' }}>
+                    <div style={{ fontSize: '10px', color: isCancelled ? 'var(--color-error)' : 'var(--color-text-muted)' }}>
                       {isGrin ? (
                         <>
                           {tx.kernel_excess ? 'Kernel' : 'Slate'} &bull; {isCancelled ? 'Cancelled' : (isPending ? 'Pending' : 'Confirmed')}
@@ -618,7 +617,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
                       <div
                         style={{
                           fontSize: '11px',
-                          color: isIncoming ? '#22c55e' : '#ef4444',
+                          color: isIncoming ? 'var(--color-success)' : 'var(--color-error)',
                           fontWeight: 500,
                         }}
                       >

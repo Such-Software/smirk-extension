@@ -134,7 +134,14 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
         />
       );
     case 'password':
-      return <PasswordSetup verifiedWords={verifiedWords} onComplete={handleComplete} />;
+      return (
+        <PasswordSetup
+          verifiedWords={verifiedWords}
+          words={words}
+          onComplete={handleComplete}
+          onBack={handleBackToChoice}
+        />
+      );
     case 'creating':
       return <WalletCreatingScreen onComplete={handleComplete} />;
   }

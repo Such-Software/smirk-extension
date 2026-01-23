@@ -124,6 +124,7 @@ export class SmirkApi {
     }>;
     username?: string;
     walletBirthday?: number;
+    seedFingerprint?: string;
   }): Promise<ApiResponse<{
     accessToken: string;
     refreshToken: string;
@@ -140,6 +141,37 @@ export class SmirkApi {
         })),
         username: params.username,
         wallet_birthday: params.walletBirthday,
+        seed_fingerprint: params.seedFingerprint,
+      }),
+    });
+  }
+
+  /**
+   * Check if a wallet restore is valid.
+   * Returns whether the fingerprint exists and keys match.
+   */
+  async checkRestore(params: {
+    fingerprint: string;
+    keys: Array<{
+      asset: string;
+      publicKey: string;
+      publicSpendKey?: string;
+    }>;
+  }): Promise<ApiResponse<{
+    exists: boolean;
+    userId?: string;
+    keysValid?: boolean;
+    error?: string;
+  }>> {
+    return this.request('/auth/check-restore', {
+      method: 'POST',
+      body: JSON.stringify({
+        fingerprint: params.fingerprint,
+        keys: params.keys.map(k => ({
+          asset: k.asset,
+          public_key: k.publicKey,
+          public_spend_key: k.publicSpendKey,
+        })),
       }),
     });
   }

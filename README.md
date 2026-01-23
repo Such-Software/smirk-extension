@@ -1,13 +1,14 @@
 # Smirk Wallet Browser Extension
 
-Non-custodial multi-currency tip wallet for Telegram, Discord, and more.
+Non-custodial multi-currency wallet for Telegram, Discord, and the web.
 
 ## Features
 
 - **Non-custodial**: Your keys never leave your device
 - **Multi-currency**: BTC, LTC, XMR, WOW, GRIN
 - **Encrypted tips**: Tips targeted at specific users are encrypted with their public key
-- **Auto-claim**: Detects tip links and offers one-click claiming
+- **Website integration**: `window.smirk` API for web apps (like MetaMask's `window.ethereum`)
+- **Seed protection**: Only wallets created in Smirk can be restored - external seeds are rejected
 
 ## Development
 
@@ -37,8 +38,9 @@ npm run typecheck
 
 ```
 src/
-├── background/     # Service worker - crypto, storage, API, auto-lock (chrome.alarms)
-├── content/        # Content script - detects claim pages
+├── background/     # Service worker - crypto, storage, API, auto-lock
+├── content/        # Content script - detects claim pages, injects window.smirk
+├── inject/         # Injected script - window.smirk API implementation
 ├── popup/          # Main UI (Preact)
 ├── lib/
 │   ├── crypto.ts        # BIP39, BIP44 key derivation (secp256k1, ed25519)
@@ -51,7 +53,7 @@ src/
 │   │   ├── *.wasm           # secp256k1-zkp, Ed25519, X25519, BLAKE2b
 │   │   └── *.js             # MWC wallet JS files
 │   ├── api.ts           # Backend API client
-│   ├── browser.ts       # Cross-browser API abstraction (Chrome/Firefox)
+│   ├── browser.ts       # Cross-browser API abstraction
 │   └── storage.ts       # Chrome storage helpers
 └── types/          # TypeScript types
 
@@ -66,6 +68,7 @@ dist/wasm/          # smirk-wasm compiled to WebAssembly
 2. **Keys never leave extension**: Crypto operations happen in the background script
 3. **ECDH for encrypted tips**: Sender uses recipient's public key for encryption
 4. **URL fragment for public tips**: Key in `#fragment` never sent to server
+5. **Seed fingerprint validation**: Only Smirk-created wallets can restore
 
 ## Supported Chains
 
@@ -84,20 +87,20 @@ Grin uses Mimblewimble with interactive transactions. All cryptographic operatio
 **Architecture:**
 - Based on [MWC Wallet](https://github.com/NicolasFlamel1/MWC-Wallet-Standalone) (MIT License)
 - WASM modules: secp256k1-zkp (ZK proofs), Ed25519 (addresses), X25519 (encryption), BLAKE2b (hashing)
-- Backend stores outputs/balances - no relay yet (slatepacks exchanged out-of-band)
+- Backend stores outputs/balances and provides slatepack relay for Smirk-to-Smirk transfers
 
-**Current Status (2026-01-18):**
-- ✅ Receive flow works: paste S1 slatepack → sign → copy S2 back to sender
-- ✅ Balance updates after signing (output recorded to backend)
-- ⚠️ Send flow: untested (UTXO selection, change outputs)
-- ❌ Relay endpoints not implemented (Smirk-to-Smirk transfers pending)
+**Send Flow (SRS):**
+1. Select UTXOs and build S1 slate (client-side WASM)
+2. Encode as slatepack and send to recipient (manual paste or relay)
+3. Recipient signs S2 (client-side WASM)
+4. Receive S2 back, finalize S3 (client-side WASM)
+5. Broadcast to network
 
-**Receive Flow (manual slatepack exchange):**
-1. Sender creates S1 slatepack in Grim/grin-wallet and sends via Telegram/Discord/etc
-2. Paste S1 into Smirk extension → signs S2 (client-side WASM)
-3. Copy S2 slatepack back to sender
-4. Sender finalizes and broadcasts
-5. Your balance updates after output is recorded
+**Receive Flow:**
+1. Receive S1 slatepack from sender
+2. Sign S2 (client-side WASM) - creates output commitment
+3. Return S2 to sender for finalization
+4. Balance updates after confirmation
 
 **API:**
 ```typescript
@@ -107,10 +110,9 @@ import { initGrinWallet, signSlate, encodeSlatepack } from '@/lib/grin';
 const keys = await initGrinWallet(mnemonic);
 // keys.slatepackAddress - bech32-encoded address for receiving
 
-// Receive flow (manual)
+// Receive flow
 const { slate, outputInfo } = await signSlate(keys, incomingSlatepack);
 const responseSlatepack = await encodeSlatepack(keys, slate, 'response');
-// Give responseSlatepack back to sender (copy/paste)
 ```
 
 ## Website Integration (window.smirk API)
@@ -163,5 +165,3 @@ For Monero and Wownero, the backend returns `total_received` plus a list of cand
 3. **True balance**: `total_received - sum(verified_spent_amounts)`
 
 This ensures the server cannot lie about spent funds - the balance is cryptographically verified using your private spend key, which never leaves the extension.
-
-**Implementation**: Key image computation uses **smirk-wasm** (Rust compiled to WebAssembly) with the `monero-oxide` library for Monero's `hash_to_ec` operation. This ensures cryptographic correctness - the same implementation used by the broader Monero Rust ecosystem.

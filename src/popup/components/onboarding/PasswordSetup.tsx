@@ -3,10 +3,14 @@ import { sendMessage } from '../../shared';
 
 export function PasswordSetup({
   onComplete,
+  onBack,
   verifiedWords,
+  words,
 }: {
   onComplete: () => void;
+  onBack: () => void;
   verifiedWords: Record<number, string>;
+  words: string[];
 }) {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -41,6 +45,7 @@ export function PasswordSetup({
         type: 'CONFIRM_MNEMONIC',
         password,
         verifiedWords,
+        words,
       });
 
       setLoadingMessage('Done!');
@@ -93,7 +98,19 @@ export function PasswordSetup({
         </div>
 
         {error && (
-          <p style={{ color: '#ef4444', fontSize: '13px', marginBottom: '16px' }}>{error}</p>
+          <div style={{ marginBottom: '16px', textAlign: 'center' }}>
+            <p style={{ color: '#ef4444', fontSize: '13px', marginBottom: '8px' }}>{error}</p>
+            {error.includes('No pending mnemonic') && (
+              <button
+                type="button"
+                class="btn btn-secondary"
+                style={{ fontSize: '12px', padding: '6px 12px' }}
+                onClick={onBack}
+              >
+                Start Over
+              </button>
+            )}
+          </div>
         )}
 
         <button type="submit" class="btn btn-primary" style={{ width: '100%' }}>

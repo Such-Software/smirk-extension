@@ -38,7 +38,16 @@ npm run typecheck
 
 ```
 src/
-├── background/     # Service worker - crypto, storage, API, auto-lock
+├── background/     # Service worker (modular)
+│   ├── index.ts        # Message routing
+│   ├── state.ts        # Global state, session persistence
+│   ├── settings.ts     # User settings, auto-lock timer
+│   ├── wallet.ts       # Wallet creation, restore, unlock/lock
+│   ├── balance.ts      # Balance queries for all assets
+│   ├── send.ts         # BTC/LTC transaction building
+│   ├── grin-handlers.ts # Grin WASM operations
+│   ├── tips.ts         # Tip decryption and claiming
+│   └── smirk-api.ts    # window.smirk website integration
 ├── content/        # Content script - detects claim pages, injects window.smirk
 ├── inject/         # Injected script - window.smirk API implementation
 ├── popup/          # Main UI (Preact)

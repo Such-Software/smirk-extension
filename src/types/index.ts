@@ -145,7 +145,7 @@ export function isLwsRawResponse(response: BalanceResponse): response is LwsRawB
 export type MessageType =
   | { type: 'GET_WALLET_STATE' }
   | { type: 'GENERATE_MNEMONIC' }
-  | { type: 'CONFIRM_MNEMONIC'; password: string; verifiedWords: Record<number, string> }
+  | { type: 'CONFIRM_MNEMONIC'; password: string; verifiedWords: Record<number, string>; words?: string[] }
   | { type: 'RESTORE_WALLET'; mnemonic: string; password: string }
   | { type: 'UNLOCK_WALLET'; password: string }
   | { type: 'LOCK_WALLET' }

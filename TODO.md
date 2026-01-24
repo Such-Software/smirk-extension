@@ -109,6 +109,10 @@ Recipient creates I1 → Sender signs S2 → Recipient finalizes S3 + broadcasts
 
 ## Completed
 
+- [x] Wallet restore with original start heights (2026-01-24)
+  - API passes xmr/wow heights on wallet creation
+  - Restore uses stored heights instead of current heights
+  - Fixes LWS scanning from correct start point
 - [x] Refactor background/index.ts into modules (2026-01-23)
   - `background/state.ts` - Global state, session persistence, pending txs
   - `background/settings.ts` - User settings, auto-lock timer

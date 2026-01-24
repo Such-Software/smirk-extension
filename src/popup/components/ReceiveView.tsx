@@ -132,7 +132,7 @@ export function ReceiveView({
             style={{ width: '48px', height: '48px', marginBottom: '8px' }}
           />
           {asset !== 'grin' && (
-            <div style={{ fontSize: '14px', color: '#a1a1aa' }}>
+            <div style={{ fontSize: '14px', color: 'var(--color-text-muted)' }}>
               Your {ASSETS[asset].name} Address
             </div>
           )}
@@ -143,7 +143,7 @@ export function ReceiveView({
           grinLoading ? (
             <div style={{ textAlign: 'center', padding: '24px 0' }}>
               <span class="spinner" style={{ width: '24px', height: '24px' }} />
-              <p style={{ color: '#a1a1aa', fontSize: '13px', marginTop: '12px' }}>
+              <p style={{ color: 'var(--color-text-muted)', fontSize: '13px', marginTop: '12px' }}>
                 Initializing...
               </p>
             </div>
@@ -156,17 +156,17 @@ export function ReceiveView({
               {/* Explanation */}
               <div
                 style={{
-                  background: '#27272a',
+                  background: 'var(--color-bg-card)',
                   borderRadius: '8px',
                   padding: '12px',
                   marginBottom: '16px',
                   fontSize: '13px',
-                  color: '#a1a1aa',
+                  color: 'var(--color-text-muted)',
                   lineHeight: '1.5',
                 }}
               >
                 <p>
-                  <strong style={{ color: '#fff' }}>Grin uses interactive transactions.</strong>
+                  <strong style={{ color: 'var(--color-text)' }}>Grin uses interactive transactions.</strong>
                 </p>
                 <p style={{ marginTop: '8px' }}>
                   1. Ask the sender to create a slatepack and share it with you<br />
@@ -178,7 +178,7 @@ export function ReceiveView({
 
               {/* Input: Paste S1 slatepack from sender */}
               <div style={{ marginBottom: '12px' }}>
-                <label style={{ fontSize: '13px', color: '#a1a1aa', display: 'block', marginBottom: '6px' }}>
+                <label style={{ fontSize: '13px', color: 'var(--color-text-muted)', display: 'block', marginBottom: '6px' }}>
                   Paste slatepack from sender:
                 </label>
                 <textarea
@@ -188,11 +188,11 @@ export function ReceiveView({
                   style={{
                     width: '100%',
                     minHeight: '80px',
-                    background: '#18181b',
-                    border: '1px solid #3f3f46',
+                    background: 'var(--color-bg-input)',
+                    border: '1px solid var(--color-border)',
                     borderRadius: '6px',
                     padding: '10px',
-                    color: '#fff',
+                    color: 'var(--color-text)',
                     fontSize: '11px',
                     fontFamily: 'monospace',
                     resize: 'vertical',
@@ -224,25 +224,25 @@ export function ReceiveView({
                   {pendingReceive && (
                     <div
                       style={{
-                        background: '#422006',
-                        border: '1px solid #f59e0b',
+                        background: 'var(--color-warning-bg)',
+                        border: '1px solid var(--color-yellow)',
                         borderRadius: '6px',
                         padding: '10px',
                         marginBottom: '12px',
                         fontSize: '12px',
-                        color: '#fbbf24',
+                        color: 'var(--color-warning-text)',
                       }}
                     >
                       Waiting for sender to finalize. Keep this slatepack until the transaction confirms.
                     </div>
                   )}
-                  <label style={{ fontSize: '13px', color: '#a1a1aa', display: 'block', marginBottom: '6px' }}>
+                  <label style={{ fontSize: '13px', color: 'var(--color-text-muted)', display: 'block', marginBottom: '6px' }}>
                     Send this response back to the sender:
                   </label>
                   <div
                     style={{
-                      background: '#18181b',
-                      border: '1px solid #22c55e',
+                      background: 'var(--color-bg-input)',
+                      border: '1px solid var(--color-success)',
                       borderRadius: '6px',
                       padding: '10px',
                       marginBottom: '8px',
@@ -257,7 +257,7 @@ export function ReceiveView({
                         wordBreak: 'break-all',
                         whiteSpace: 'pre-wrap',
                         margin: 0,
-                        color: '#22c55e',
+                        color: 'var(--color-success)',
                       }}
                     >
                       {outputSlatepack}
@@ -287,7 +287,7 @@ export function ReceiveView({
           /* Non-Grin: Show address */
           <div
             style={{
-              background: '#27272a',
+              background: 'var(--color-bg-card)',
               borderRadius: '8px',
               padding: '16px',
               marginBottom: '16px',
@@ -325,7 +325,7 @@ export function ReceiveView({
           <div
             style={{
               fontSize: '12px',
-              color: '#71717a',
+              color: 'var(--color-text-faint)',
               textAlign: 'center',
               padding: '0 16px',
             }}

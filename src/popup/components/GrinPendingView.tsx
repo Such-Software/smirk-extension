@@ -133,7 +133,7 @@ export function GrinPendingView({ onBack }: { onBack: () => void }) {
         {loading ? (
           <div style={{ textAlign: 'center', padding: '24px 0' }}>
             <span class="spinner" style={{ width: '24px', height: '24px' }} />
-            <p style={{ color: '#a1a1aa', fontSize: '13px', marginTop: '12px' }}>
+            <p style={{ color: 'var(--color-text-muted)', fontSize: '13px', marginTop: '12px' }}>
               Loading pending transactions...
             </p>
           </div>
@@ -152,7 +152,7 @@ export function GrinPendingView({ onBack }: { onBack: () => void }) {
         ) : totalPending === 0 ? (
           <div style={{ textAlign: 'center', padding: '24px 0' }}>
             <div style={{ fontSize: '36px', marginBottom: '12px' }}>✨</div>
-            <p style={{ color: '#a1a1aa', fontSize: '13px' }}>No pending transactions</p>
+            <p style={{ color: 'var(--color-text-muted)', fontSize: '13px' }}>No pending transactions</p>
           </div>
         ) : (
           <>
@@ -162,7 +162,7 @@ export function GrinPendingView({ onBack }: { onBack: () => void }) {
                 <h3
                   style={{
                     fontSize: '12px',
-                    color: '#a1a1aa',
+                    color: 'var(--color-text-muted)',
                     marginBottom: '8px',
                     textTransform: 'uppercase',
                     letterSpacing: '0.5px',
@@ -174,7 +174,7 @@ export function GrinPendingView({ onBack }: { onBack: () => void }) {
                   <div
                     key={slate.id}
                     style={{
-                      background: '#27272a',
+                      background: 'var(--color-bg-card)',
                       borderRadius: '8px',
                       padding: '12px',
                       marginBottom: '8px',
@@ -185,12 +185,12 @@ export function GrinPendingView({ onBack }: { onBack: () => void }) {
                         <div style={{ fontSize: '16px', fontWeight: 600, color: '#22c55e' }}>
                           +{formatBalance(slate.amount, 'grin')} GRIN
                         </div>
-                        <div style={{ fontSize: '10px', color: '#71717a' }}>
+                        <div style={{ fontSize: '10px', color: 'var(--color-text-faint)' }}>
                           Expires in {formatExpiry(slate.expiresAt)}
                         </div>
                       </div>
                       <div style={{ textAlign: 'right' }}>
-                        <div style={{ fontSize: '10px', color: '#71717a' }}>
+                        <div style={{ fontSize: '10px', color: 'var(--color-text-faint)' }}>
                           {new Date(slate.createdAt).toLocaleString()}
                         </div>
                       </div>
@@ -228,7 +228,7 @@ export function GrinPendingView({ onBack }: { onBack: () => void }) {
                 <h3
                   style={{
                     fontSize: '12px',
-                    color: '#a1a1aa',
+                    color: 'var(--color-text-muted)',
                     marginBottom: '8px',
                     textTransform: 'uppercase',
                     letterSpacing: '0.5px',
@@ -240,7 +240,7 @@ export function GrinPendingView({ onBack }: { onBack: () => void }) {
                   <div
                     key={slate.id}
                     style={{
-                      background: '#27272a',
+                      background: 'var(--color-bg-card)',
                       borderRadius: '8px',
                       padding: '12px',
                       marginBottom: '8px',
@@ -251,12 +251,12 @@ export function GrinPendingView({ onBack }: { onBack: () => void }) {
                         <div style={{ fontSize: '16px', fontWeight: 600, color: '#f59e0b' }}>
                           -{formatBalance(slate.amount, 'grin')} GRIN
                         </div>
-                        <div style={{ fontSize: '10px', color: '#71717a' }}>
+                        <div style={{ fontSize: '10px', color: 'var(--color-text-faint)' }}>
                           Recipient signed - ready to broadcast
                         </div>
                       </div>
                       <div style={{ textAlign: 'right' }}>
-                        <div style={{ fontSize: '10px', color: '#71717a' }}>
+                        <div style={{ fontSize: '10px', color: 'var(--color-text-faint)' }}>
                           {new Date(slate.createdAt).toLocaleString()}
                         </div>
                       </div>

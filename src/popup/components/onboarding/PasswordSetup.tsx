@@ -64,7 +64,7 @@ export function PasswordSetup({
         <div class="spinner" style={{ width: '48px', height: '48px', marginBottom: '24px' }} />
         <h2 class="lock-title" style={{ marginBottom: '8px' }}>Creating Wallet</h2>
         <p class="lock-text">{loadingMessage}</p>
-        <p class="lock-text" style={{ fontSize: '12px', marginTop: '16px', color: '#71717a' }}>
+        <p class="lock-text" style={{ fontSize: '12px', marginTop: '16px', color: 'var(--color-text-faint)' }}>
           Please wait, this may take a moment...
         </p>
       </div>

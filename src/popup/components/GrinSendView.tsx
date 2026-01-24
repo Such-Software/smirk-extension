@@ -239,8 +239,8 @@ export function GrinSendView({
         <div class="content">
           <div style={{ textAlign: 'center', padding: '24px 0' }}>
             <div style={{ fontSize: '48px', marginBottom: '16px' }}>✓</div>
-            <h3 style={{ marginBottom: '8px', color: '#22c55e' }}>Success!</h3>
-            <p style={{ color: '#a1a1aa', fontSize: '13px', marginBottom: '24px' }}>
+            <h3 style={{ marginBottom: '8px', color: 'var(--color-success)' }}>Success!</h3>
+            <p style={{ color: 'var(--color-text-muted)', fontSize: '13px', marginBottom: '24px' }}>
               Your transaction has been finalized and broadcast to the Grin network.
             </p>
             <button class="btn btn-primary" style={{ width: '100%' }} onClick={onSlateCreated}>
@@ -268,12 +268,12 @@ export function GrinSendView({
           {/* Instructions */}
           <div
             style={{
-              background: '#1e3a5f',
+              background: 'var(--color-info-bg)',
               borderRadius: '8px',
               padding: '12px',
               marginBottom: '16px',
               fontSize: '12px',
-              color: '#93c5fd',
+              color: 'var(--color-info-text)',
               lineHeight: '1.5',
             }}
           >
@@ -284,13 +284,13 @@ export function GrinSendView({
 
           {/* S1 Slatepack to send */}
           <div style={{ marginBottom: '16px' }}>
-            <label style={{ display: 'block', fontSize: '12px', color: '#a1a1aa', marginBottom: '6px' }}>
+            <label style={{ display: 'block', fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '6px' }}>
               Send this to the recipient:
             </label>
             <div
               style={{
-                background: '#18181b',
-                border: '1px solid #3f3f46',
+                background: 'var(--color-bg-input)',
+                border: '1px solid var(--color-border)',
                 borderRadius: '6px',
                 padding: '10px',
                 marginBottom: '8px',
@@ -307,7 +307,7 @@ export function GrinSendView({
                   wordBreak: 'break-all',
                   whiteSpace: 'pre-wrap',
                   margin: 0,
-                  color: '#a1a1aa',
+                  color: 'var(--color-text-muted)',
                 }}
               >
                 {slatepack}
@@ -320,7 +320,7 @@ export function GrinSendView({
 
           {/* S2 Response input */}
           <div style={{ marginBottom: '16px' }}>
-            <label style={{ display: 'block', fontSize: '12px', color: '#a1a1aa', marginBottom: '6px' }}>
+            <label style={{ display: 'block', fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '6px' }}>
               Paste signed response from recipient:
             </label>
             <textarea
@@ -330,11 +330,11 @@ export function GrinSendView({
               style={{
                 width: '100%',
                 minHeight: '80px',
-                background: '#18181b',
-                border: '1px solid #3f3f46',
+                background: 'var(--color-bg-input)',
+                border: '1px solid var(--color-border)',
                 borderRadius: '6px',
                 padding: '10px',
-                color: '#fff',
+                color: 'var(--color-text)',
                 fontSize: '11px',
                 fontFamily: 'monospace',
                 resize: 'vertical',
@@ -382,21 +382,21 @@ export function GrinSendView({
         {initializingWasm ? (
           <div style={{ textAlign: 'center', padding: '24px 0' }}>
             <span class="spinner" style={{ width: '24px', height: '24px', marginBottom: '12px' }} />
-            <p style={{ color: '#a1a1aa', fontSize: '13px' }}>Initializing Grin wallet...</p>
+            <p style={{ color: 'var(--color-text-muted)', fontSize: '13px' }}>Initializing Grin wallet...</p>
           </div>
         ) : (
           <form onSubmit={handleSend}>
             {/* Available Balance */}
             <div
               style={{
-                background: '#27272a',
+                background: 'var(--color-bg-card)',
                 borderRadius: '8px',
                 padding: '12px',
                 marginBottom: '16px',
                 textAlign: 'center',
               }}
             >
-              <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '4px' }}>
+              <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginBottom: '4px' }}>
                 Available Balance
               </div>
               <div style={{ fontSize: '18px', fontWeight: 600 }}>
@@ -406,7 +406,7 @@ export function GrinSendView({
 
             {/* Amount */}
             <div class="form-group">
-              <label style={{ display: 'block', fontSize: '12px', color: '#a1a1aa', marginBottom: '4px' }}>
+              <label style={{ display: 'block', fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '4px' }}>
                 Amount (GRIN)
               </label>
               <div style={{ display: 'flex', gap: '8px' }}>
@@ -434,12 +434,12 @@ export function GrinSendView({
             {/* Fee notice */}
             <div
               style={{
-                background: '#27272a',
+                background: 'var(--color-bg-card)',
                 borderRadius: '8px',
                 padding: '12px',
                 marginBottom: '16px',
                 fontSize: '12px',
-                color: '#a1a1aa',
+                color: 'var(--color-text-muted)',
               }}
             >
               Network fee: ~0.02-0.05 GRIN (varies by inputs)
@@ -465,7 +465,7 @@ export function GrinSendView({
               style={{
                 marginTop: '16px',
                 fontSize: '11px',
-                color: '#71717a',
+                color: 'var(--color-text-faint)',
                 lineHeight: '1.5',
                 textAlign: 'center',
               }}

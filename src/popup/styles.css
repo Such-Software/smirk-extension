@@ -14,8 +14,15 @@
   --color-border: #333333;
   --color-text: #f5f5f5;
   --color-text-muted: #9ca3af;
+  --color-text-faint: #71717a;
   --color-success: #10b981;
   --color-error: #ef4444;
+  --color-info-bg: #1e3a5f;
+  --color-info-text: #93c5fd;
+  --color-warning-bg: rgba(251, 191, 36, 0.15);
+  --color-warning-text: #fbbf24;
+  --color-error-bg: rgba(239, 68, 68, 0.1);
+  --color-error-text-light: #fca5a5;
 }
 
 /* Light theme */
@@ -26,6 +33,13 @@
   --color-border: #d4d4d4;
   --color-text: #171717;
   --color-text-muted: #525252;
+  --color-text-faint: #737373;
+  --color-info-bg: #dbeafe;
+  --color-info-text: #1e40af;
+  --color-warning-bg: rgba(251, 191, 36, 0.2);
+  --color-warning-text: #b45309;
+  --color-error-bg: rgba(239, 68, 68, 0.1);
+  --color-error-text-light: #b91c1c;
 }
 
 body {
@@ -337,7 +351,7 @@ body {
 }
 
 .form-input::placeholder {
-  color: #666666;
+  color: var(--color-text-muted);
 }
 
 /* Empty State */

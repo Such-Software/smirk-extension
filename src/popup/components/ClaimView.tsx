@@ -64,7 +64,7 @@ export function ClaimView({
       </div>
 
       {tipInfo.isEncrypted && (
-        <p style={{ fontSize: '13px', color: '#a1a1aa', marginBottom: '16px' }}>
+        <p style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '16px' }}>
           🔒 This tip was encrypted specifically for you
         </p>
       )}

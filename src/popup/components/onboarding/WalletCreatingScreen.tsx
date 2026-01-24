@@ -41,7 +41,7 @@ export function WalletCreatingScreen({ onComplete }: { onComplete: () => void })
       <p class="lock-text">
         {checking ? 'Please wait...' : 'Your wallet is being created. This may take a moment...'}
       </p>
-      <p class="lock-text" style={{ fontSize: '12px', marginTop: '16px', color: '#71717a' }}>
+      <p class="lock-text" style={{ fontSize: '12px', marginTop: '16px', color: 'var(--color-text-faint)' }}>
         Please keep this window open.
       </p>
     </div>

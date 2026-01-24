@@ -42,7 +42,7 @@ export function SeedVerify({
       <form onSubmit={handleSubmit} style={{ width: '100%' }}>
         {verifyIndices.map((idx) => (
           <div key={idx} class="form-group" style={{ marginBottom: '12px' }}>
-            <label style={{ fontSize: '12px', color: '#a1a1aa', marginBottom: '4px', display: 'block' }}>
+            <label style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '4px', display: 'block' }}>
               Word #{idx + 1}
             </label>
             <input

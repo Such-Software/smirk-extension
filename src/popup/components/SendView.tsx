@@ -289,13 +289,13 @@ export function SendView({
           <div style={{ textAlign: 'center', padding: '24px 0' }}>
             <div style={{ fontSize: '48px', marginBottom: '16px' }}>✅</div>
             <h2 style={{ marginBottom: '8px' }}>Transaction Broadcast</h2>
-            <p style={{ color: '#a1a1aa', fontSize: '13px', marginBottom: '16px' }}>
+            <p style={{ color: 'var(--color-text-muted)', fontSize: '13px', marginBottom: '16px' }}>
               Your {ASSETS[asset].symbol} has been sent!
             </p>
 
             <div
               style={{
-                background: '#27272a',
+                background: 'var(--color-bg-card)',
                 borderRadius: '8px',
                 padding: '12px',
                 marginBottom: '16px',
@@ -304,7 +304,7 @@ export function SendView({
               onClick={copyTxid}
               title="Click to copy"
             >
-              <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '4px' }}>
+              <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginBottom: '4px' }}>
                 Transaction ID (click to copy)
               </div>
               <div
@@ -349,14 +349,14 @@ export function SendView({
             {/* Available Balance */}
             <div
               style={{
-                background: '#27272a',
+                background: 'var(--color-bg-card)',
                 borderRadius: '8px',
                 padding: '12px',
                 marginBottom: '16px',
                 textAlign: 'center',
               }}
             >
-              <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '4px' }}>
+              <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginBottom: '4px' }}>
                 Available Balance
               </div>
               <div style={{ fontSize: '18px', fontWeight: 600 }}>
@@ -366,7 +366,7 @@ export function SendView({
 
             {/* Recipient Address */}
             <div class="form-group">
-              <label style={{ display: 'block', fontSize: '12px', color: '#a1a1aa', marginBottom: '4px' }}>
+              <label style={{ display: 'block', fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '4px' }}>
                 Recipient Address
               </label>
               <input
@@ -387,7 +387,7 @@ export function SendView({
 
             {/* Amount */}
             <div class="form-group">
-              <label style={{ display: 'block', fontSize: '12px', color: '#a1a1aa', marginBottom: '4px' }}>
+              <label style={{ display: 'block', fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '4px' }}>
                 Amount ({ASSETS[asset].symbol})
               </label>
               <div style={{ display: 'flex', gap: '8px' }}>
@@ -418,13 +418,13 @@ export function SendView({
             {/* Fee Rate - only for UTXO assets */}
             {isUtxoAsset && (
               <div class="form-group">
-                <label style={{ display: 'block', fontSize: '12px', color: '#a1a1aa', marginBottom: '4px' }}>
+                <label style={{ display: 'block', fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '4px' }}>
                   Fee Rate (sat/vB)
                 </label>
                 {loadingFees ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 0' }}>
                     <span class="spinner" style={{ width: '14px', height: '14px' }} />
-                    <span style={{ fontSize: '12px', color: '#71717a' }}>Fetching fee estimates...</span>
+                    <span style={{ fontSize: '12px', color: 'var(--color-text-faint)' }}>Fetching fee estimates...</span>
                   </div>
                 ) : (
                   <>
@@ -503,12 +503,12 @@ export function SendView({
             {isCryptonoteAsset && (
               <div
                 style={{
-                  background: '#27272a',
+                  background: 'var(--color-bg-card)',
                   borderRadius: '8px',
                   padding: '12px',
                   marginBottom: '16px',
                   fontSize: '12px',
-                  color: '#a1a1aa',
+                  color: 'var(--color-text-muted)',
                 }}
               >
                 Network fee will be calculated automatically based on transaction size.

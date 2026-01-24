@@ -239,7 +239,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
             </div>
 
             {/* Version Info */}
-            <div style={{ textAlign: 'center', fontSize: '11px', color: '#71717a', marginTop: '24px' }}>
+            <div style={{ textAlign: 'center', fontSize: '11px', color: 'var(--color-text-faint)', marginTop: '24px' }}>
               Smirk Wallet v0.1.0
             </div>
           </>
@@ -264,13 +264,13 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
                 {/* Warning */}
                 <div
                   style={{
-                    background: 'rgba(239, 68, 68, 0.1)',
-                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                    background: 'var(--color-error-bg)',
+                    border: '1px solid var(--color-error)',
                     borderRadius: '8px',
                     padding: '12px',
                     marginBottom: '16px',
                     fontSize: '12px',
-                    color: '#fca5a5',
+                    color: 'var(--color-error-text-light)',
                   }}
                 >
                   <strong>Warning:</strong> Never share your recovery phrase. Anyone with these
@@ -330,13 +330,13 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
                 {/* Warning */}
                 <div
                   style={{
-                    background: 'rgba(234, 179, 8, 0.1)',
-                    border: '1px solid rgba(234, 179, 8, 0.3)',
+                    background: 'var(--color-warning-bg)',
+                    border: '1px solid var(--color-yellow)',
                     borderRadius: '8px',
                     padding: '12px',
                     marginBottom: '16px',
                     fontSize: '12px',
-                    color: '#fde047',
+                    color: 'var(--color-warning-text)',
                   }}
                 >
                   Write these words down and store them safely. This is the only way to recover

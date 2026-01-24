@@ -348,8 +348,15 @@ export async function handleRestoreWallet(
   // Set state to 'creating' so popup can show progress if reopened
   await saveOnboardingState({ step: 'creating', createdAt: Date.now() });
 
-  // Pass isRestore=true so LWS registration uses stored heights
-  const result = await createWalletFromMnemonic(mnemonic, password, true, true);
+  // Extract original heights from backend response
+  const restoreHeights = {
+    xmr: checkResult.data.xmrStartHeight,
+    wow: checkResult.data.wowStartHeight,
+  };
+  console.log('Restore heights from backend:', restoreHeights);
+
+  // Pass isRestore=true and original heights so LWS registration uses stored heights
+  const result = await createWalletFromMnemonic(mnemonic, password, true, true, restoreHeights);
 
   // Clear onboarding state on success
   if (result.success) {
@@ -378,13 +385,15 @@ export async function handleRestoreWallet(
  * @param password - User's password for encryption
  * @param backupConfirmed - Whether user confirmed seed backup
  * @param isRestore - If true, use stored heights for LWS start
+ * @param restoreHeights - Original blockchain heights from backend (restore only)
  * @returns Created wallet info
  */
 async function createWalletFromMnemonic(
   mnemonic: string,
   password: string,
   backupConfirmed: boolean,
-  isRestore: boolean = false
+  isRestore: boolean = false,
+  restoreHeights?: { xmr?: number; wow?: number }
 ): Promise<MessageResponse<{ created: boolean; assets: AssetType[] }>> {
   // Derive all keys from mnemonic
   const derivedKeys = deriveAllKeys(mnemonic);
@@ -406,28 +415,44 @@ async function createWalletFromMnemonic(
   const bip39Seed = mnemonicToSeed(mnemonic);
   const encryptedBip39Seed = encryptWithKey(bip39Seed);
 
-  // Fetch current blockchain heights for wallet birthday (run in parallel with key setup)
+  // Set up wallet birthday heights
+  // For restore: use provided heights from backend (original creation heights)
+  // For new wallet: fetch current blockchain heights
   let walletBirthday: WalletState['walletBirthday'];
-  try {
-    const heightsResult = await api.getBlockchainHeights();
-    if (heightsResult.data) {
-      walletBirthday = {
-        timestamp: Date.now(),
-        heights: {
-          btc: heightsResult.data.btc ?? undefined,
-          ltc: heightsResult.data.ltc ?? undefined,
-          xmr: heightsResult.data.xmr ?? undefined,
-          wow: heightsResult.data.wow ?? undefined,
-        },
-      };
-    } else {
-      // Backend unavailable - store timestamp only, heights will be missing
-      console.warn('Could not fetch blockchain heights:', heightsResult.error);
+  if (isRestore && restoreHeights) {
+    // Use the original heights from when wallet was created
+    walletBirthday = {
+      timestamp: Date.now(),
+      heights: {
+        xmr: restoreHeights.xmr,
+        wow: restoreHeights.wow,
+        // BTC/LTC don't use start heights for scanning
+      },
+    };
+    console.log('Restore: using original heights', restoreHeights);
+  } else {
+    // New wallet: fetch current heights
+    try {
+      const heightsResult = await api.getBlockchainHeights();
+      if (heightsResult.data) {
+        walletBirthday = {
+          timestamp: Date.now(),
+          heights: {
+            btc: heightsResult.data.btc ?? undefined,
+            ltc: heightsResult.data.ltc ?? undefined,
+            xmr: heightsResult.data.xmr ?? undefined,
+            wow: heightsResult.data.wow ?? undefined,
+          },
+        };
+      } else {
+        // Backend unavailable - store timestamp only, heights will be missing
+        console.warn('Could not fetch blockchain heights:', heightsResult.error);
+        walletBirthday = { timestamp: Date.now(), heights: {} };
+      }
+    } catch (err) {
+      console.warn('Failed to fetch blockchain heights:', err);
       walletBirthday = { timestamp: Date.now(), heights: {} };
     }
-  } catch (err) {
-    console.warn('Failed to fetch blockchain heights:', err);
-    walletBirthday = { timestamp: Date.now(), heights: {} };
   }
 
   // Build wallet state
@@ -596,6 +621,8 @@ async function registerWithBackend(state: WalletState, seedFingerprint?: string)
     keys,
     walletBirthday: state.walletBirthday?.timestamp,
     seedFingerprint,
+    xmrStartHeight: state.walletBirthday?.heights?.xmr,
+    wowStartHeight: state.walletBirthday?.heights?.wow,
   });
 
   if (result.error) {

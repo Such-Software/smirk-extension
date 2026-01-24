@@ -125,6 +125,8 @@ export class SmirkApi {
     username?: string;
     walletBirthday?: number;
     seedFingerprint?: string;
+    xmrStartHeight?: number;
+    wowStartHeight?: number;
   }): Promise<ApiResponse<{
     accessToken: string;
     refreshToken: string;
@@ -142,6 +144,8 @@ export class SmirkApi {
         username: params.username,
         wallet_birthday: params.walletBirthday,
         seed_fingerprint: params.seedFingerprint,
+        xmr_start_height: params.xmrStartHeight,
+        wow_start_height: params.wowStartHeight,
       }),
     });
   }
@@ -149,6 +153,7 @@ export class SmirkApi {
   /**
    * Check if a wallet restore is valid.
    * Returns whether the fingerprint exists and keys match.
+   * Also returns the original start heights for LWS registration.
    */
   async checkRestore(params: {
     fingerprint: string;
@@ -162,6 +167,8 @@ export class SmirkApi {
     userId?: string;
     keysValid?: boolean;
     error?: string;
+    xmrStartHeight?: number;
+    wowStartHeight?: number;
   }>> {
     return this.request('/auth/check-restore', {
       method: 'POST',

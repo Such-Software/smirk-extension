@@ -1,3 +1,10 @@
+/**
+ * Main wallet view component.
+ *
+ * Displays wallet balance, transaction history, and navigation to
+ * send/receive/settings screens.
+ */
+
 import { useState, useEffect } from 'preact/hooks';
 import type { AssetType, BalanceResponse } from '@/types';
 import { isLwsRawResponse } from '@/types';
@@ -5,9 +12,6 @@ import { calculateVerifiedBalance } from '@/lib/monero-crypto';
 import { windows, runtime } from '@/lib/browser';
 import {
   ASSETS,
-  DISPLAY_DECIMALS,
-  formatBalance,
-  formatBalanceFull,
   sendMessage,
   saveScreenState,
   restoreScreenState,
@@ -18,8 +22,9 @@ import {
 import { ReceiveView } from './ReceiveView';
 import { SendView } from './SendView';
 import { SettingsView } from './SettingsView';
-import { useToast, copyToClipboard } from './Toast';
+import { useToast } from './Toast';
 import { getGrinPendingReceive, type GrinPendingReceive } from '@/lib/storage';
+import { BalanceCard, TxList, GrinPendingBanner, type TxHistoryEntry } from './wallet';
 
 // Check if we're already in a popped out window
 const isPopup = window.location.search.includes('popup=true');
@@ -27,104 +32,53 @@ const isPopup = window.location.search.includes('popup=true');
 // Storage key for persisting active asset tab
 const ACTIVE_ASSET_KEY = 'smirk_activeAsset';
 
-// Transaction history entry (common format for all assets)
-interface TxHistoryEntry {
-  txid: string;
-  height: number;
-  fee?: number;
-  // XMR/WOW specific
-  is_pending?: boolean;
-  total_received?: number;
-  total_sent?: number;
-  // Grin specific - on-chain tx identifier (like txid for BTC)
-  kernel_excess?: string;
-  // Grin transaction status and metadata
-  is_cancelled?: boolean;
-  status?: string;
-  direction?: 'send' | 'receive';
-  input_ids?: string[]; // For cancelling pending sends
-}
-
-// Pending outgoing transaction (not yet confirmed)
-interface PendingTx {
-  txHash: string;
-  asset: AssetType;
-  amount: number;
-  fee: number;
-  timestamp: number;
-}
+const AVAILABLE_ASSETS: AssetType[] = ['btc', 'ltc', 'xmr', 'wow', 'grin'];
 
 export function WalletView({ onLock }: { onLock: () => void }) {
   const { showToast } = useToast();
   const [activeAsset, setActiveAsset] = useState<AssetType>('btc');
   const [screen, setScreen] = useState<WalletScreen>('main');
   const [addresses, setAddresses] = useState<Record<AssetType, AddressData | null>>({
-    btc: null,
-    ltc: null,
-    xmr: null,
-    wow: null,
-    grin: null,
+    btc: null, ltc: null, xmr: null, wow: null, grin: null,
   });
   const [balances, setBalances] = useState<Record<AssetType, BalanceData | null>>({
-    btc: null,
-    ltc: null,
-    xmr: null,
-    wow: null,
-    grin: null,
+    btc: null, ltc: null, xmr: null, wow: null, grin: null,
   });
   const [loadingBalance, setLoadingBalance] = useState<AssetType | null>(null);
   const [history, setHistory] = useState<Record<AssetType, TxHistoryEntry[] | null>>({
-    btc: null,
-    ltc: null,
-    xmr: null,
-    wow: null,
-    grin: null,
+    btc: null, ltc: null, xmr: null, wow: null, grin: null,
   });
   const [loadingHistory, setLoadingHistory] = useState(false);
   // Pending outgoing amounts (for XMR/WOW - not yet confirmed txs)
   const [pendingOutgoing, setPendingOutgoing] = useState<Record<AssetType, number>>({
-    btc: 0,
-    ltc: 0,
-    xmr: 0,
-    wow: 0,
-    grin: 0,
+    btc: 0, ltc: 0, xmr: 0, wow: 0, grin: 0,
   });
   // Pending Grin receive (signed slatepack waiting for sender to finalize)
   const [grinPendingReceive, setGrinPendingReceive] = useState<GrinPendingReceive | null>(null);
   // Track which Grin transaction is being cancelled
   const [cancellingTxId, setCancellingTxId] = useState<string | null>(null);
 
-  const availableAssets: AssetType[] = ['btc', 'ltc', 'xmr', 'wow', 'grin'];
+  // =========================================================================
+  // Effects
+  // =========================================================================
 
   // Restore screen state and active asset on mount
   useEffect(() => {
     const restore = async () => {
-      // First try to restore full screen state (includes screen + asset)
       const savedState = await restoreScreenState();
       if (savedState) {
         setActiveAsset(savedState.asset);
         setScreen(savedState.screen);
       } else {
-        // Fall back to just restoring the active asset
         const saved = localStorage.getItem(ACTIVE_ASSET_KEY);
-        if (saved && availableAssets.includes(saved as AssetType)) {
+        if (saved && AVAILABLE_ASSETS.includes(saved as AssetType)) {
           setActiveAsset(saved as AssetType);
         }
       }
     };
     restore();
-
-    // Check for pending Grin receive
     getGrinPendingReceive().then(setGrinPendingReceive);
   }, []);
-
-  // Persist active asset when it changes
-  const handleAssetChange = (asset: AssetType) => {
-    setActiveAsset(asset);
-    localStorage.setItem(ACTIVE_ASSET_KEY, asset);
-    // Save screen state so we can restore to same asset if popup closes
-    saveScreenState(screen, asset);
-  };
 
   // Save screen state whenever screen or asset changes
   useEffect(() => {
@@ -136,11 +90,8 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     const resetTimer = () => {
       sendMessage({ type: 'RESET_AUTO_LOCK_TIMER' }).catch(() => {});
     };
-
-    // Reset on any user interaction
     window.addEventListener('click', resetTimer);
     window.addEventListener('keydown', resetTimer);
-
     return () => {
       window.removeEventListener('click', resetTimer);
       window.removeEventListener('keydown', resetTimer);
@@ -156,10 +107,13 @@ export function WalletView({ onLock }: { onLock: () => void }) {
   useEffect(() => {
     if (addresses[activeAsset]) {
       fetchBalance(activeAsset);
-      // Fetch history for all assets
       fetchHistory(activeAsset);
     }
   }, [activeAsset, addresses[activeAsset]]);
+
+  // =========================================================================
+  // Data fetching
+  // =========================================================================
 
   const fetchAddresses = async () => {
     try {
@@ -177,12 +131,10 @@ export function WalletView({ onLock }: { onLock: () => void }) {
   };
 
   const fetchBalance = async (asset: AssetType) => {
-    if (loadingBalance === asset) return; // Already loading
+    if (loadingBalance === asset) return;
     setLoadingBalance(asset);
 
-    // Track locally-recorded pending outgoing transactions.
-    // For XMR/WOW, LWS may take a few seconds to see the tx in mempool after broadcast,
-    // so we track pending txs locally to show correct balance immediately after send.
+    // Fetch local pending outgoing transactions
     try {
       const pendingResult = await sendMessage<{ pending: Array<{ amount: number; fee: number }> }>({
         type: 'GET_PENDING_TXS',
@@ -197,15 +149,8 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     try {
       const result = await sendMessage<BalanceResponse>({ type: 'GET_BALANCE', asset });
 
-      // Check if this is LWS raw data that needs client-side verification
       if (isLwsRawResponse(result)) {
-        // Run client-side key image verification for XMR/WOW spent outputs
-        console.log(`[Balance] Verifying ${asset} spent outputs...`);
-
-        // Calculate true balance:
-        // total_received includes ALL receives (confirmed + mempool, including change)
-        // spent_outputs includes ALL spends (confirmed + mempool)
-        // verified_balance = total_received - verified_spent_amount
+        // XMR/WOW - needs client-side key image verification
         const verified = await calculateVerifiedBalance(
           result.total_received,
           result.spent_outputs,
@@ -213,38 +158,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
           result.publicSpendKey,
           result.spendKeyHex
         );
-
-        // pending_balance from LWS is the NET change from mempool txs
-        // Can be negative for outgoing (spent > change received)
-        // Can be positive for incoming (received > 0)
-        // For display, we show:
-        // - confirmed = verified_balance - max(0, pending_balance) (exclude pending incoming)
-        // - unconfirmed = pending_balance (can be negative for outgoing)
-        //
-        // Actually simpler: verified_balance already accounts for mempool spends,
-        // so we just need to show the verified balance directly.
-        // The pending_balance shows the net change that's still unconfirmed.
-
-        console.log(`[Balance] ${asset} verified:`, {
-          totalReceived: result.total_received,
-          pendingBalance: result.pending_balance,
-          lockedBalance: result.locked_balance,
-          spentOutputsCount: result.spent_outputs.length,
-          spentOutputsAmounts: result.spent_outputs.map(o => o.amount),
-          verifiedSpentAmount: verified.verifiedSpentAmount,
-          verifiedSpentCount: verified.verifiedSpentCount,
-          verifiedBalance: verified.balance,
-          hashToEcImplemented: verified.hashToEcImplemented,
-        });
-
-        // The verified.balance is the true spendable balance (total_received - verified_spends)
-        // locked_balance from LWS represents outputs still in unlock period (10 blocks XMR, 4 blocks WOW)
-        // For cleaner UX, show:
-        // - confirmed: unlocked balance (verified - locked)
-        // - locked: outputs waiting for confirmations
-        // - unconfirmed: pending net change from mempool
         const unlockedBalance = Math.max(0, verified.balance - result.locked_balance);
-
         setBalances((prev) => ({
           ...prev,
           [asset]: {
@@ -256,7 +170,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
           },
         }));
       } else {
-        // UTXO format (BTC/LTC/Grin) - use directly
+        // UTXO format (BTC/LTC/Grin)
         setBalances((prev) => ({
           ...prev,
           [asset]: {
@@ -269,7 +183,6 @@ export function WalletView({ onLock }: { onLock: () => void }) {
       }
     } catch (err) {
       console.error(`Failed to fetch ${asset} balance:`, err);
-      // Keep previous balance if available, but mark as error
       setBalances((prev) => ({
         ...prev,
         [asset]: {
@@ -287,17 +200,12 @@ export function WalletView({ onLock }: { onLock: () => void }) {
   const fetchHistory = async (asset: AssetType) => {
     if (loadingHistory) return;
     setLoadingHistory(true);
-
     try {
       const result = await sendMessage<{ transactions: TxHistoryEntry[] }>({
         type: 'GET_HISTORY',
         asset,
       });
-
-      setHistory((prev) => ({
-        ...prev,
-        [asset]: result.transactions,
-      }));
+      setHistory((prev) => ({ ...prev, [asset]: result.transactions }));
     } catch (err) {
       console.error(`Failed to fetch ${asset} history:`, err);
     } finally {
@@ -305,11 +213,19 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     }
   };
 
-  // Cancel a pending Grin send transaction
-  const handleCancelGrinTx = async (tx: TxHistoryEntry, e: Event) => {
-    e.stopPropagation(); // Don't trigger copy on parent click
-    if (cancellingTxId) return; // Already cancelling something
+  // =========================================================================
+  // Event handlers
+  // =========================================================================
 
+  const handleAssetChange = (asset: AssetType) => {
+    setActiveAsset(asset);
+    localStorage.setItem(ACTIVE_ASSET_KEY, asset);
+    saveScreenState(screen, asset);
+  };
+
+  const handleCancelGrinTx = async (tx: TxHistoryEntry, e: Event) => {
+    e.stopPropagation();
+    if (cancellingTxId) return;
     setCancellingTxId(tx.txid);
     try {
       await sendMessage<{ cancelled: boolean }>({
@@ -317,7 +233,6 @@ export function WalletView({ onLock }: { onLock: () => void }) {
         slateId: tx.txid,
         inputIds: tx.input_ids || [],
       });
-      // Refresh history and balance after cancellation
       await fetchHistory('grin');
       await fetchBalance('grin');
     } catch (err) {
@@ -327,7 +242,6 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     }
   };
 
-  // Pop out the extension into its own window
   const handlePopOut = async () => {
     try {
       const popupUrl = runtime.getURL('popup.html?popup=true');
@@ -338,7 +252,6 @@ export function WalletView({ onLock }: { onLock: () => void }) {
         height: 600,
         focused: true,
       });
-      // Close the popup after opening the window
       window.close();
     } catch (err) {
       console.error('Failed to pop out:', err);
@@ -346,27 +259,29 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     }
   };
 
+  // =========================================================================
+  // Derived state
+  // =========================================================================
+
   const currentAddress = addresses[activeAsset];
   const currentBalance = balances[activeAsset];
-  // Track locally-recorded pending outgoing (not yet seen by LWS/backend).
-  // For XMR/WOW, LWS may take a few seconds to detect the tx in mempool,
-  // so we subtract local pending from confirmed to show correct available balance.
   const currentPendingOutgoing = pendingOutgoing[activeAsset] || 0;
   const adjustedConfirmed = Math.max(0, (currentBalance?.confirmed ?? 0) - currentPendingOutgoing);
 
-  // Show settings view
+  // =========================================================================
+  // Sub-screens
+  // =========================================================================
+
   if (screen === 'settings') {
     return <SettingsView onBack={() => setScreen('main')} />;
   }
 
-  // Show receive view
   if (screen === 'receive') {
     return (
       <ReceiveView
         asset={activeAsset}
         address={currentAddress}
         onBack={() => {
-          // Refresh pending state when returning from receive view
           getGrinPendingReceive().then(setGrinPendingReceive);
           setScreen('main');
         }}
@@ -374,9 +289,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     );
   }
 
-  // Show send view
   if (screen === 'send') {
-    // Pass adjusted balance (accounting for pending outgoing) to SendView
     const adjustedBalance: BalanceData | null = currentBalance
       ? {
           confirmed: adjustedConfirmed,
@@ -399,8 +312,13 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     );
   }
 
+  // =========================================================================
+  // Main view
+  // =========================================================================
+
   return (
     <>
+      {/* Header */}
       <header class="header">
         <h1>Smirk Wallet</h1>
         <div class="header-actions">
@@ -415,43 +333,18 @@ export function WalletView({ onLock }: { onLock: () => void }) {
       <div class="content">
         {/* Pending Grin Receive Banner */}
         {grinPendingReceive && activeAsset === 'grin' && (
-          <div
-            style={{
-              background: 'rgba(251, 191, 36, 0.1)',
-              border: '1px solid var(--color-yellow)',
-              borderRadius: '8px',
-              padding: '10px 12px',
-              marginBottom: '12px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: '8px',
+          <GrinPendingBanner
+            pending={grinPendingReceive}
+            onView={() => {
+              setActiveAsset('grin');
+              setScreen('receive');
             }}
-          >
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: '12px', color: 'var(--color-yellow)', fontWeight: 600 }}>
-                Pending Receive
-              </div>
-              <div style={{ fontSize: '11px', color: 'var(--color-yellow)', marginTop: '2px', opacity: 0.8 }}>
-                Slatepack signed - send it back to finalize
-              </div>
-            </div>
-            <button
-              class="btn btn-primary"
-              style={{ fontSize: '11px', padding: '6px 10px' }}
-              onClick={() => {
-                setActiveAsset('grin');
-                setScreen('receive');
-              }}
-            >
-              View
-            </button>
-          </div>
+          />
         )}
 
         {/* Asset Tabs */}
         <div class="asset-tabs">
-          {availableAssets.map((asset) => (
+          {AVAILABLE_ASSETS.map((asset) => (
             <button
               key={asset}
               class={`asset-tab ${activeAsset === asset ? 'active' : ''}`}
@@ -468,69 +361,14 @@ export function WalletView({ onLock }: { onLock: () => void }) {
         </div>
 
         {/* Balance Card */}
-        <div class="balance-card" style={{ position: 'relative' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div class="balance-label">{ASSETS[activeAsset].name}</div>
-            <button
-              class="btn btn-icon"
-              style={{ fontSize: '12px', padding: '2px 6px', marginTop: '-4px' }}
-              onClick={() => fetchBalance(activeAsset)}
-              title="Refresh balance"
-              disabled={loadingBalance === activeAsset}
-            >
-              🔄
-            </button>
-          </div>
-          <div
-            class="balance-amount"
-            title={currentBalance ? `Total: ${formatBalanceFull(currentBalance.total, activeAsset)} ${ASSETS[activeAsset].symbol}\nConfirmed: ${formatBalanceFull(currentBalance.confirmed, activeAsset)}${currentPendingOutgoing > 0 ? `\nPending send: -${formatBalanceFull(currentPendingOutgoing, activeAsset)}` : ''}` : undefined}
-            style={{ cursor: currentBalance ? 'help' : 'default' }}
-          >
-            {loadingBalance === activeAsset && !currentBalance ? (
-              <div class="skeleton skeleton-balance" />
-            ) : currentBalance ? (
-              `${formatBalance(adjustedConfirmed, activeAsset)} ${ASSETS[activeAsset].symbol}`
-            ) : (
-              `0.${'0'.repeat(DISPLAY_DECIMALS[activeAsset])} ${ASSETS[activeAsset].symbol}`
-            )}
-          </div>
-          {currentBalance?.error && (
-            <div class="balance-usd" style={{ fontSize: '11px', color: 'var(--color-error)' }}>
-              {currentBalance.error === 'Offline' ? 'Offline - cached value' : currentBalance.error}
-            </div>
-          )}
-          {/* Show locked balance (outputs waiting for confirmations) */}
-          {currentBalance && !currentBalance.error && (currentBalance.locked ?? 0) > 0 && (
-            <div
-              class="balance-usd"
-              style={{ fontSize: '11px', color: 'var(--color-yellow)' }}
-              title={`${formatBalanceFull(currentBalance.locked!, activeAsset)} ${ASSETS[activeAsset].symbol} waiting for confirmations`}
-            >
-              {formatBalance(currentBalance.locked!, activeAsset)} locked
-            </div>
-          )}
-          {/* Show local pending outgoing (tx sent but not yet seen by LWS) */}
-          {currentPendingOutgoing > 0 && (
-            <div
-              class="balance-usd"
-              style={{ fontSize: '11px', color: 'var(--color-yellow)' }}
-              title={`${formatBalanceFull(currentPendingOutgoing, activeAsset)} ${ASSETS[activeAsset].symbol} sending`}
-            >
-              -{formatBalance(currentPendingOutgoing, activeAsset)} sending
-            </div>
-          )}
-          {/* Show pending balance from LWS (can be positive for incoming or negative for outgoing) */}
-          {currentBalance && !currentBalance.error && currentBalance.unconfirmed !== 0 && (
-            <div
-              class="balance-usd"
-              style={{ fontSize: '11px', color: currentBalance.unconfirmed < 0 ? 'var(--color-error)' : 'var(--color-yellow)' }}
-              title={`${formatBalanceFull(Math.abs(currentBalance.unconfirmed), activeAsset)} ${ASSETS[activeAsset].symbol} ${currentBalance.unconfirmed < 0 ? 'outgoing' : 'incoming'}`}
-            >
-              {currentBalance.unconfirmed > 0 ? '+' : ''}
-              {formatBalance(currentBalance.unconfirmed, activeAsset)} pending
-            </div>
-          )}
-        </div>
+        <BalanceCard
+          asset={activeAsset}
+          balance={currentBalance}
+          adjustedConfirmed={adjustedConfirmed}
+          pendingOutgoing={currentPendingOutgoing}
+          loading={loadingBalance === activeAsset}
+          onRefresh={() => fetchBalance(activeAsset)}
+        />
 
         {/* Action Buttons */}
         <div class="action-grid">
@@ -550,115 +388,14 @@ export function WalletView({ onLock }: { onLock: () => void }) {
 
         {/* Recent Activity */}
         <div class="section-title">Recent Activity</div>
-        {loadingHistory && !history[activeAsset] ? (
-          <div style={{ padding: '8px 0' }}>
-            <div class="skeleton skeleton-tx" />
-            <div class="skeleton skeleton-tx" />
-            <div class="skeleton skeleton-tx" />
-          </div>
-        ) : history[activeAsset] && history[activeAsset]!.length > 0 ? (
-          <div class="tx-list">
-            {history[activeAsset]!.slice(0, 10).map((tx) => {
-              // Determine if incoming or outgoing
-              const isXmrWow = activeAsset === 'xmr' || activeAsset === 'wow';
-              const isGrin = activeAsset === 'grin';
-              const received = tx.total_received ?? 0;
-              const sent = tx.total_sent ?? 0;
-              const isIncoming = (isXmrWow || isGrin) ? received > sent : true; // BTC/LTC: we don't know direction yet
-              const isPending = tx.is_pending || tx.height === 0;
-              const isCancelled = (tx as any).is_cancelled === true;
-
-              // For Grin, prefer kernel_excess as the copyable identifier
-              const displayId = isGrin && tx.kernel_excess ? tx.kernel_excess : tx.txid;
-              const idLabel = isGrin && tx.kernel_excess ? 'Kernel' : (isGrin ? 'Slate' : 'Txid');
-
-              return (
-                <div
-                  key={tx.txid}
-                  class="tx-item"
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    padding: '8px 12px',
-                    borderRadius: '6px',
-                    marginBottom: '6px',
-                    cursor: 'pointer',
-                  }}
-                  onClick={() => {
-                    copyToClipboard(displayId, showToast, `${idLabel} copied`);
-                  }}
-                  title={`Click to copy ${idLabel.toLowerCase()}\n${displayId}`}
-                >
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontFamily: 'monospace',
-                        fontSize: '11px',
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
-                      {displayId.substring(0, 12)}...{displayId.substring(displayId.length - 8)}
-                    </div>
-                    <div style={{ fontSize: '10px', color: isCancelled ? 'var(--color-error)' : 'var(--color-text-muted)' }}>
-                      {isGrin ? (
-                        <>
-                          {tx.kernel_excess ? 'Kernel' : 'Slate'} &bull; {isCancelled ? 'Cancelled' : (isPending ? 'Pending' : 'Confirmed')}
-                        </>
-                      ) : (
-                        isPending ? 'Pending' : `Block ${tx.height}`
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    {(isXmrWow || isGrin) && (received > 0 || sent > 0) && (
-                      <div
-                        style={{
-                          fontSize: '11px',
-                          color: isIncoming ? 'var(--color-success)' : 'var(--color-error)',
-                          fontWeight: 500,
-                        }}
-                      >
-                        {isIncoming ? '+' : '-'}
-                        {formatBalance(isIncoming ? received : sent, activeAsset)}
-                      </div>
-                    )}
-                    {/* Cancel button for pending Grin sends */}
-                    {isGrin && isPending && !isCancelled && tx.direction === 'send' && (
-                      <button
-                        class="btn btn-secondary"
-                        style={{
-                          fontSize: '10px',
-                          padding: '4px 8px',
-                          minWidth: 'unset',
-                        }}
-                        onClick={(e) => handleCancelGrinTx(tx, e)}
-                        disabled={cancellingTxId === tx.txid}
-                        title="Cancel this pending transaction"
-                      >
-                        {cancellingTxId === tx.txid ? '...' : '✕'}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : (activeAsset === 'btc' || activeAsset === 'ltc' || activeAsset === 'xmr' || activeAsset === 'wow' || activeAsset === 'grin') ? (
-          <div class="empty-state">
-            <div class="empty-icon">📭</div>
-            <div class="empty-title">No transactions yet</div>
-            <div class="empty-text">Your transaction history will appear here</div>
-          </div>
-        ) : (
-          <div class="empty-state">
-            <div class="empty-icon">🔧</div>
-            <div class="empty-title">History coming soon</div>
-            <div class="empty-text">{ASSETS[activeAsset].name} transaction history not yet supported</div>
-          </div>
-        )}
+        <TxList
+          asset={activeAsset}
+          transactions={history[activeAsset]}
+          loading={loadingHistory}
+          cancellingTxId={cancellingTxId}
+          onCancel={handleCancelGrinTx}
+          showToast={showToast}
+        />
       </div>
     </>
   );

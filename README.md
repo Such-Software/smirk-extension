@@ -142,9 +142,9 @@ if (window.smirk) {
   // Get public keys (only works if already connected)
   const keys = await window.smirk.getPublicKeys();
 
-  // Request message signature (shows approval popup)
+  // Request message signature (user chooses asset, shows approval popup)
   const result = await window.smirk.signMessage('Sign to authenticate');
-  // Returns: { message, signatures: [{ asset, signature, publicKey }, ...] }
+  // Returns: { message, signature: { asset, signature, publicKey } }
 
   // Disconnect (revoke site access)
   await window.smirk.disconnect();

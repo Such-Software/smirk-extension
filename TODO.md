@@ -5,7 +5,7 @@
 ### High Priority
 
 1. **Refactor Large Files**
-   - `src/lib/grin/index.ts` (1473 lines)
+   - ~~`src/lib/grin/index.ts` (1473 lines)~~ DONE - split into 8 modules
    - `src/lib/api.ts` (892 lines)
    - `src/popup/components/WalletView.tsx` (665 lines)
 

@@ -4,62 +4,44 @@
 
 ### High Priority
 
-1. **Refactor Large Files**
-   - ~~`src/lib/grin/index.ts` (1473 lines)~~ DONE - split into 8 modules
-   - `src/lib/api.ts` (892 lines)
-   - `src/popup/components/WalletView.tsx` (665 lines)
-
-2. **Settings UI - Connected Sites**
-   - Show/manage connected sites in settings page
-   - Allow revoking individual site access
-
-3. **Grin Block Explorer Link**
-   - Click kernel_excess to open grinexplorer.net/kernel/{excess}
-
-### Medium Priority
-
-4. **Transaction List Pagination**
-   - Show only 2-3 transactions on main screen (no scrollbar)
-   - Add "View All" button to open full scrollable history
-
-5. **RSR Flow (Receive-Sign-Return)** - Invoice flow
+1. **RSR Flow (Receive-Sign-Return)** - Invoice flow
    - Create I1 invoice slate
    - Sender signs I1 to S2
    - Recipient finalizes S2 to S3 and broadcasts
 
-6. **Slatepack Relay UX**
+2. **Slatepack Relay UX**
    - Auto-refresh pending list
    - Notification when slatepack arrives
    - Expiry countdown display
 
-7. **QR Code Scanning**
+3. **QR Code Scanning**
    - Camera permission for address scanning
 
-8. **Configurable Fee Levels**
+4. **Configurable Fee Levels**
    - Low/medium/high fee options for BTC/LTC
 
 ### Lower Priority
 
-9. **Security Enhancements**
+5. **Security Enhancements**
    - Biometric unlock option (where supported)
    - Require password for sensitive operations even when unlocked
 
-10. **XMR/WOW Enhancements**
-    - Show ring member info for transactions
-    - Export key images for balance verification
+6. **XMR/WOW Enhancements**
+   - Show ring member info for transactions
+   - Export key images for balance verification
 
-11. **Nice to Have**
-    - Address book / contacts
-    - Price display in fiat currency
-    - Multi-wallet support (multiple seeds)
-    - Hardware wallet integration (Ledger/Trezor)
-    - Firefox/Safari ports
+7. **Nice to Have**
+   - Address book / contacts
+   - Price display in fiat currency
+   - Multi-wallet support (multiple seeds)
+   - Hardware wallet integration (Ledger/Trezor)
+   - Firefox/Safari ports
 
 ### Code Quality
 
-12. **Testing**
-    - Unit tests for crypto operations
-    - E2E tests with Playwright
+8. **Testing**
+   - Unit tests for crypto operations
+   - E2E tests with Playwright
 
 13. **Documentation**
     - Add comprehensive comments to all public functions
@@ -109,6 +91,18 @@ Recipient creates I1 → Sender signs S2 → Recipient finalizes S3 + broadcasts
 
 ## Completed
 
+- [x] Connected sites management UI (2026-01-25)
+  - Show connected sites in Settings
+  - Disconnect individual sites
+- [x] Transaction list pagination (2026-01-25)
+  - Show 3 transactions by default
+  - "View All" button to expand
+- [x] Grin kernel explorer link (2026-01-25)
+  - Click to open grincoin.org/kernel/{excess}
+- [x] Refactor api.ts and WalletView.tsx (2026-01-25)
+  - Split api.ts (900 lines) into 8 modules under src/lib/api/
+  - Split WalletView.tsx (665 lines) into wallet/ components
+  - Split grin/index.ts (1473 lines) into 8 modules
 - [x] Website single-asset auth (2026-01-25)
   - User chooses favorite coin to sign with
   - Ed25519 signing fixed to use raw scalars (not seeds)

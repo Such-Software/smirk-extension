@@ -2,10 +2,16 @@
  * Transaction history list component.
  */
 
+import { useState } from 'preact/hooks';
 import type { AssetType } from '@/types';
 import type { TxHistoryEntry } from './types';
-import { ASSETS, formatBalance } from '../../shared';
+import { formatBalance } from '../../shared';
 import { copyToClipboard } from '../Toast';
+
+// Default number of transactions shown (fits without scrollbar)
+const DEFAULT_LIMIT = 3;
+// Maximum when expanded
+const EXPANDED_LIMIT = 50;
 
 interface Props {
   asset: AssetType;
@@ -24,6 +30,7 @@ export function TxList({
   onCancel,
   showToast,
 }: Props) {
+  const [expanded, setExpanded] = useState(false);
   const isXmrWow = asset === 'xmr' || asset === 'wow';
   const isGrin = asset === 'grin';
 
@@ -40,9 +47,13 @@ export function TxList({
 
   // Has transactions
   if (transactions && transactions.length > 0) {
+    const limit = expanded ? EXPANDED_LIMIT : DEFAULT_LIMIT;
+    const displayedTxs = transactions.slice(0, limit);
+    const hasMore = transactions.length > DEFAULT_LIMIT;
+
     return (
       <div class="tx-list">
-        {transactions.slice(0, 10).map((tx) => (
+        {displayedTxs.map((tx) => (
           <TxItem
             key={tx.txid}
             tx={tx}
@@ -54,6 +65,24 @@ export function TxList({
             showToast={showToast}
           />
         ))}
+
+        {/* View All / Show Less toggle */}
+        {hasMore && (
+          <button
+            class="btn btn-secondary"
+            style={{
+              width: '100%',
+              marginTop: '4px',
+              fontSize: '11px',
+              padding: '8px',
+            }}
+            onClick={() => setExpanded(!expanded)}
+          >
+            {expanded
+              ? 'Show Less'
+              : `View All (${transactions.length})`}
+          </button>
+        )}
       </div>
     );
   }
@@ -158,6 +187,25 @@ function TxItem({
             {isIncoming ? '+' : '-'}
             {formatBalance(isIncoming ? received : sent, asset)}
           </div>
+        )}
+
+        {/* Explorer link for confirmed Grin transactions */}
+        {isGrin && tx.kernel_excess && !isPending && !isCancelled && (
+          <button
+            class="btn btn-icon"
+            style={{
+              fontSize: '10px',
+              padding: '4px 6px',
+              minWidth: 'unset',
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              window.open(`https://grincoin.org/kernel/${tx.kernel_excess}`, '_blank');
+            }}
+            title="View on explorer"
+          >
+            🔗
+          </button>
         )}
 
         {/* Cancel button for pending Grin sends */}

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'preact/hooks';
 import type { AssetType, Theme, UserSettings } from '@/types';
+import type { ConnectedSite } from '@/lib/storage';
 import { ASSETS, sendMessage } from '../shared';
 import { initWasm, getWasmVersion } from '@/lib/xmr-tx';
 
@@ -36,8 +37,13 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const [seedError, setSeedError] = useState('');
   const [revealingSeeed, setRevealingSeed] = useState(false);
 
+  // Connected sites state
+  const [connectedSites, setConnectedSites] = useState<ConnectedSite[]>([]);
+  const [disconnectingOrigin, setDisconnectingOrigin] = useState<string | null>(null);
+
   useEffect(() => {
     loadSettings();
+    loadConnectedSites();
   }, []);
 
   // Apply theme when settings change
@@ -53,6 +59,27 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
       setSettings(result.settings);
     } catch (err) {
       setError('Failed to load settings');
+    }
+  };
+
+  const loadConnectedSites = async () => {
+    try {
+      const result = await sendMessage<{ sites: ConnectedSite[] }>({ type: 'GET_CONNECTED_SITES' });
+      setConnectedSites(result.sites);
+    } catch (err) {
+      console.error('Failed to load connected sites:', err);
+    }
+  };
+
+  const handleDisconnectSite = async (origin: string) => {
+    setDisconnectingOrigin(origin);
+    try {
+      await sendMessage<{ disconnected: boolean }>({ type: 'DISCONNECT_SITE', origin });
+      setConnectedSites((prev) => prev.filter((s) => s.origin !== origin));
+    } catch (err) {
+      console.error('Failed to disconnect site:', err);
+    } finally {
+      setDisconnectingOrigin(null);
     }
   };
 
@@ -140,6 +167,61 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
                   <div class="toggle-knob" />
                 </div>
               </label>
+            </div>
+
+            {/* Connected Sites Section */}
+            <div class="section-title">Connected Sites</div>
+            <div class="settings-card">
+              {connectedSites.length === 0 ? (
+                <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', padding: '8px 0' }}>
+                  No sites connected
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {connectedSites.map((site) => (
+                    <div
+                      key={site.origin}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '8px',
+                        background: 'var(--color-bg-secondary)',
+                        borderRadius: '6px',
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontSize: '12px',
+                            fontWeight: 500,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                          title={site.origin}
+                        >
+                          {site.name || new URL(site.origin).hostname}
+                        </div>
+                        <div style={{ fontSize: '10px', color: 'var(--color-text-muted)' }}>
+                          Connected {new Date(site.connectedAt).toLocaleDateString()}
+                        </div>
+                      </div>
+                      <button
+                        class="btn btn-secondary"
+                        style={{ fontSize: '11px', padding: '4px 8px', minWidth: 'unset' }}
+                        onClick={() => handleDisconnectSite(site.origin)}
+                        disabled={disconnectingOrigin === site.origin}
+                      >
+                        {disconnectingOrigin === site.origin ? '...' : 'Disconnect'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div class="settings-hint" style={{ marginTop: '8px' }}>
+                Sites with access to sign messages via window.smirk API
+              </div>
             </div>
 
             {/* Security Section */}

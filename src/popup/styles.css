@@ -783,6 +783,8 @@ input[type="checkbox"] {
 
 .approval-content {
   flex: 1;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .approval-title {
@@ -858,7 +860,9 @@ input[type="checkbox"] {
 .approval-actions {
   display: flex;
   gap: 12px;
-  margin-top: 20px;
+  margin-top: auto;
+  padding-top: 20px;
+  flex-shrink: 0;
 }
 
 .approval-actions .btn {

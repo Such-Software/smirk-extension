@@ -55,13 +55,15 @@ import {
   AUTO_LOCK_ALARM,
 } from './state';
 
-// Settings and auto-lock
+// Settings, auto-lock, and connected sites
 import {
   handleGetSettings,
   handleUpdateSettings,
   handleResetAutoLockTimer,
   resetAutoLockTimer,
   handleAutoLockAlarm,
+  handleGetConnectedSites,
+  handleDisconnectSite,
 } from './settings';
 
 // Wallet operations
@@ -201,6 +203,12 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
     case 'RESET_AUTO_LOCK_TIMER':
       return handleResetAutoLockTimer();
 
+    case 'GET_CONNECTED_SITES':
+      return handleGetConnectedSites();
+
+    case 'DISCONNECT_SITE':
+      return handleDisconnectSite(message.origin as string);
+
     // =========================================================================
     // Addresses
     // =========================================================================
@@ -302,12 +310,6 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
 
     case 'GET_PENDING_APPROVAL':
       return handleGetPendingApproval(message.requestId);
-
-    case 'GET_CONNECTED_SITES':
-      return handleGetConnectedSites();
-
-    case 'DISCONNECT_SITE':
-      return handleDisconnectSite(message.origin);
 
     // =========================================================================
     // Unknown

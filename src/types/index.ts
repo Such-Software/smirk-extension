@@ -168,6 +168,8 @@ export type MessageType =
   | { type: 'GET_SETTINGS' }
   | { type: 'UPDATE_SETTINGS'; settings: Partial<UserSettings> }
   | { type: 'RESET_AUTO_LOCK_TIMER' }
+  | { type: 'GET_CONNECTED_SITES' }
+  | { type: 'DISCONNECT_SITE'; origin: string }
   | { type: 'GET_HISTORY'; asset: 'btc' | 'ltc' }
   | { type: 'ESTIMATE_FEE'; asset: 'btc' | 'ltc' }
   | { type: 'GET_WALLET_KEYS'; asset: 'xmr' | 'wow' }

@@ -7,7 +7,13 @@
  */
 
 import type { MessageResponse, UserSettings } from '@/types';
-import { getWalletState, saveWalletState } from '@/lib/storage';
+import {
+  getWalletState,
+  saveWalletState,
+  getConnectedSites,
+  removeConnectedSite,
+  type ConnectedSite,
+} from '@/lib/storage';
 import { alarms } from '@/lib/browser';
 import {
   AUTO_LOCK_ALARM,
@@ -151,4 +157,34 @@ export async function handleAutoLockAlarm(): Promise<void> {
   await clearSessionKeys();
 
   console.log('[AutoLock] Wallet locked due to inactivity');
+}
+
+// =============================================================================
+// Connected Sites Handlers
+// =============================================================================
+
+/**
+ * Get all connected sites.
+ *
+ * Returns list of origins that have been approved for window.smirk API access.
+ */
+export async function handleGetConnectedSites(): Promise<
+  MessageResponse<{ sites: ConnectedSite[] }>
+> {
+  const sites = await getConnectedSites();
+  return { success: true, data: { sites } };
+}
+
+/**
+ * Disconnect a site by origin.
+ *
+ * Revokes window.smirk API access for the specified origin.
+ *
+ * @param origin - The origin to disconnect (e.g., "https://smirk.cash")
+ */
+export async function handleDisconnectSite(
+  origin: string
+): Promise<MessageResponse<{ disconnected: boolean }>> {
+  await removeConnectedSite(origin);
+  return { success: true, data: { disconnected: true } };
 }

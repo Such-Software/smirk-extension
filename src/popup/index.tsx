@@ -36,12 +36,7 @@ function App() {
   const isApprovalMode = urlParams.mode === 'approve' && urlParams.requestId;
 
   useEffect(() => {
-    // For approval mode, just load theme - we don't need full wallet state
-    if (isApprovalMode) {
-      loadTheme();
-      setLoading(false);
-      return;
-    }
+    // Always check wallet state - approval mode needs to know if locked
     checkWalletState();
   }, []);
 
@@ -148,8 +143,17 @@ function App() {
     );
   }
 
-  // Approval mode - show approval popup
+  // Approval mode handling
   if (isApprovalMode && urlParams.requestId) {
+    // Need wallet first
+    if (!hasWallet) {
+      return <Onboarding onComplete={handleUnlock} />;
+    }
+    // Need to unlock first
+    if (!isUnlocked) {
+      return <UnlockScreen onUnlock={handleUnlock} />;
+    }
+    // Wallet unlocked - show approval
     return (
       <ApprovalView
         requestId={urlParams.requestId}

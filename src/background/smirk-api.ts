@@ -34,6 +34,12 @@ import {
   type PendingApprovalRequest,
 } from './state';
 
+// Static imports for crypto libraries (avoid dynamic imports which trigger modulepreload polyfill in service worker)
+import { secp256k1 } from '@noble/curves/secp256k1';
+import { ed25519 } from '@noble/curves/ed25519';
+import { sha256 } from '@noble/hashes/sha256';
+import { sha512 } from '@noble/hashes/sha512';
+
 // =============================================================================
 // Main API Handler
 // =============================================================================
@@ -102,20 +108,19 @@ async function handleSmirkConnect(
   siteName: string,
   favicon?: string
 ): Promise<MessageResponse> {
-  // Check if wallet exists and is unlocked
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked. Please unlock your Smirk wallet first.' };
-  }
-
-  // Check if already connected
+  // Check if already connected (works even when locked)
   const connected = await isOriginConnected(origin);
   if (connected) {
-    // Already connected, just return public keys
+    // If locked, still need to open popup for unlock
+    if (!isUnlocked) {
+      return openApprovalPopup('connect', origin, siteName, favicon);
+    }
+    // Already connected and unlocked, just return public keys
     await touchConnectedSite(origin);
     return await getPublicKeysResponse();
   }
 
-  // Not connected - need user approval
+  // Not connected - need user approval (popup will show unlock screen if locked)
   return openApprovalPopup('connect', origin, siteName, favicon);
 }
 
@@ -187,18 +192,13 @@ async function handleSmirkSignMessage(
   favicon: string | undefined,
   message: string
 ): Promise<MessageResponse> {
-  // Check if wallet is unlocked
-  if (!isUnlocked) {
-    return { success: false, error: 'Wallet is locked. Please unlock your Smirk wallet first.' };
-  }
-
   // Check if connected
   const connected = await isOriginConnected(origin);
   if (!connected) {
     return { success: false, error: 'Site is not connected. Call connect() first.' };
   }
 
-  // Need user approval for signing
+  // Need user approval for signing (popup will show unlock screen if locked)
   return openApprovalPopup('sign', origin, siteName, favicon, message);
 }
 
@@ -250,7 +250,7 @@ function openApprovalPopup(
       url: popupUrl,
       type: 'popup',
       width: 400,
-      height: type === 'sign' ? 500 : 400, // Sign needs more height for message
+      height: type === 'sign' ? 650 : 600, // Taller to fit buttons
       focused: true,
     }).then((window) => {
       if (window?.id) {
@@ -438,19 +438,107 @@ async function signMessageWithAllKeys(message: string): Promise<Array<{
   signature: string;
   publicKey: string;
 }>> {
-  // Import crypto libraries
-  const { secp256k1 } = await import('@noble/curves/secp256k1');
-  const { ed25519 } = await import('@noble/curves/ed25519');
-  const { sha256 } = await import('@noble/hashes/sha256');
+  // Crypto libraries are imported statically at the top of the file
 
   const state = await getWalletState();
   const signatures: Array<{ asset: AssetType; signature: string; publicKey: string }> = [];
+
+  // Ed25519 curve order (L)
+  const ED25519_ORDER = BigInt(
+    '7237005577332262213973186563042994240857116359379907606001950938285454250989'
+  );
 
   // Helper to convert bytes to hex
   function toHex(bytes: Uint8Array): string {
     return Array.from(bytes)
       .map((b) => b.toString(16).padStart(2, '0'))
       .join('');
+  }
+
+  // Helper to convert hex to bytes
+  function fromHex(hex: string): Uint8Array {
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+    }
+    return bytes;
+  }
+
+  // Convert bytes to bigint (little-endian)
+  function bytesToBigInt(bytes: Uint8Array): bigint {
+    let result = BigInt(0);
+    for (let i = bytes.length - 1; i >= 0; i--) {
+      result = result * BigInt(256) + BigInt(bytes[i]);
+    }
+    return result;
+  }
+
+  // Convert bigint to bytes (little-endian, 32 bytes)
+  function bigIntToBytes(n: bigint): Uint8Array {
+    const bytes = new Uint8Array(32);
+    let remaining = n;
+    for (let i = 0; i < 32; i++) {
+      bytes[i] = Number(remaining & BigInt(0xff));
+      remaining = remaining >> BigInt(8);
+    }
+    return bytes;
+  }
+
+  // Modular arithmetic
+  function mod(n: bigint, m: bigint): bigint {
+    return ((n % m) + m) % m;
+  }
+
+  /**
+   * Sign with Ed25519 using a raw scalar (not a seed).
+   *
+   * Our wallet stores the scalar directly (not the seed), but ed25519.sign()
+   * expects a seed and would re-hash it. This function signs correctly
+   * using the raw scalar.
+   *
+   * @param msgHash - The message hash to sign (already SHA256'd)
+   * @param privateScalar - The private key as bytes (little-endian scalar)
+   * @param publicKeyBytes - The public key (32 bytes)
+   * @returns The signature (64 bytes: R || s)
+   */
+  function ed25519SignWithScalar(
+    msgHash: Uint8Array,
+    privateScalar: Uint8Array,
+    publicKeyBytes: Uint8Array
+  ): Uint8Array {
+    // Convert scalar bytes to bigint
+    const a = bytesToBigInt(privateScalar);
+
+    // Generate deterministic nonce: r = SHA512(SHA512(a) || message) mod L
+    // Using double-hash of scalar as prefix for nonce generation
+    const scalarHash = sha512(privateScalar);
+    const nonceInput = new Uint8Array(scalarHash.length + msgHash.length);
+    nonceInput.set(scalarHash);
+    nonceInput.set(msgHash, scalarHash.length);
+    const rHash = sha512(nonceInput);
+    const r = mod(bytesToBigInt(rHash), ED25519_ORDER);
+
+    // R = r * G (base point multiplication)
+    const R = ed25519.ExtendedPoint.BASE.multiply(r);
+    const RBytes = R.toRawBytes();
+
+    // k = SHA512(R || A || message) mod L
+    const kInput = new Uint8Array(RBytes.length + publicKeyBytes.length + msgHash.length);
+    kInput.set(RBytes);
+    kInput.set(publicKeyBytes, RBytes.length);
+    kInput.set(msgHash, RBytes.length + publicKeyBytes.length);
+    const kHash = sha512(kInput);
+    const k = mod(bytesToBigInt(kHash), ED25519_ORDER);
+
+    // s = r + k * a mod L
+    const s = mod(r + k * a, ED25519_ORDER);
+    const sBytes = bigIntToBytes(s);
+
+    // Signature = R || s
+    const signature = new Uint8Array(64);
+    signature.set(RBytes);
+    signature.set(sBytes, 32);
+    return signature;
   }
 
   /**
@@ -481,7 +569,6 @@ async function signMessageWithAllKeys(message: string): Promise<Array<{
 
   /**
    * Create Ed25519 message hash (SHA256 of the message).
-   * We hash first for domain separation, then Ed25519 does its own hashing.
    */
   function ed25519MessageHash(msg: string): Uint8Array {
     const encoder = new TextEncoder();
@@ -492,8 +579,23 @@ async function signMessageWithAllKeys(message: string): Promise<Array<{
   if (unlockedKeys.has('btc') && state.keys.btc) {
     try {
       const privateKey = unlockedKeys.get('btc')!;
+      // Verify public key matches private key
+      const derivedPubKey = secp256k1.getPublicKey(privateKey, true); // compressed
+      const derivedPubKeyHex = toHex(derivedPubKey);
+      console.log('[SignMessage] BTC stored pubkey:', state.keys.btc.publicKey);
+      console.log('[SignMessage] BTC derived pubkey:', derivedPubKeyHex);
+      console.log('[SignMessage] BTC pubkeys match:', state.keys.btc.publicKey === derivedPubKeyHex);
+
       const msgHash = bitcoinMessageHash(message);
+      console.log('[SignMessage] BTC message hash:', toHex(msgHash));
+      console.log('[SignMessage] BTC message length:', message.length);
       const sig = secp256k1.sign(msgHash, privateKey);
+      console.log('[SignMessage] BTC signature:', sig.toCompactHex());
+
+      // Also verify signature locally
+      const isValidLocally = secp256k1.verify(sig, msgHash, derivedPubKey);
+      console.log('[SignMessage] BTC local verify:', isValidLocally);
+
       signatures.push({
         asset: 'btc',
         signature: sig.toCompactHex(),
@@ -523,16 +625,18 @@ async function signMessageWithAllKeys(message: string): Promise<Array<{
   }
 
   // Sign with XMR key (Ed25519 using private spend key)
+  // Note: We use custom signing because our keys are raw scalars, not seeds
   if (unlockedKeys.has('xmr') && state.keys.xmr) {
     try {
       const privateKey = unlockedKeys.get('xmr')!;
-      const publicKey = state.keys.xmr.publicSpendKey || state.keys.xmr.publicKey;
+      const publicKeyHex = state.keys.xmr.publicSpendKey || state.keys.xmr.publicKey;
+      const publicKeyBytes = fromHex(publicKeyHex);
       const msgHash = ed25519MessageHash(message);
-      const sig = ed25519.sign(msgHash, privateKey);
+      const sig = ed25519SignWithScalar(msgHash, privateKey, publicKeyBytes);
       signatures.push({
         asset: 'xmr',
         signature: toHex(sig),
-        publicKey,
+        publicKey: publicKeyHex,
       });
     } catch (err) {
       console.error('[SignMessage] XMR signing failed:', err);
@@ -548,13 +652,14 @@ async function signMessageWithAllKeys(message: string): Promise<Array<{
   if (unlockedKeys.has('wow') && state.keys.wow) {
     try {
       const privateKey = unlockedKeys.get('wow')!;
-      const publicKey = state.keys.wow.publicSpendKey || state.keys.wow.publicKey;
+      const publicKeyHex = state.keys.wow.publicSpendKey || state.keys.wow.publicKey;
+      const publicKeyBytes = fromHex(publicKeyHex);
       const msgHash = ed25519MessageHash(message);
-      const sig = ed25519.sign(msgHash, privateKey);
+      const sig = ed25519SignWithScalar(msgHash, privateKey, publicKeyBytes);
       signatures.push({
         asset: 'wow',
         signature: toHex(sig),
-        publicKey,
+        publicKey: publicKeyHex,
       });
     } catch (err) {
       console.error('[SignMessage] WOW signing failed:', err);
@@ -570,13 +675,14 @@ async function signMessageWithAllKeys(message: string): Promise<Array<{
   if (unlockedKeys.has('grin') && state.keys.grin) {
     try {
       const privateKey = unlockedKeys.get('grin')!;
-      const publicKey = state.keys.grin.publicKey;
+      const publicKeyHex = state.keys.grin.publicKey;
+      const publicKeyBytes = fromHex(publicKeyHex);
       const msgHash = ed25519MessageHash(message);
-      const sig = ed25519.sign(msgHash, privateKey);
+      const sig = ed25519SignWithScalar(msgHash, privateKey, publicKeyBytes);
       signatures.push({
         asset: 'grin',
         signature: toHex(sig),
-        publicKey,
+        publicKey: publicKeyHex,
       });
     } catch (err) {
       console.error('[SignMessage] Grin signing failed:', err);

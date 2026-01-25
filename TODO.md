@@ -109,6 +109,10 @@ Recipient creates I1 → Sender signs S2 → Recipient finalizes S3 + broadcasts
 
 ## Completed
 
+- [x] Website single-asset auth (2026-01-25)
+  - User chooses favorite coin to sign with
+  - Ed25519 signing fixed to use raw scalars (not seeds)
+  - ECDSA signing with Bitcoin message format
 - [x] Wallet restore with original start heights (2026-01-24)
   - API passes xmr/wow heights on wallet creation
   - Restore uses stored heights instead of current heights

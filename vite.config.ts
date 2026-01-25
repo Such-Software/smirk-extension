@@ -55,6 +55,8 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    // Disable modulepreload polyfill - it tries to access document which doesn't exist in service workers
+    modulePreload: false,
     rollupOptions: {
       input: {
         popup: resolve(__dirname, 'popup.html'),

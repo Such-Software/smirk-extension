@@ -13,6 +13,31 @@ const DEFAULT_LIMIT = 3;
 // Maximum when expanded
 const EXPANDED_LIMIT = 50;
 
+// Block explorer URLs by asset
+const EXPLORER_URLS: Record<AssetType, string> = {
+  btc: 'https://mempool.space/tx/',
+  ltc: 'https://litecoinspace.org/tx/',
+  xmr: 'https://monerohash.com/explorer/tx/',
+  wow: 'https://explore.wowne.ro/tx/',
+  grin: 'https://grincoin.org/kernel/', // Uses kernel_excess, not txid
+};
+
+/**
+ * Get the explorer URL for a transaction.
+ * Returns null if no explorer link is available.
+ */
+function getExplorerUrl(
+  asset: AssetType,
+  tx: TxHistoryEntry
+): string | null {
+  // Grin uses kernel_excess as the identifier
+  if (asset === 'grin') {
+    return tx.kernel_excess ? `${EXPLORER_URLS.grin}${tx.kernel_excess}` : null;
+  }
+  // Other assets use txid
+  return tx.txid ? `${EXPLORER_URLS[asset]}${tx.txid}` : null;
+}
+
 interface Props {
   asset: AssetType;
   transactions: TxHistoryEntry[] | null;
@@ -189,8 +214,8 @@ function TxItem({
           </div>
         )}
 
-        {/* Explorer link for confirmed Grin transactions */}
-        {isGrin && tx.kernel_excess && !isPending && !isCancelled && (
+        {/* Explorer link for confirmed transactions */}
+        {!isPending && !isCancelled && getExplorerUrl(asset, tx) && (
           <button
             class="btn btn-icon"
             style={{
@@ -200,7 +225,7 @@ function TxItem({
             }}
             onClick={(e) => {
               e.stopPropagation();
-              window.open(`https://grincoin.org/kernel/${tx.kernel_excess}`, '_blank');
+              window.open(getExplorerUrl(asset, tx)!, '_blank');
             }}
             title="View on explorer"
           >

@@ -3,3 +3,8 @@ dist/
 *.log
 .DS_Store
 scripts/
+
+# Environment files (keep .env.example)
+.env
+.env.local
+.env.*.local

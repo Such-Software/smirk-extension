@@ -219,3 +219,8 @@ export function getSlateOutput(): typeof SlateOutput {
   if (!initialized) throw new Error('Grin not initialized');
   return SlateOutput;
 }
+
+export function getSlateParticipant(): typeof SlateParticipant {
+  if (!initialized) throw new Error('Grin not initialized');
+  return SlateParticipant;
+}

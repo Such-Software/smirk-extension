@@ -13,6 +13,22 @@ import {
 } from '../shared';
 import { useToast, copyToClipboard } from './Toast';
 
+// Invoice payment context for RSR flow (paying an invoice)
+interface InvoicePaymentContext {
+  signedSlatepack: string;
+  amount: number;
+  fee: number;
+  slateId: string;
+  inputIds: string[];
+  changeOutput?: {
+    keyId: string;
+    nChild: number;
+    amount: number;
+    commitment: string;
+    proof: string;
+  };
+}
+
 /**
  * Grin Send View - Interactive Slatepack Flow
  *
@@ -57,6 +73,12 @@ export function GrinSendView({
   // WASM initialization
   const [initializingWasm, setInitializingWasm] = useState(false);
   const [wasmReady, setWasmReady] = useState(false);
+
+  // RSR Invoice payment mode
+  const [invoiceMode, setInvoiceMode] = useState(false);
+  const [invoiceInput, setInvoiceInput] = useState('');
+  const [invoicePayment, setInvoicePayment] = useState<InvoicePaymentContext | null>(null);
+  const [signingInvoice, setSigningInvoice] = useState(false);
 
   const asset = 'grin';
   const availableBalance = balance?.confirmed ?? 0;
@@ -198,6 +220,64 @@ export function GrinSendView({
     }
   };
 
+  // Handle paying an invoice (RSR flow)
+  const handlePayInvoice = async () => {
+    const trimmedInput = invoiceInput.trim();
+    // Accept standard slatepack format
+    if (!trimmedInput.includes('BEGINSLATEPACK') || !trimmedInput.includes('ENDSLATEPACK')) {
+      setError('Please paste a valid slatepack invoice');
+      return;
+    }
+
+    setSigningInvoice(true);
+    setError('');
+
+    try {
+      const result = await sendMessage<{
+        slatepack: string;
+        slateId: string;
+        amount: number;
+        fee: number;
+        inputIds: string[];
+        changeOutput?: {
+          keyId: string;
+          nChild: number;
+          amount: number;
+          commitment: string;
+          proof: string;
+        };
+      }>({
+        type: 'GRIN_SIGN_INVOICE',
+        invoiceSlatepack: trimmedInput,
+      });
+
+      // Store the context for display
+      setInvoicePayment({
+        signedSlatepack: result.slatepack,
+        amount: result.amount,
+        fee: result.fee,
+        slateId: result.slateId,
+        inputIds: result.inputIds,
+        changeOutput: result.changeOutput,
+      });
+
+      // Copy signed response to clipboard
+      await copyToClipboard(result.slatepack, showToast, 'Signed slatepack copied');
+
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to sign invoice');
+    } finally {
+      setSigningInvoice(false);
+    }
+  };
+
+  // Clear invoice payment state
+  const handleClearInvoicePayment = () => {
+    setInvoicePayment(null);
+    setInvoiceInput('');
+    setInvoiceMode(false);
+  };
+
   // Cancel an in-progress send (unlocks outputs on backend)
   const handleCancel = async () => {
     if (!sendContext) return;
@@ -244,6 +324,65 @@ export function GrinSendView({
               Your transaction has been finalized and broadcast to the Grin network.
             </p>
             <button class="btn btn-primary" style={{ width: '100%' }} onClick={onSlateCreated}>
+              Done
+            </button>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // Invoice payment: Show signed response sent confirmation
+  if (invoicePayment) {
+    return (
+      <>
+        <header class="header">
+          <button class="btn btn-icon" onClick={handleClearInvoicePayment} title="Back">
+            ←
+          </button>
+          <h1 style={{ flex: 1, textAlign: 'center' }}>Invoice Signed</h1>
+          <div style={{ width: '32px' }} />
+        </header>
+
+        <div class="content">
+          <div style={{ textAlign: 'center', padding: '24px 0' }}>
+            <div style={{ fontSize: '48px', marginBottom: '16px' }}>✓</div>
+            <h3 style={{ marginBottom: '8px', color: 'var(--color-success)' }}>Signed!</h3>
+            <p style={{ color: 'var(--color-text-muted)', fontSize: '13px', marginBottom: '16px' }}>
+              The signed slatepack has been copied to your clipboard.
+            </p>
+            <div
+              style={{
+                background: 'var(--color-bg-card)',
+                borderRadius: '8px',
+                padding: '12px',
+                marginBottom: '16px',
+                textAlign: 'left',
+              }}
+            >
+              <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '4px' }}>Amount</div>
+              <div style={{ fontSize: '16px', fontWeight: 600 }}>
+                {formatBalance(invoicePayment.amount, 'grin')} GRIN
+              </div>
+              <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginTop: '8px', marginBottom: '4px' }}>Fee</div>
+              <div style={{ fontSize: '14px' }}>
+                {formatBalance(invoicePayment.fee, 'grin')} GRIN
+              </div>
+            </div>
+            <div
+              style={{
+                background: 'var(--color-info-bg)',
+                borderRadius: '8px',
+                padding: '12px',
+                marginBottom: '24px',
+                fontSize: '12px',
+                color: 'var(--color-info-text)',
+                textAlign: 'left',
+              }}
+            >
+              Send the signed slatepack back to the invoicer. They will finalize and broadcast the transaction.
+            </div>
+            <button class="btn btn-primary" style={{ width: '100%' }} onClick={handleClearInvoicePayment}>
               Done
             </button>
           </div>
@@ -385,96 +524,187 @@ export function GrinSendView({
             <p style={{ color: 'var(--color-text-muted)', fontSize: '13px' }}>Initializing Grin wallet...</p>
           </div>
         ) : (
-          <form onSubmit={handleSend}>
-            {/* Available Balance */}
+          <>
+            {/* Mode Toggle */}
             <div
               style={{
+                display: 'flex',
+                gap: '8px',
+                marginBottom: '16px',
                 background: 'var(--color-bg-card)',
                 borderRadius: '8px',
-                padding: '12px',
-                marginBottom: '16px',
-                textAlign: 'center',
+                padding: '4px',
               }}
             >
-              <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginBottom: '4px' }}>
-                Available Balance
-              </div>
-              <div style={{ fontSize: '18px', fontWeight: 600 }}>
-                {formatBalance(availableBalance, asset)} {ASSETS[asset].symbol}
-              </div>
+              <button
+                class={!invoiceMode ? 'btn btn-primary' : 'btn btn-secondary'}
+                style={{ flex: 1, fontSize: '12px', padding: '8px' }}
+                onClick={() => setInvoiceMode(false)}
+              >
+                Send
+              </button>
+              <button
+                class={invoiceMode ? 'btn btn-primary' : 'btn btn-secondary'}
+                style={{ flex: 1, fontSize: '12px', padding: '8px' }}
+                onClick={() => setInvoiceMode(true)}
+              >
+                Pay Invoice
+              </button>
             </div>
 
-            {/* Amount */}
-            <div class="form-group">
-              <label style={{ display: 'block', fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '4px' }}>
-                Amount (GRIN)
-              </label>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <input
-                  type="text"
-                  class="form-input"
-                  placeholder="0.000000000"
-                  value={amount}
-                  onInput={(e) => setAmount((e.target as HTMLInputElement).value)}
-                  disabled={creating}
-                  style={{ flex: 1, fontFamily: 'monospace' }}
-                />
-                <button
-                  type="button"
-                  class="btn btn-secondary"
-                  onClick={handleMax}
-                  disabled={creating || availableBalance === 0}
-                  style={{ padding: '8px 12px', fontSize: '12px' }}
+            {invoiceMode ? (
+              /* Invoice Payment Mode */
+              <div>
+                <div
+                  style={{
+                    background: 'var(--color-bg-card)',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    marginBottom: '16px',
+                    fontSize: '13px',
+                    color: 'var(--color-text-muted)',
+                    lineHeight: '1.5',
+                  }}
                 >
-                  Max
+                  <p>
+                    <strong style={{ color: 'var(--color-text)' }}>Pay a Grin invoice.</strong>
+                  </p>
+                  <p style={{ marginTop: '8px' }}>
+                    1. Paste the invoice slatepack from the recipient<br />
+                    2. Review and sign<br />
+                    3. Send the response back to complete payment
+                  </p>
+                </div>
+
+                <div style={{ marginBottom: '12px' }}>
+                  <label style={{ fontSize: '13px', color: 'var(--color-text-muted)', display: 'block', marginBottom: '6px' }}>
+                    Paste invoice slatepack:
+                  </label>
+                  <textarea
+                    value={invoiceInput}
+                    onInput={(e) => setInvoiceInput((e.target as HTMLTextAreaElement).value)}
+                    placeholder="BEGINSLATEPACK. ... ENDSLATEPACK."
+                    style={{
+                      width: '100%',
+                      minHeight: '80px',
+                      background: 'var(--color-bg-input)',
+                      border: '1px solid var(--color-border)',
+                      borderRadius: '6px',
+                      padding: '10px',
+                      color: 'var(--color-text)',
+                      fontSize: '11px',
+                      fontFamily: 'monospace',
+                      resize: 'vertical',
+                    }}
+                    disabled={signingInvoice}
+                  />
+                </div>
+
+                {error && <p style={{ color: '#ef4444', fontSize: '13px', marginBottom: '12px' }}>{error}</p>}
+
+                <button
+                  class="btn btn-primary"
+                  style={{ width: '100%' }}
+                  onClick={handlePayInvoice}
+                  disabled={!invoiceInput.trim() || signingInvoice || !wasmReady}
+                >
+                  {signingInvoice ? 'Signing...' : 'Sign & Pay Invoice'}
                 </button>
               </div>
-            </div>
+            ) : (
+              /* Regular Send Mode */
+              <form onSubmit={handleSend}>
+                {/* Available Balance */}
+                <div
+                  style={{
+                    background: 'var(--color-bg-card)',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    marginBottom: '16px',
+                    textAlign: 'center',
+                  }}
+                >
+                  <div style={{ fontSize: '11px', color: 'var(--color-text-faint)', marginBottom: '4px' }}>
+                    Available Balance
+                  </div>
+                  <div style={{ fontSize: '18px', fontWeight: 600 }}>
+                    {formatBalance(availableBalance, asset)} {ASSETS[asset].symbol}
+                  </div>
+                </div>
 
-            {/* Fee notice */}
-            <div
-              style={{
-                background: 'var(--color-bg-card)',
-                borderRadius: '8px',
-                padding: '12px',
-                marginBottom: '16px',
-                fontSize: '12px',
-                color: 'var(--color-text-muted)',
-              }}
-            >
-              Network fee: ~0.02-0.05 GRIN (varies by inputs)
-            </div>
+                {/* Amount */}
+                <div class="form-group">
+                  <label style={{ display: 'block', fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '4px' }}>
+                    Amount (GRIN)
+                  </label>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <input
+                      type="text"
+                      class="form-input"
+                      placeholder="0.000000000"
+                      value={amount}
+                      onInput={(e) => setAmount((e.target as HTMLInputElement).value)}
+                      disabled={creating}
+                      style={{ flex: 1, fontFamily: 'monospace' }}
+                    />
+                    <button
+                      type="button"
+                      class="btn btn-secondary"
+                      onClick={handleMax}
+                      disabled={creating || availableBalance === 0}
+                      style={{ padding: '8px 12px', fontSize: '12px' }}
+                    >
+                      Max
+                    </button>
+                  </div>
+                </div>
 
-            {error && <p style={{ color: '#ef4444', fontSize: '13px', marginBottom: '12px' }}>{error}</p>}
+                {/* Fee notice */}
+                <div
+                  style={{
+                    background: 'var(--color-bg-card)',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    marginBottom: '16px',
+                    fontSize: '12px',
+                    color: 'var(--color-text-muted)',
+                  }}
+                >
+                  Network fee: ~0.02-0.05 GRIN (varies by inputs)
+                </div>
 
-            <button
-              type="submit"
-              class="btn btn-primary"
-              style={{ width: '100%' }}
-              disabled={creating || !amount || !wasmReady}
-            >
-              {creating ? (
-                <span class="spinner" style={{ margin: '0 auto' }} />
-              ) : (
-                'Create Slatepack'
-              )}
-            </button>
+                {error && <p style={{ color: '#ef4444', fontSize: '13px', marginBottom: '12px' }}>{error}</p>}
 
-            {/* Info about interactive transactions */}
-            <div
-              style={{
-                marginTop: '16px',
-                fontSize: '11px',
-                color: 'var(--color-text-faint)',
-                lineHeight: '1.5',
-                textAlign: 'center',
-              }}
-            >
-              You'll get a slatepack to share with the recipient.
-              <br />
-              They sign it and return - then you finalize.
-            </div>
-          </form>
+                <button
+                  type="submit"
+                  class="btn btn-primary"
+                  style={{ width: '100%' }}
+                  disabled={creating || !amount || !wasmReady}
+                >
+                  {creating ? (
+                    <span class="spinner" style={{ margin: '0 auto' }} />
+                  ) : (
+                    'Create Slatepack'
+                  )}
+                </button>
+
+                {/* Info about interactive transactions */}
+                <div
+                  style={{
+                    marginTop: '16px',
+                    fontSize: '11px',
+                    color: 'var(--color-text-faint)',
+                    lineHeight: '1.5',
+                    textAlign: 'center',
+                  }}
+                >
+                  You'll get a slatepack to share with the recipient.
+                  <br />
+                  They sign it and return - then you finalize.
+                </div>
+              </form>
+            )}
+          </>
         )}
       </div>
     </>

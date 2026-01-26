@@ -4321,8 +4321,8 @@ class Slate {
 							this.fee = ((optionalFields & 0b00000100) !== 0) ? new BigNumber(Common.HEX_PREFIX + Common.toHexString(bitReader.getBytes(Common.BYTES_IN_A_UINT64))) : ((purpose === Slate.COMPACT_SLATE_PURPOSE_SEND_INITIAL) ? new BigNumber(0) : initialSendSlate.getFee());
 							console.log('[Slate V4] Fee:', this.fee.toString());
 
-							// Check if serialized slate's fee isn't supported
-							if(this.getFee().isLessThan(Slate.MINIMUM_FEE) === true) {
+							// Check if serialized slate's fee isn't supported (only for SEND_RESPONSE - SEND_INITIAL can have fee=0 for invoices)
+							if(purpose === Slate.COMPACT_SLATE_PURPOSE_SEND_RESPONSE && this.getFee().isLessThan(Slate.MINIMUM_FEE) === true) {
 
 								// Throw error
 								console.error('[Slate V4] Fee too low!');

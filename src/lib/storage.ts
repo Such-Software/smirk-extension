@@ -198,6 +198,63 @@ export async function clearGrinPendingReceive(): Promise<void> {
 }
 
 /**
+ * Pending Grin invoice (RSR flow) - stores invoice awaiting sender's signed response.
+ * The secrets are needed to finalize the transaction when the response arrives.
+ * Uses standard slatepack format (BEGINSLATEPACK...ENDSLATEPACK).
+ */
+export interface GrinPendingInvoice {
+  /** Slate ID (UUID) */
+  slateId: string;
+  /** Invoice slatepack (BEGINSLATEPACK...ENDSLATEPACK format) */
+  slatepack: string;
+  /** Requested amount in nanogrin */
+  amount: number;
+  /** Hex-encoded secret key for finalization */
+  secretKeyHex: string;
+  /** Hex-encoded secret nonce for finalization */
+  secretNonceHex: string;
+  /** Output info for recording after finalization */
+  outputInfo: {
+    keyId: string;
+    nChild: number;
+    commitment: string;
+    /** Hex-encoded output proof (needed for finalization) */
+    proof: string;
+  };
+  /** Receiver's public blind excess (hex) */
+  publicBlindExcess: string;
+  /** Receiver's public nonce (hex) */
+  publicNonce: string;
+  /** Receiver's slatepack address */
+  receiverAddress: string;
+  /** Unix timestamp when created */
+  createdAt: number;
+}
+
+/**
+ * Gets the pending Grin invoice state.
+ */
+export async function getGrinPendingInvoice(): Promise<GrinPendingInvoice | null> {
+  const result = await storage.local.get<Record<string, GrinPendingInvoice>>('grinPendingInvoice');
+  const state = result['grinPendingInvoice'];
+  return state ?? null;
+}
+
+/**
+ * Saves a pending Grin invoice.
+ */
+export async function saveGrinPendingInvoice(state: GrinPendingInvoice): Promise<void> {
+  await storage.local.set({ grinPendingInvoice: state });
+}
+
+/**
+ * Clears the pending Grin invoice.
+ */
+export async function clearGrinPendingInvoice(): Promise<void> {
+  await storage.local.remove('grinPendingInvoice');
+}
+
+/**
  * Connected site info - tracks which origins user has approved for window.smirk API.
  */
 export interface ConnectedSite {

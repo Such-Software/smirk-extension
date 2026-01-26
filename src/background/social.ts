@@ -76,9 +76,10 @@ import { createSignedTransaction as createBtcSignedTransaction, type Utxo } from
 import { sendTransaction as sendXmrTransaction, createSignedTransaction as createXmrSignedTransaction } from '@/lib/xmr-tx';
 import { sha256 } from '@noble/hashes/sha256';
 import { ed25519 } from '@noble/curves/ed25519';
-import { isUnlocked, unlockedKeys, unlockedViewKeys } from './state';
+import { isUnlocked, unlockedKeys, unlockedViewKeys, grinWasmKeys, setGrinWasmKeys, unlockedMnemonic } from './state';
 import {
   getWalletState,
+  getAuthState,
   addPendingSocialTip,
   getPendingSocialTip,
   updatePendingSocialTipStatus,
@@ -86,6 +87,13 @@ import {
 } from '@/lib/storage';
 import { getAddressForAsset } from './wallet';
 import { encrypt, decrypt, deriveKeyFromPassword } from '@/lib/crypto';
+import {
+  initGrinWallet,
+  createGrinVoucherTransaction,
+  claimGrinVoucher,
+  getTransactionJson,
+  type GrinOutput,
+} from '@/lib/grin';
 
 /**
  * Look up a social platform username to check if they're registered.
@@ -226,12 +234,6 @@ export async function handleCreateSocialTip(
 
     const isPublic = !platform || !username;
 
-    // Grin requires voucher model - see grin/voucher.ts for implementation plan
-    // Unlike UTXO chains, Grin needs custom tx building with raw blinding factors
-    if (asset === 'grin') {
-      return { success: false, error: 'Grin social tips use vouchers (in development). Use Grin relay send instead.' };
-    }
-
     // Public tips are not yet implemented with real funds
     if (isPublic) {
       return { success: false, error: 'Public tips not yet implemented' };
@@ -352,19 +354,194 @@ export async function handleCreateSocialTip(
         };
       }
 
+    } else if (asset === 'grin') {
+      // GRIN flow - uses voucher model (single-party transaction)
+      // The sender creates a complete transaction with a "voucher output"
+      // The blinding factor for the voucher is encrypted with recipient's pubkey
+      // Whoever has the blinding factor can spend the voucher
+
+      // Ensure Grin WASM wallet is initialized
+      let keys = grinWasmKeys;
+      if (!keys) {
+        if (!unlockedMnemonic) {
+          return { success: false, error: 'Grin wallet not initialized - please re-unlock wallet' };
+        }
+        keys = await initGrinWallet(unlockedMnemonic);
+        setGrinWasmKeys(keys);
+      }
+
+      // Get auth state for API calls
+      const authState = await getAuthState();
+      if (!authState?.userId) {
+        return { success: false, error: 'Not authenticated' };
+      }
+
+      // Fetch UTXOs from backend
+      const outputsResult = await api.getGrinOutputs(authState.userId);
+      if (outputsResult.error) {
+        return { success: false, error: `Failed to fetch Grin outputs: ${outputsResult.error}` };
+      }
+
+      const { outputs: rawOutputs, next_child_index: nextChildIndex } = outputsResult.data!;
+
+      // Filter to only unspent outputs
+      const grinOutputs: GrinOutput[] = rawOutputs
+        .filter(o => o.status === 'unspent')
+        .map(o => ({
+          id: o.id,
+          keyId: o.key_id,
+          nChild: o.n_child,
+          amount: BigInt(o.amount),
+          commitment: o.commitment,
+          isCoinbase: o.is_coinbase,
+          blockHeight: o.block_height ?? undefined,
+        }));
+
+      if (grinOutputs.length === 0) {
+        return { success: false, error: 'No unspent Grin outputs available' };
+      }
+
+      // Get current blockchain height
+      const heightsResult = await api.getBlockchainHeights();
+      if (heightsResult.error || !heightsResult.data?.grin) {
+        return { success: false, error: 'Failed to get Grin blockchain height' };
+      }
+      const currentHeight = BigInt(heightsResult.data.grin);
+
+      console.log(`[SocialTip] Creating Grin voucher for ${amount} nanogrin`);
+
+      // Create the voucher transaction
+      let voucherResult;
+      try {
+        voucherResult = await createGrinVoucherTransaction(
+          keys,
+          grinOutputs,
+          BigInt(amount),
+          currentHeight,
+          nextChildIndex
+        );
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : 'Failed to create voucher transaction',
+        };
+      }
+
+      // Broadcast the voucher transaction
+      const txJson = getTransactionJson(voucherResult.slate);
+      console.log('[SocialTip] Broadcasting Grin voucher transaction...');
+
+      const broadcastResult = await api.broadcastGrinTransaction({
+        userId: authState.userId,
+        slateId: voucherResult.slate.id,
+        tx: txJson,
+      });
+
+      if (broadcastResult.error) {
+        return { success: false, error: `Grin broadcast failed: ${broadcastResult.error}` };
+      }
+
+      console.log(`[SocialTip] Grin voucher tx broadcast: ${voucherResult.slate.id}`);
+
+      // Mark inputs as spent
+      await api.spendGrinOutputs({
+        userId: authState.userId,
+        txSlateId: voucherResult.slate.id,
+      });
+
+      // Record the voucher output (not spendable by sender - it's the voucher)
+      // We record it but it will be marked as spent when claimed
+      await api.recordGrinOutput({
+        userId: authState.userId,
+        keyId: voucherResult.voucherOutput.keyId,
+        nChild: voucherResult.voucherOutput.nChild,
+        amount: Number(voucherResult.voucherOutput.amount),
+        commitment: voucherResult.voucherOutput.commitment,
+        txSlateId: voucherResult.slate.id,
+      });
+
+      // Record change output if any
+      if (voucherResult.changeOutput) {
+        await api.recordGrinOutput({
+          userId: authState.userId,
+          keyId: voucherResult.changeOutput.keyId,
+          nChild: voucherResult.changeOutput.nChild,
+          amount: Number(voucherResult.changeOutput.amount),
+          commitment: voucherResult.changeOutput.commitment,
+          txSlateId: voucherResult.slate.id,
+        });
+      }
+
+      // Record the send transaction
+      await api.recordGrinTransaction({
+        userId: authState.userId,
+        slateId: voucherResult.slate.id,
+        amount: Number(voucherResult.voucherOutput.amount),
+        fee: Number(voucherResult.slate.fee),
+        direction: 'send',
+      });
+
+      // For Grin, store voucher data for later encryption
+      // We'll handle Grin specially below since we need to encrypt more data
+      tipPrivateKey = voucherResult.voucherBlindingFactor;
+      tipAddress = voucherResult.voucherOutput.commitment;
+      fundingTxid = voucherResult.slate.id;
+      actualAmount = Number(voucherResult.voucherOutput.amount);
+
+      // Store voucher metadata for the grin-specific encryption below
+      (globalThis as any).__grinVoucherProof = voucherResult.voucherOutput.proof;
+      (globalThis as any).__grinVoucherNChild = voucherResult.voucherOutput.nChild;
+      // Also store for local storage (clawback needs the same data)
+      (globalThis as any).__grinVoucherProofForStorage = voucherResult.voucherOutput.proof;
+      (globalThis as any).__grinVoucherNChildForStorage = voucherResult.voucherOutput.nChild;
+
     } else {
       return { success: false, error: `Social tips not supported for ${asset}` };
     }
 
     // Step 6: Encrypt tip private key with recipient's BTC public key using ECIES
     const recipientPubkeyBytes = hexToBytes(recipientBtcPubkey);
-    const { encryptedKey, ephemeralPubkey } = createEncryptedTipPayload(
-      tipPrivateKey,
-      recipientPubkeyBytes
-    );
 
-    // Combine ephemeral pubkey and encrypted key for storage
-    const encrypted_key = ephemeralPubkey + encryptedKey;
+    let encrypted_key: string;
+
+    if (asset === 'grin') {
+      // For Grin, we need to encrypt the full voucher data:
+      // - blinding factor (secret - proves ownership)
+      // - commitment (identifies the UTXO)
+      // - proof (range proof - needed for tx input)
+      // - nChild (for reference)
+      // - amount (for verification)
+      const grinVoucherData = JSON.stringify({
+        blindingFactor: bytesToHex(tipPrivateKey),
+        commitment: tipAddress,
+        proof: (globalThis as any).__grinVoucherProof,
+        nChild: (globalThis as any).__grinVoucherNChild,
+        amount: actualAmount,
+        features: 0, // Plain output
+      });
+
+      // Clean up temp globals
+      delete (globalThis as any).__grinVoucherProof;
+      delete (globalThis as any).__grinVoucherNChild;
+
+      // Encrypt the JSON data
+      const voucherDataBytes = new TextEncoder().encode(grinVoucherData);
+      const { encryptedKey, ephemeralPubkey } = createEncryptedTipPayload(
+        voucherDataBytes,
+        recipientPubkeyBytes
+      );
+      encrypted_key = ephemeralPubkey + encryptedKey;
+
+      console.log(`[SocialTip] Encrypted Grin voucher data (${voucherDataBytes.length} bytes)`);
+
+    } else {
+      // For other assets, just encrypt the private key
+      const { encryptedKey, ephemeralPubkey } = createEncryptedTipPayload(
+        tipPrivateKey,
+        recipientPubkeyBytes
+      );
+      encrypted_key = ephemeralPubkey + encryptedKey;
+    }
 
     // Step 7: Create tip on backend
     const result = await api.createSocialTip({
@@ -400,7 +577,31 @@ export async function handleCreateSocialTip(
         if (senderBtcKey) {
           // Use BTC private key hash as encryption key for tip storage
           const tipStorageKey = sha256(senderBtcKey);
-          const encryptedTipKey = encrypt(tipPrivateKey, tipStorageKey);
+
+          // For Grin, we need to store the full voucher data (including proof) for clawback
+          // For other assets, just store the private key
+          let dataToEncrypt: Uint8Array;
+          if (asset === 'grin') {
+            // Retrieve the stored voucher metadata
+            const grinVoucherProof = (globalThis as any).__grinVoucherProofForStorage;
+            const grinVoucherNChild = (globalThis as any).__grinVoucherNChildForStorage;
+            delete (globalThis as any).__grinVoucherProofForStorage;
+            delete (globalThis as any).__grinVoucherNChildForStorage;
+
+            const grinVoucherData = JSON.stringify({
+              blindingFactor: bytesToHex(tipPrivateKey),
+              commitment: tipAddress,
+              proof: grinVoucherProof,
+              nChild: grinVoucherNChild,
+              amount: actualAmount,
+              features: 0,
+            });
+            dataToEncrypt = new TextEncoder().encode(grinVoucherData);
+          } else {
+            dataToEncrypt = tipPrivateKey;
+          }
+
+          const encryptedTipKey = encrypt(dataToEncrypt, tipStorageKey);
           const encryptedTipKeyHex = bytesToHex(encryptedTipKey);
 
           const pendingTip: PendingSocialTip = {
@@ -479,6 +680,12 @@ export async function handleGetClaimableTips(): Promise<MessageResponse<{ tips: 
  * 2. Decrypt spend key using recipient's BTC private key
  * 3. Derive view key from spend key
  * 4. Sweep funds from tip address to recipient's wallet
+ *
+ * For GRIN (voucher):
+ * 1. Claim tip on backend to get encrypted voucher data
+ * 2. Decrypt voucher data (blinding factor, commitment, proof, etc.)
+ * 3. Build voucher sweep transaction using claimGrinVoucher
+ * 4. Broadcast and record the new output
  */
 export async function handleClaimSocialTip(
   tipId: string,
@@ -489,24 +696,11 @@ export async function handleClaimSocialTip(
       return { success: false, error: 'Wallet is locked' };
     }
 
-    // Grin not yet supported
-    if (tipAsset === 'grin') {
-      return { success: false, error: 'Grin claim not yet implemented' };
-    }
-
     // Get recipient's BTC private key for decryption (always use BTC key for ECIES)
     const btcPrivateKey = unlockedKeys.get('btc');
     if (!btcPrivateKey) {
       return { success: false, error: 'BTC key not available for decryption' };
     }
-
-    // Get recipient's address for the tip asset (where to sweep funds)
-    const state = await getWalletState();
-    const recipientKey = state.keys[tipAsset];
-    if (!recipientKey) {
-      return { success: false, error: `No ${tipAsset} key found in wallet` };
-    }
-    const recipientAddress = getAddressForAsset(tipAsset, recipientKey);
 
     // Step 1: Claim tip on backend to get encrypted_key and tip_address
     const result = await api.claimSocialTip(tipId);
@@ -527,22 +721,163 @@ export async function handleClaimSocialTip(
 
     console.log(`[ClaimTip] Claiming ${tipAsset} from tip address: ${tip_address}`);
 
-    // Step 2: Decrypt tip private key
-    // Format: ephemeralPubkey (66 hex chars = 33 bytes compressed) || encryptedKey
+    // Step 2: Decrypt tip data
+    // Format: ephemeralPubkey (66 hex chars = 33 bytes compressed) || encryptedData
     const ephemeralPubkeyHex = encrypted_key.slice(0, 66);
     const encryptedKeyHex = encrypted_key.slice(66);
 
-    let tipPrivateKey: Uint8Array;
+    let decryptedData: Uint8Array;
     try {
-      tipPrivateKey = decryptTipPayload(encryptedKeyHex, ephemeralPubkeyHex, btcPrivateKey);
+      decryptedData = decryptTipPayload(encryptedKeyHex, ephemeralPubkeyHex, btcPrivateKey);
     } catch (err) {
-      return { success: false, error: 'Failed to decrypt tip key' };
+      return { success: false, error: 'Failed to decrypt tip data' };
     }
 
-    console.log(`[ClaimTip] Decrypted tip private key`);
+    console.log(`[ClaimTip] Decrypted tip data (${decryptedData.length} bytes)`);
 
     let finalTxid: string;
     let actualAmount: number;
+
+    // Handle Grin voucher claiming specially
+    if (tipAsset === 'grin') {
+      // Decrypted data is JSON containing voucher info
+      let voucherData: {
+        blindingFactor: string;
+        commitment: string;
+        proof: string;
+        nChild: number;
+        amount: number;
+        features: number;
+      };
+
+      try {
+        const jsonStr = new TextDecoder().decode(decryptedData);
+        voucherData = JSON.parse(jsonStr);
+      } catch (err) {
+        return { success: false, error: 'Failed to parse Grin voucher data' };
+      }
+
+      console.log(`[ClaimTip] Grin voucher: commitment=${voucherData.commitment.slice(0, 16)}..., amount=${voucherData.amount}`);
+
+      // Ensure Grin WASM wallet is initialized
+      let keys = grinWasmKeys;
+      if (!keys) {
+        if (!unlockedMnemonic) {
+          return { success: false, error: 'Grin wallet not initialized - please re-unlock wallet' };
+        }
+        keys = await initGrinWallet(unlockedMnemonic);
+        setGrinWasmKeys(keys);
+      }
+
+      // Get auth state for API calls
+      const authState = await getAuthState();
+      if (!authState?.userId) {
+        return { success: false, error: 'Not authenticated' };
+      }
+
+      // Get next child index for the new output
+      const outputsResult = await api.getGrinOutputs(authState.userId);
+      if (outputsResult.error) {
+        return { success: false, error: `Failed to fetch Grin outputs: ${outputsResult.error}` };
+      }
+      const nextChildIndex = outputsResult.data?.next_child_index ?? 0;
+
+      // Get current blockchain height
+      const heightsResult = await api.getBlockchainHeights();
+      if (heightsResult.error || !heightsResult.data?.grin) {
+        return { success: false, error: 'Failed to get Grin blockchain height' };
+      }
+      const currentHeight = BigInt(heightsResult.data.grin);
+
+      // Convert blinding factor from hex to bytes
+      const voucherBlindingFactor = hexToBytes(voucherData.blindingFactor);
+
+      // Build the voucher claim transaction
+      let claimResult;
+      try {
+        claimResult = await claimGrinVoucher(
+          keys,
+          {
+            commitment: voucherData.commitment,
+            proof: voucherData.proof,
+            amount: voucherData.amount,
+            features: voucherData.features,
+            txSlateId: '', // Not needed for claiming
+            keyId: '', // Not needed for claiming
+            nChild: voucherData.nChild,
+            createdAt: 0,
+          },
+          voucherBlindingFactor,
+          nextChildIndex,
+          currentHeight
+        );
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : 'Failed to build voucher claim transaction',
+        };
+      }
+
+      // Broadcast the claim transaction
+      const txJson = getTransactionJson(claimResult.slate);
+      console.log('[ClaimTip] Broadcasting Grin voucher claim transaction...');
+
+      const broadcastResult = await api.broadcastGrinTransaction({
+        userId: authState.userId,
+        slateId: claimResult.slate.id,
+        tx: txJson,
+      });
+
+      if (broadcastResult.error) {
+        return { success: false, error: `Grin broadcast failed: ${broadcastResult.error}` };
+      }
+
+      console.log(`[ClaimTip] Grin voucher claim broadcast: ${claimResult.slate.id}`);
+
+      // Record the new output
+      await api.recordGrinOutput({
+        userId: authState.userId,
+        keyId: claimResult.outputInfo.keyId,
+        nChild: claimResult.outputInfo.nChild,
+        amount: Number(claimResult.outputInfo.amount),
+        commitment: claimResult.outputInfo.commitment,
+        txSlateId: claimResult.slate.id,
+      });
+
+      // Record the receive transaction
+      await api.recordGrinTransaction({
+        userId: authState.userId,
+        slateId: claimResult.slate.id,
+        amount: Number(claimResult.outputInfo.amount),
+        fee: Number(claimResult.slate.fee),
+        direction: 'receive',
+      });
+
+      finalTxid = claimResult.slate.id;
+      actualAmount = Number(claimResult.outputInfo.amount);
+
+      console.log(`[ClaimTip] Grin voucher claimed successfully: ${finalTxid}, received: ${actualAmount} nanogrin`);
+
+      return {
+        success: true,
+        data: {
+          success: true,
+          encryptedKey: encrypted_key,
+          txid: finalTxid,
+        },
+      };
+    }
+
+    // For non-Grin assets, decrypted data is the private key directly
+    const tipPrivateKey = decryptedData;
+
+    // Get recipient's address for the tip asset (where to sweep funds)
+    const state = await getWalletState();
+    const recipientKey = state.keys[tipAsset];
+    if (!recipientKey) {
+      return { success: false, error: `No ${tipAsset} key found in wallet` };
+    }
+    const recipientAddress = getAddressForAsset(tipAsset, recipientKey);
 
     if (tipAsset === 'btc' || tipAsset === 'ltc') {
       // BTC/LTC sweep
@@ -601,9 +936,13 @@ export async function handleClaimSocialTip(
       const tipViewKey = deriveViewKeyFromSpendKey(tipSpendKey);
 
       console.log(`[ClaimTip] Derived view key for ${tipAsset} tip wallet`);
+      console.log(`[ClaimTip] Tip address: ${tip_address}`);
+      console.log(`[ClaimTip] View key (first 16): ${bytesToHex(tipViewKey).substring(0, 16)}...`);
+      console.log(`[ClaimTip] Recipient address: ${recipientAddress}`);
 
       // Sweep funds from tip wallet to recipient
       try {
+        console.log(`[ClaimTip] Calling sendXmrTransaction for ${tipAsset} sweep...`);
         const txResult = await sendXmrTransaction(
           tipAsset,
           tip_address,
@@ -614,9 +953,13 @@ export async function handleClaimSocialTip(
           'mainnet',
           true // sweep mode
         );
+        console.log(`[ClaimTip] sendXmrTransaction returned: txHash=${txResult.txHash}, fee=${txResult.fee}, amount=${txResult.actualAmount}`);
         finalTxid = txResult.txHash;
         actualAmount = txResult.actualAmount;
       } catch (err) {
+        console.error(`[ClaimTip] sendXmrTransaction FAILED for ${tipAsset}:`, err);
+        console.error(`[ClaimTip] Error message:`, err instanceof Error ? err.message : String(err));
+        console.error(`[ClaimTip] Error stack:`, err instanceof Error ? err.stack : 'no stack');
         return {
           success: false,
           error: err instanceof Error ? err.message : 'Failed to sweep funds',
@@ -794,6 +1137,129 @@ export async function handleClawbackSocialTip(
           error: err instanceof Error ? err.message : 'Failed to sweep funds',
         };
       }
+
+    } else if (tipAsset === 'grin') {
+      // GRIN clawback - same as claiming, sender sweeps the voucher
+      // The stored tip data is JSON containing the full voucher info
+
+      // Decrypted data is JSON containing voucher info
+      let voucherData: {
+        blindingFactor: string;
+        commitment: string;
+        proof: string;
+        nChild: number;
+        amount: number;
+        features: number;
+      };
+
+      try {
+        const jsonStr = new TextDecoder().decode(tipPrivateKey);
+        voucherData = JSON.parse(jsonStr);
+      } catch (err) {
+        return { success: false, error: 'Failed to parse stored Grin voucher data' };
+      }
+
+      console.log(`[Clawback] Grin voucher: commitment=${voucherData.commitment.slice(0, 16)}..., amount=${voucherData.amount}`);
+
+      // Ensure Grin WASM wallet is initialized
+      let keys = grinWasmKeys;
+      if (!keys) {
+        if (!unlockedMnemonic) {
+          return { success: false, error: 'Grin wallet not initialized - please re-unlock wallet' };
+        }
+        keys = await initGrinWallet(unlockedMnemonic);
+        setGrinWasmKeys(keys);
+      }
+
+      // Get auth state for API calls
+      const authState = await getAuthState();
+      if (!authState?.userId) {
+        return { success: false, error: 'Not authenticated' };
+      }
+
+      // Get next child index for the new output
+      const outputsResult = await api.getGrinOutputs(authState.userId);
+      if (outputsResult.error) {
+        return { success: false, error: `Failed to fetch Grin outputs: ${outputsResult.error}` };
+      }
+      const nextChildIndex = outputsResult.data?.next_child_index ?? 0;
+
+      // Get current blockchain height
+      const heightsResult = await api.getBlockchainHeights();
+      if (heightsResult.error || !heightsResult.data?.grin) {
+        return { success: false, error: 'Failed to get Grin blockchain height' };
+      }
+      const currentHeight = BigInt(heightsResult.data.grin);
+
+      // Convert blinding factor from hex to bytes
+      const voucherBlindingFactor = hexToBytes(voucherData.blindingFactor);
+
+      // Build the voucher sweep transaction (same as claiming)
+      let claimResult;
+      try {
+        claimResult = await claimGrinVoucher(
+          keys,
+          {
+            commitment: voucherData.commitment,
+            proof: voucherData.proof,
+            amount: voucherData.amount,
+            features: voucherData.features,
+            txSlateId: '',
+            keyId: '',
+            nChild: voucherData.nChild,
+            createdAt: 0,
+          },
+          voucherBlindingFactor,
+          nextChildIndex,
+          currentHeight
+        );
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : 'Failed to build clawback transaction',
+        };
+      }
+
+      // Broadcast the clawback transaction
+      const txJson = getTransactionJson(claimResult.slate);
+      console.log('[Clawback] Broadcasting Grin voucher clawback transaction...');
+
+      const broadcastResult = await api.broadcastGrinTransaction({
+        userId: authState.userId,
+        slateId: claimResult.slate.id,
+        tx: txJson,
+      });
+
+      if (broadcastResult.error) {
+        return { success: false, error: `Grin broadcast failed: ${broadcastResult.error}` };
+      }
+
+      console.log(`[Clawback] Grin voucher clawback broadcast: ${claimResult.slate.id}`);
+
+      // Record the new output
+      await api.recordGrinOutput({
+        userId: authState.userId,
+        keyId: claimResult.outputInfo.keyId,
+        nChild: claimResult.outputInfo.nChild,
+        amount: Number(claimResult.outputInfo.amount),
+        commitment: claimResult.outputInfo.commitment,
+        txSlateId: claimResult.slate.id,
+      });
+
+      // Record the receive transaction (clawback is a receive for the sender)
+      await api.recordGrinTransaction({
+        userId: authState.userId,
+        slateId: claimResult.slate.id,
+        amount: Number(claimResult.outputInfo.amount),
+        fee: Number(claimResult.slate.fee),
+        direction: 'receive',
+      });
+
+      finalTxid = claimResult.slate.id;
+      actualAmount = Number(claimResult.outputInfo.amount);
+
+      console.log(`[Clawback] Grin voucher clawed back: ${finalTxid}, recovered: ${actualAmount} nanogrin`);
+
     } else {
       return { success: false, error: `Clawback not supported for ${tipAsset}` };
     }

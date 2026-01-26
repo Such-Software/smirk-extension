@@ -132,6 +132,16 @@ import {
   handleDisconnectSite,
 } from './smirk-api';
 
+// Social tipping operations
+import {
+  handleLookupSocial,
+  handleCreateSocialTip,
+  handleGetClaimableTips,
+  handleClaimSocialTip,
+  handleGetSentSocialTips,
+  handleClawbackSocialTip,
+} from './social';
+
 // =============================================================================
 // Message Handler
 // =============================================================================
@@ -334,6 +344,27 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
 
     case 'GET_PENDING_APPROVAL':
       return handleGetPendingApproval(message.requestId);
+
+    // =========================================================================
+    // Social Tipping
+    // =========================================================================
+    case 'LOOKUP_SOCIAL':
+      return handleLookupSocial(message.platform, message.username);
+
+    case 'CREATE_SOCIAL_TIP':
+      return handleCreateSocialTip(message.platform, message.username, message.asset, message.amount, message.recipientBtcPubkey);
+
+    case 'GET_CLAIMABLE_TIPS':
+      return handleGetClaimableTips();
+
+    case 'CLAIM_SOCIAL_TIP':
+      return handleClaimSocialTip(message.tipId, message.asset);
+
+    case 'GET_SENT_SOCIAL_TIPS':
+      return handleGetSentSocialTips();
+
+    case 'CLAWBACK_SOCIAL_TIP':
+      return handleClawbackSocialTip(message.tipId);
 
     // =========================================================================
     // Unknown

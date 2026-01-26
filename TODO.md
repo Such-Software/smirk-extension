@@ -1,33 +1,58 @@
 # Smirk Extension TODO
 
-## Current Priority
+See [smirk-backend/docs/SOCIAL_TIPPING.md](../smirk-backend/docs/SOCIAL_TIPPING.md) for full architecture.
 
-### Lower Priority
+## Phase 1: Social Tipping MVP (Telegram) ✅
 
-5. **Security Enhancements**
-   - Biometric unlock option (where supported)
-   - Require password for sensitive operations even when unlocked
+Completed 2026-01-26. See Completed section below.
 
-6. **XMR/WOW Enhancements**
-   - Show ring member info for transactions
-   - Export key images for balance verification
+## Phase 1.5: Grin Social Tips (Vouchers)
 
-7. **Nice to Have**
-   - Address book / contacts
-   - Price display in fiat currency
-   - Multi-wallet support (multiple seeds)
-   - Hardware wallet integration (Ledger/Trezor)
-   - Firefox/Safari ports
+- [ ] Grin voucher generation (ephemeral slatepack address)
+- [ ] Sender funds voucher via interactive SRS flow
+- [ ] Voucher slatepack stored encrypted with recipient's pubkey
+- [ ] Recipient claims via RSR-like flow (voucher → claim address)
+- [ ] Clawback support for unclaimed vouchers
+
+## Phase 2: Public Tips
+
+- [ ] "Public tip" toggle in Social Tip UI
+- [ ] Warning: "Anyone can claim this tip"
+- [ ] Options after creation:
+  - "Drop in Smirk channel" → backend announces
+  - "Copy shareable link" → URL with fragment
+  - "Copy payload" → slatepack-like envelope (if we support it)
+- [ ] Success screen shows shareable link/payload
+
+## Phase 3: Additional Platforms
+
+- [ ] Enable Discord in platform selector
+- [ ] Enable Signal (when backend supports)
+- [ ] Enable Simplex (when backend supports)
+- [ ] Enable Matrix (when backend supports)
+
+## Lower Priority
+
+### Security Enhancements
+- [ ] Biometric unlock option (where supported)
+- [ ] Require password for sensitive operations even when unlocked
+
+### XMR/WOW Enhancements
+- [ ] Show ring member info for transactions
+- [ ] Export key images for balance verification
+
+### Nice to Have
+- [ ] Address book / contacts
+- [ ] Price display in fiat currency
+- [ ] Multi-wallet support (multiple seeds)
+- [ ] Hardware wallet integration (Ledger/Trezor)
+- [ ] Firefox/Safari ports
 
 ### Code Quality
-
-8. **Testing**
-   - Unit tests for crypto operations
-   - E2E tests with Playwright
-
-13. **Documentation**
-    - Add comprehensive comments to all public functions
-    - Document message types and handlers
+- [ ] Unit tests for crypto operations
+- [ ] E2E tests with Playwright
+- [ ] Add comprehensive comments to all public functions
+- [ ] Document message types and handlers
 
 ---
 
@@ -73,6 +98,13 @@ Recipient creates I1 → Sender signs S2 → Recipient finalizes S3 + broadcasts
 
 ## Completed
 
+- [x] Social tipping MVP for BTC/LTC/XMR/WOW (2026-01-26)
+  - Real fund transfers via ephemeral tip addresses
+  - ECIES encryption of tip private keys with recipient's pubkey
+  - Local storage of tip keys for sender clawback capability
+  - Inbox UI for claiming tips with sweep transactions
+  - XMR/WOW use random spend keys, derive view keys via SHA256
+  - Grin vouchers still pending (requires interactive transaction)
 - [x] Grin RSR invoice flow (2026-01-25)
   - Uses standard slatepack format compatible with grin-wallet
   - Receiver creates I1 via "Request" tab in Receive screen

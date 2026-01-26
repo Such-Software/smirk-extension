@@ -40,6 +40,9 @@ function getNetwork(asset: UtxoAsset) {
   return asset === 'btc' ? BTC_NETWORK : LTC_NETWORK;
 }
 
+// Minimum fee rates to ensure transactions meet relay requirements
+const MIN_FEE_RATE = 1.1; // Slightly above 1 sat/vbyte to avoid edge cases
+
 /**
  * Select UTXOs for a transaction using simple "largest first" strategy.
  *
@@ -53,6 +56,9 @@ export function selectUtxos(
   targetAmount: number,
   feeRate: number = 10
 ): { selected: Utxo[]; fee: number; change: number } {
+  // Ensure minimum fee rate to meet relay requirements
+  const effectiveFeeRate = Math.max(feeRate, MIN_FEE_RATE);
+
   // Sort by value descending (largest first)
   const sorted = [...utxos].sort((a, b) => b.value - a.value);
 
@@ -69,7 +75,8 @@ export function selectUtxos(
     totalInput += utxo.value;
 
     const estimatedSize = baseSize + inputSize * selected.length;
-    const estimatedFee = Math.ceil(estimatedSize * feeRate);
+    // Add +1 satoshi buffer to ensure we meet minimum relay fee
+    const estimatedFee = Math.ceil(estimatedSize * effectiveFeeRate) + 1;
 
     if (totalInput >= targetAmount + estimatedFee) {
       const change = totalInput - targetAmount - estimatedFee;
@@ -119,6 +126,9 @@ export function createSignedTransaction(
   let change: number;
   let actualAmount: number;
 
+  // Ensure minimum fee rate to meet relay requirements
+  const effectiveFeeRate = Math.max(feeRate, MIN_FEE_RATE);
+
   if (sweep) {
     // Sweep mode: use all UTXOs, no change output
     selected = utxos;
@@ -126,7 +136,8 @@ export function createSignedTransaction(
 
     // Estimate tx size with all inputs and 1 output (no change)
     const estimatedSize = 10 + 68 * utxos.length + 31;
-    fee = Math.ceil(estimatedSize * feeRate);
+    // Add +1 satoshi buffer to ensure we meet minimum relay fee
+    fee = Math.ceil(estimatedSize * effectiveFeeRate) + 1;
 
     actualAmount = totalValue - fee;
     change = 0;

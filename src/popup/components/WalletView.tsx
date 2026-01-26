@@ -19,9 +19,11 @@ import {
   type BalanceData,
   type WalletScreen,
 } from '../shared';
+import { InboxView } from './InboxView';
 import { ReceiveView } from './ReceiveView';
 import { SendView } from './SendView';
 import { SettingsView } from './SettingsView';
+import { TipView } from './TipView';
 import { useToast } from './Toast';
 import { getGrinPendingReceive, type GrinPendingReceive } from '@/lib/storage';
 import { BalanceCard, TxList, GrinPendingBanner, type TxHistoryEntry } from './wallet';
@@ -312,6 +314,33 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     );
   }
 
+  if (screen === 'tip') {
+    const adjustedBalance: BalanceData | null = currentBalance
+      ? {
+          confirmed: adjustedConfirmed,
+          unconfirmed: currentBalance.unconfirmed,
+          total: adjustedConfirmed + currentBalance.unconfirmed,
+          error: currentBalance.error,
+        }
+      : null;
+    return (
+      <TipView
+        asset={activeAsset}
+        balance={adjustedBalance}
+        onBack={() => setScreen('main')}
+        onTipSent={() => {
+          setScreen('main');
+          fetchBalance(activeAsset);
+          fetchHistory(activeAsset);
+        }}
+      />
+    );
+  }
+
+  if (screen === 'inbox') {
+    return <InboxView onBack={() => setScreen('main')} />;
+  }
+
   // =========================================================================
   // Main view
   // =========================================================================
@@ -371,7 +400,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
         />
 
         {/* Action Buttons */}
-        <div class="action-grid">
+        <div class="action-grid action-grid-4">
           <button class="action-btn" onClick={() => setScreen('receive')}>
             <span class="action-icon">📥</span>
             <span class="action-label">Receive</span>
@@ -380,9 +409,13 @@ export function WalletView({ onLock }: { onLock: () => void }) {
             <span class="action-icon">📤</span>
             <span class="action-label">Send</span>
           </button>
-          <button class="action-btn">
+          <button class="action-btn" onClick={() => setScreen('tip')}>
             <span class="action-icon">🎁</span>
             <span class="action-label">Tip</span>
+          </button>
+          <button class="action-btn" onClick={() => setScreen('inbox')}>
+            <span class="action-icon">📬</span>
+            <span class="action-label">Inbox</span>
           </button>
         </div>
 

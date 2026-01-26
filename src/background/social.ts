@@ -325,6 +325,12 @@ export async function handleCreateSocialTip(
         return { success: false, error: `No ${asset} keys available` };
       }
 
+      // Get auth state for LWS registration
+      const authState = await getAuthState();
+      if (!authState?.userId) {
+        return { success: false, error: 'Not authenticated' };
+      }
+
       // Step 1: Generate tip wallet keys
       const tipKeys = generateXmrWowTipKeys(asset);
       tipPrivateKey = tipKeys.spendKey; // We only need to encrypt the spend key
@@ -332,7 +338,17 @@ export async function handleCreateSocialTip(
 
       console.log(`[SocialTip] Generated ${asset} tip address: ${tipAddress}`);
 
-      // Step 2: Send funds to tip address
+      // Step 2: Register tip address with LWS (required for recipient to query unspent outputs)
+      const tipViewKeyHex = bytesToHex(tipKeys.viewKey);
+      console.log(`[SocialTip] Registering ${asset} tip address with LWS...`);
+      const registerResult = await api.registerLws(authState.userId, asset, tipAddress, tipViewKeyHex);
+      if (registerResult.error) {
+        console.error(`[SocialTip] Failed to register tip address with LWS:`, registerResult.error);
+        return { success: false, error: `Failed to register tip address with LWS: ${registerResult.error}` };
+      }
+      console.log(`[SocialTip] Tip address registered with LWS`);
+
+      // Step 3: Send funds to tip address
       try {
         const txResult = await sendXmrTransaction(
           asset,
@@ -956,6 +972,18 @@ export async function handleClaimSocialTip(
         console.log(`[ClaimTip] sendXmrTransaction returned: txHash=${txResult.txHash}, fee=${txResult.fee}, amount=${txResult.actualAmount}`);
         finalTxid = txResult.txHash;
         actualAmount = txResult.actualAmount;
+
+        // Deactivate tip address from LWS to save server resources
+        console.log(`[ClaimTip] Deactivating ${tipAsset} tip address from LWS...`);
+        api.deactivateLws(tipAsset, tip_address).then(result => {
+          if (result.error) {
+            console.warn(`[ClaimTip] Failed to deactivate LWS address:`, result.error);
+          } else {
+            console.log(`[ClaimTip] LWS address deactivated`);
+          }
+        }).catch(err => {
+          console.warn(`[ClaimTip] Failed to deactivate LWS address:`, err);
+        });
       } catch (err) {
         console.error(`[ClaimTip] sendXmrTransaction FAILED for ${tipAsset}:`, err);
         console.error(`[ClaimTip] Error message:`, err instanceof Error ? err.message : String(err));
@@ -1131,6 +1159,18 @@ export async function handleClawbackSocialTip(
         );
         finalTxid = txResult.txHash;
         actualAmount = txResult.actualAmount;
+
+        // Deactivate tip address from LWS to save server resources
+        console.log(`[Clawback] Deactivating ${tipAsset} tip address from LWS...`);
+        api.deactivateLws(tipAsset, pendingTip.tipAddress).then(result => {
+          if (result.error) {
+            console.warn(`[Clawback] Failed to deactivate LWS address:`, result.error);
+          } else {
+            console.log(`[Clawback] LWS address deactivated`);
+          }
+        }).catch(err => {
+          console.warn(`[Clawback] Failed to deactivate LWS address:`, err);
+        });
       } catch (err) {
         return {
           success: false,

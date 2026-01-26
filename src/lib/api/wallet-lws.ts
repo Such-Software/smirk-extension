@@ -93,6 +93,14 @@ export interface WalletLwsMethods {
     message: string;
     start_height?: number;
   }>>;
+
+  deactivateLws(
+    asset: 'xmr' | 'wow',
+    address: string
+  ): Promise<ApiResponse<{
+    success: boolean;
+    message: string;
+  }>>;
 }
 
 export function createWalletLwsMethods(client: ApiClient): WalletLwsMethods {
@@ -144,6 +152,13 @@ export function createWalletLwsMethods(client: ApiClient): WalletLwsMethods {
           view_key: viewKey,
           start_height: startHeight,
         }),
+      });
+    },
+
+    async deactivateLws(asset, address) {
+      return request('/wallet/lws/deactivate', {
+        method: 'POST',
+        body: JSON.stringify({ asset, address }),
       });
     },
   };

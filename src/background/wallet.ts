@@ -833,9 +833,70 @@ export async function handleUnlockWallet(password: string): Promise<MessageRespo
     // Start auto-lock timer
     startAutoLockTimer();
 
+    // Ensure we have valid auth tokens (re-register if needed)
+    // This is blocking so auth is ready before we return
+    try {
+      await ensureValidAuth(state);
+    } catch (err) {
+      console.warn('Failed to ensure auth:', err);
+      // Continue anyway - wallet works offline, just social tips won't work
+    }
+
     return { success: true, data: { unlocked: true } };
   } catch {
     return { success: false, error: 'Invalid password' };
+  }
+}
+
+/**
+ * Ensure we have valid auth tokens.
+ *
+ * Checks existing auth state and either:
+ * 1. Refreshes expired token
+ * 2. Re-registers if no auth or refresh fails
+ */
+async function ensureValidAuth(state: WalletState): Promise<void> {
+  const authState = await getAuthState();
+
+  if (authState && authState.expiresAt > Date.now()) {
+    // Token is still valid
+    api.setAccessToken(authState.accessToken);
+    console.log('Auth token still valid');
+    return;
+  }
+
+  if (authState && authState.expiresAt <= Date.now()) {
+    // Try to refresh
+    try {
+      const result = await api.refreshToken(authState.refreshToken);
+      if (result.data) {
+        await saveAuthState({
+          accessToken: result.data.accessToken,
+          refreshToken: result.data.refreshToken,
+          expiresAt: Date.now() + result.data.expiresIn * 1000,
+          userId: authState.userId,
+        });
+        api.setAccessToken(result.data.accessToken);
+        console.log('Auth token refreshed');
+        return;
+      }
+    } catch (err) {
+      console.warn('Token refresh failed, will re-register:', err);
+    }
+  }
+
+  // No valid auth - re-register with backend
+  console.log('No valid auth, re-registering with backend...');
+
+  // Compute seed fingerprint if we have the mnemonic
+  const seedFingerprint = unlockedMnemonic ? computeSeedFingerprint(unlockedMnemonic) : undefined;
+
+  try {
+    await registerWithBackend(state, seedFingerprint);
+    console.log('Re-registration successful');
+  } catch (err) {
+    console.error('Re-registration failed:', err);
+    throw err;
   }
 }
 

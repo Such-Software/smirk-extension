@@ -7,6 +7,7 @@ Non-custodial multi-currency wallet for Telegram, Discord, and the web.
 - **Non-custodial**: Your keys never leave your device
 - **Multi-currency**: BTC, LTC, XMR, WOW, GRIN
 - **Encrypted tips**: Tips targeted at specific users are encrypted with their public key
+- **Social media tipping** (coming soon): Tip users by Telegram/Discord username
 - **Website integration**: `window.smirk` API for web apps (like MetaMask's `window.ethereum`)
 - **Seed protection**: Only wallets created in Smirk can be restored - external seeds are rejected
 

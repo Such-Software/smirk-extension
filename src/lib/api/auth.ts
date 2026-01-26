@@ -53,26 +53,82 @@ export interface AuthMethods {
   }>>;
 }
 
-export function createAuthMethods(client: ApiClient): AuthMethods {
-  const request = client['request'].bind(client);
+// Transform snake_case auth response to camelCase
+interface RawAuthResponse {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  user: {
+    id: string;
+    telegram_id?: number;
+    telegram_username?: string;
+    username?: string;
+    is_new?: boolean;
+  };
+}
 
+function transformAuthResponse(raw: RawAuthResponse) {
+  return {
+    accessToken: raw.access_token,
+    refreshToken: raw.refresh_token,
+    expiresIn: raw.expires_in,
+    user: {
+      id: raw.user.id,
+      telegramId: raw.user.telegram_id,
+      telegramUsername: raw.user.telegram_username,
+      username: raw.user.username,
+      isNew: raw.user.is_new,
+    },
+  };
+}
+
+// Transform snake_case check-restore response to camelCase
+interface RawCheckRestoreResponse {
+  exists: boolean;
+  user_id?: string;
+  keys_valid?: boolean;
+  error?: string;
+  xmr_start_height?: number;
+  wow_start_height?: number;
+}
+
+function transformCheckRestoreResponse(raw: RawCheckRestoreResponse) {
+  return {
+    exists: raw.exists,
+    userId: raw.user_id,
+    keysValid: raw.keys_valid,
+    error: raw.error,
+    xmrStartHeight: raw.xmr_start_height,
+    wowStartHeight: raw.wow_start_height,
+  };
+}
+
+export function createAuthMethods(client: ApiClient): AuthMethods {
   return {
     async telegramLogin(initData: string) {
-      return request('/auth/telegram', {
+      const result = await client.request<RawAuthResponse>('/auth/telegram', {
         method: 'POST',
         body: JSON.stringify({ init_data: initData }),
       });
+      if (result.data) {
+        return { data: transformAuthResponse(result.data) };
+      }
+      return { error: result.error };
     },
 
     async refreshToken(refreshToken: string) {
-      return request('/auth/refresh', {
+      const result = await client.request<RawAuthResponse>('/auth/refresh', {
         method: 'POST',
         body: JSON.stringify({ refresh_token: refreshToken }),
       });
+      if (result.data) {
+        return { data: transformAuthResponse(result.data) };
+      }
+      return { error: result.error };
     },
 
     async extensionRegister(params) {
-      return request('/auth/extension', {
+      const result = await client.request<RawAuthResponse>('/auth/extension', {
         method: 'POST',
         body: JSON.stringify({
           keys: params.keys.map(k => ({
@@ -87,10 +143,14 @@ export function createAuthMethods(client: ApiClient): AuthMethods {
           wow_start_height: params.wowStartHeight,
         }),
       });
+      if (result.data) {
+        return { data: transformAuthResponse(result.data) };
+      }
+      return { error: result.error };
     },
 
     async checkRestore(params) {
-      return request('/auth/check-restore', {
+      const result = await client.request<RawCheckRestoreResponse>('/auth/check-restore', {
         method: 'POST',
         body: JSON.stringify({
           fingerprint: params.fingerprint,
@@ -101,6 +161,10 @@ export function createAuthMethods(client: ApiClient): AuthMethods {
           })),
         }),
       });
+      if (result.data) {
+        return { data: transformCheckRestoreResponse(result.data) };
+      }
+      return { error: result.error };
     },
   };
 }

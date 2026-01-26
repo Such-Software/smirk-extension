@@ -6,6 +6,7 @@ import { ApiClient, ApiResponse } from './client';
 import { createAuthMethods, AuthMethods } from './auth';
 import { createKeysMethods, KeysMethods } from './keys';
 import { createTipsMethods, TipsMethods } from './tips';
+import { createSocialMethods, SocialMethods } from './social';
 import { createWalletUtxoMethods, WalletUtxoMethods } from './wallet-utxo';
 import { createWalletLwsMethods, WalletLwsMethods } from './wallet-lws';
 import { createGrinMethods, GrinMethods } from './grin';
@@ -20,6 +21,7 @@ export class SmirkApi extends ApiClient implements
   AuthMethods,
   KeysMethods,
   TipsMethods,
+  SocialMethods,
   WalletUtxoMethods,
   WalletLwsMethods,
   GrinMethods
@@ -42,6 +44,14 @@ export class SmirkApi extends ApiClient implements
   claimTip: TipsMethods['claimTip'];
   getSentTips: TipsMethods['getSentTips'];
   getReceivedTips: TipsMethods['getReceivedTips'];
+
+  // Social tipping methods
+  lookupSocial: SocialMethods['lookupSocial'];
+  createSocialTip: SocialMethods['createSocialTip'];
+  getClaimableTips: SocialMethods['getClaimableTips'];
+  getSentSocialTips: SocialMethods['getSentSocialTips'];
+  claimSocialTip: SocialMethods['claimSocialTip'];
+  clawbackSocialTip: SocialMethods['clawbackSocialTip'];
 
   // Wallet UTXO methods (BTC/LTC)
   getUtxoBalance: WalletUtxoMethods['getUtxoBalance'];
@@ -82,6 +92,7 @@ export class SmirkApi extends ApiClient implements
     const auth = createAuthMethods(this);
     const keys = createKeysMethods(this);
     const tips = createTipsMethods(this);
+    const social = createSocialMethods(this);
     const utxo = createWalletUtxoMethods(this);
     const lws = createWalletLwsMethods(this);
     const grin = createGrinMethods(this);
@@ -104,6 +115,14 @@ export class SmirkApi extends ApiClient implements
     this.claimTip = tips.claimTip;
     this.getSentTips = tips.getSentTips;
     this.getReceivedTips = tips.getReceivedTips;
+
+    // Assign social tipping methods
+    this.lookupSocial = social.lookupSocial;
+    this.createSocialTip = social.createSocialTip;
+    this.getClaimableTips = social.getClaimableTips;
+    this.getSentSocialTips = social.getSentSocialTips;
+    this.claimSocialTip = social.claimSocialTip;
+    this.clawbackSocialTip = social.clawbackSocialTip;
 
     // Assign wallet UTXO methods
     this.getUtxoBalance = utxo.getUtxoBalance;

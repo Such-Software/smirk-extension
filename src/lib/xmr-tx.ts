@@ -13,6 +13,10 @@
 
 import { api } from './api';
 
+// Static import of wasm-bindgen JS module (bundled at build time)
+// This avoids dynamic import() which is not allowed in Service Workers
+import * as smirkWasm from './smirk-wasm.js';
+
 // Types for WASM module functions
 interface SmirkWasmExports {
   test(): string;
@@ -34,10 +38,12 @@ interface SmirkWasmExports {
     tx_pub_key: string,
     output_index: number
   ): string;
+  // Sync initialization (for Service Workers)
+  initSync(module: WebAssembly.Module): void;
 }
 
 // WASM module instance - lazy loaded
-let wasmExports: SmirkWasmExports | null = null;
+let wasmInitialized = false;
 let wasmInitPromise: Promise<SmirkWasmExports> | null = null;
 
 // Track locally spent key images (outputs we've used in transactions but LWS hasn't seen yet)
@@ -127,10 +133,13 @@ export interface XmrDestination {
 /**
  * Initialize the smirk-wasm module.
  * Call this once at startup or lazily on first use.
+ *
+ * Uses static import + fetch/initSync to work in Service Workers
+ * (dynamic import() is not allowed in Service Workers per HTML spec).
  */
 export async function initWasm(): Promise<SmirkWasmExports> {
-  if (wasmExports) {
-    return wasmExports;
+  if (wasmInitialized) {
+    return smirkWasm as unknown as SmirkWasmExports;
   }
 
   if (wasmInitPromise) {
@@ -139,20 +148,22 @@ export async function initWasm(): Promise<SmirkWasmExports> {
 
   wasmInitPromise = (async () => {
     try {
-      // Get the extension's base URL for loading WASM assets
-      const wasmJsUrl = chrome.runtime.getURL('wasm/smirk_wasm.js');
-
-      // Dynamically import the WASM JS module
-      const wasm = await import(/* @vite-ignore */ wasmJsUrl);
-
-      // Initialize WASM - the init function loads the .wasm file
-      // Pass as object to avoid deprecation warning (wasm-bindgen 0.2.99+)
+      // Fetch the WASM binary
       const wasmBinaryUrl = chrome.runtime.getURL('wasm/smirk_wasm_bg.wasm');
-      await wasm.default({ module_or_path: wasmBinaryUrl });
+      const response = await fetch(wasmBinaryUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch WASM: ${response.status}`);
+      }
 
-      wasmExports = wasm as SmirkWasmExports;
-      console.log('[xmr-tx] WASM initialized:', wasmExports.test(), 'version:', wasmExports.version());
-      return wasmExports;
+      // Compile and initialize synchronously (works in Service Workers)
+      const wasmBytes = await response.arrayBuffer();
+      const wasmModule = await WebAssembly.compile(wasmBytes);
+      (smirkWasm as any).initSync(wasmModule);
+
+      wasmInitialized = true;
+      const exports = smirkWasm as unknown as SmirkWasmExports;
+      console.log('[xmr-tx] WASM initialized:', exports.test(), 'version:', exports.version());
+      return exports;
     } catch (err) {
       wasmInitPromise = null;
       console.error('[xmr-tx] Failed to initialize WASM:', err);
@@ -167,7 +178,7 @@ export async function initWasm(): Promise<SmirkWasmExports> {
  * Check if WASM is ready.
  */
 export function isWasmReady(): boolean {
-  return wasmExports !== null;
+  return wasmInitialized;
 }
 
 /**
@@ -490,28 +501,38 @@ export async function createSignedTransaction(
   network: 'mainnet' | 'testnet' | 'stagenet' = 'mainnet',
   sweep: boolean = false
 ): Promise<{ txHex: string; txHash: string; fee: number; spentKeyImages: string[]; actualAmount: number }> {
+  console.log(`[xmr-tx] createSignedTransaction called: asset=${asset}, address=${address.substring(0, 20)}..., sweep=${sweep}`);
+
   // 1. Get unspent outputs
+  console.log(`[xmr-tx] Step 1: Fetching unspent outputs from LWS...`);
   const unspentResponse = await api.getUnspentOuts(asset, address, viewKey);
   if (unspentResponse.error || !unspentResponse.data) {
+    console.error(`[xmr-tx] Failed to get unspent outputs:`, unspentResponse.error);
     throw new Error(unspentResponse.error || 'Failed to get unspent outputs');
   }
 
   const { outputs: rawOutputs, per_byte_fee, fee_mask } = unspentResponse.data;
+  console.log(`[xmr-tx] Got ${rawOutputs.length} raw outputs from LWS, per_byte_fee=${per_byte_fee}, fee_mask=${fee_mask}`);
 
   if (rawOutputs.length === 0) {
+    console.error(`[xmr-tx] No unspent outputs available`);
     throw new Error('No unspent outputs available');
   }
 
   // 2. Filter out spent outputs using key image verification
   // LWS returns spend_key_images for each output - we compute actual key image
   // and check if it's in that list to know if the output is truly spent
+  console.log(`[xmr-tx] Step 2: Filtering spent outputs...`);
   const outputs = await filterUnspentOutputs(rawOutputs, viewKey, spendKey);
+  console.log(`[xmr-tx] After filtering: ${outputs.length} unspent outputs remain`);
 
   if (outputs.length === 0) {
+    console.error(`[xmr-tx] All outputs have been spent`);
     throw new Error('No unspent outputs available (all outputs have been spent)');
   }
 
   // 3. Select outputs for this transaction
+  console.log(`[xmr-tx] Step 3: Selecting outputs for transaction...`);
   const { selected, estimatedFee, change, sweepAmount } = await selectOutputs(
     outputs,
     amount,
@@ -528,6 +549,7 @@ export async function createSignedTransaction(
   );
 
   // 4. Compute key images for selected outputs (for local spent tracking)
+  console.log(`[xmr-tx] Step 4: Computing key images...`);
   const wasm = await initWasm();
   const spentKeyImages: string[] = [];
   for (const output of selected) {
@@ -537,11 +559,15 @@ export async function createSignedTransaction(
       spentKeyImages.push(result.data.toLowerCase());
     }
   }
+  console.log(`[xmr-tx] Computed ${spentKeyImages.length} key images`);
 
   // 5. Build inputs with decoys
+  console.log(`[xmr-tx] Step 5: Building inputs with decoys...`);
   const inputsWithDecoys = await buildInputsWithDecoys(asset, selected);
+  console.log(`[xmr-tx] Built ${inputsWithDecoys.length} inputs with decoys`);
 
   // 6. Sign transaction
+  console.log(`[xmr-tx] Step 6: Signing transaction...`);
   const destinations: XmrDestination[] = [{ address: recipientAddress, amount: actualAmount }];
 
   const result = await signTransaction(

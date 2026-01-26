@@ -6,13 +6,32 @@ See [smirk-backend/docs/SOCIAL_TIPPING.md](../smirk-backend/docs/SOCIAL_TIPPING.
 
 Completed 2026-01-26. See Completed section below.
 
-## Phase 1.5: Grin Social Tips (Vouchers)
+## Balance UX Issues
 
-- [ ] Grin voucher generation (ephemeral slatepack address)
-- [ ] Sender funds voucher via interactive SRS flow
-- [ ] Voucher slatepack stored encrypted with recipient's pubkey
-- [ ] Recipient claims via RSR-like flow (voucher → claim address)
-- [ ] Clawback support for unclaimed vouchers
+### Pending Tips Not Reflected in Balance
+When a tip is created, the sender's balance should immediately reflect the deduction:
+- [ ] Track pending outgoing tips locally
+- [ ] Subtract pending tips from "available balance" display
+- [ ] Show pending tips separately (similar to pending Grin txs)
+- [ ] Update balance display when tip is claimed or clawed back
+
+Currently: Balance only updates when tx confirms (~1 min), confusing for sender.
+
+### Tip Status Display
+- [ ] Show pending tips in sender's wallet UI (not just claimable inbox)
+- [ ] Show clawback option for unclaimed tips
+- [ ] Clear indication when tip has been claimed vs still pending
+
+## Phase 1.5: Grin Social Tips (Vouchers) ✅
+
+Completed 2026-01-26. Uses non-interactive voucher model:
+- [x] Grin voucher generation (single-party transaction)
+- [x] Sender creates voucher output with known blinding factor
+- [x] Blinding factor encrypted with recipient's BTC pubkey (ECIES)
+- [x] Recipient claims via non-interactive sweep (controls both blinds)
+- [x] Clawback support (sender sweeps with stored blinding factor)
+
+See `src/lib/grin/voucher.ts` for implementation.
 
 ## Phase 2: Public Tips
 
@@ -98,13 +117,18 @@ Recipient creates I1 → Sender signs S2 → Recipient finalizes S3 + broadcasts
 
 ## Completed
 
+- [x] Grin voucher social tips (2026-01-26)
+  - Non-interactive voucher model (single-party transaction)
+  - `createGrinVoucherTransaction()` builds complete tx sender can sign alone
+  - `claimGrinVoucher()` sweeps voucher to claimer's wallet
+  - Blinding factor encrypted with ECIES (same as other assets)
+  - Clawback uses same flow as claiming
 - [x] Social tipping MVP for BTC/LTC/XMR/WOW (2026-01-26)
   - Real fund transfers via ephemeral tip addresses
   - ECIES encryption of tip private keys with recipient's pubkey
   - Local storage of tip keys for sender clawback capability
   - Inbox UI for claiming tips with sweep transactions
   - XMR/WOW use random spend keys, derive view keys via SHA256
-  - Grin vouchers still pending (requires interactive transaction)
 - [x] Grin RSR invoice flow (2026-01-25)
   - Uses standard slatepack format compatible with grin-wallet
   - Receiver creates I1 via "Request" tab in Receive screen

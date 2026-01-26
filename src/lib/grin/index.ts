@@ -57,8 +57,10 @@ export {
   createGrinVoucher,
   claimGrinVoucher,
   extractBlindingFactor,
+  createGrinVoucherTransaction,
   type GrinVoucher,
   type GrinVoucherPendingTip,
+  type CreateVoucherTransactionResult,
 } from './voucher';
 
 // Import everything needed for createSendTransaction

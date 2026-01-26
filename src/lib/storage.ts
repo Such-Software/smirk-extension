@@ -335,3 +335,94 @@ export async function removeConnectedSite(origin: string): Promise<void> {
 export async function clearAllConnectedSites(): Promise<void> {
   await storage.local.remove(STORAGE_KEYS.CONNECTED_SITES);
 }
+
+// =============================================================================
+// Pending Social Tips (for clawback)
+// =============================================================================
+
+/**
+ * Pending social tip - stores tip info + private key for clawback.
+ * The sender stores this so they can recover funds if recipient doesn't claim.
+ */
+export interface PendingSocialTip {
+  /** Backend tip ID (UUID) */
+  tipId: string;
+  /** Asset type (btc, ltc, xmr, wow) */
+  asset: string;
+  /** Amount in atomic units */
+  amount: number;
+  /** Tip address where funds are held */
+  tipAddress: string;
+  /** Funding transaction ID */
+  fundingTxid: string;
+  /** Encrypted tip private key (for clawback) - encrypted with wallet password */
+  encryptedTipKey: string;
+  /** Salt used for encryption */
+  encryptedTipKeySalt: string;
+  /** Recipient platform (e.g., "telegram") */
+  recipientPlatform: string;
+  /** Recipient username */
+  recipientUsername: string;
+  /** Unix timestamp when created */
+  createdAt: number;
+  /** Status: pending, claimed, clawed_back */
+  status: 'pending' | 'claimed' | 'clawed_back';
+}
+
+const STORAGE_KEY_PENDING_TIPS = 'pendingSocialTips';
+
+/**
+ * Gets all pending social tips.
+ */
+export async function getPendingSocialTips(): Promise<PendingSocialTip[]> {
+  const result = await storage.local.get<Record<string, PendingSocialTip[]>>(STORAGE_KEY_PENDING_TIPS);
+  return result[STORAGE_KEY_PENDING_TIPS] ?? [];
+}
+
+/**
+ * Gets a pending social tip by ID.
+ */
+export async function getPendingSocialTip(tipId: string): Promise<PendingSocialTip | null> {
+  const tips = await getPendingSocialTips();
+  return tips.find((t) => t.tipId === tipId) ?? null;
+}
+
+/**
+ * Adds a pending social tip.
+ */
+export async function addPendingSocialTip(tip: PendingSocialTip): Promise<void> {
+  const tips = await getPendingSocialTips();
+  tips.push(tip);
+  await storage.local.set({ [STORAGE_KEY_PENDING_TIPS]: tips });
+}
+
+/**
+ * Updates a pending social tip's status.
+ */
+export async function updatePendingSocialTipStatus(
+  tipId: string,
+  status: 'pending' | 'claimed' | 'clawed_back'
+): Promise<void> {
+  const tips = await getPendingSocialTips();
+  const tip = tips.find((t) => t.tipId === tipId);
+  if (tip) {
+    tip.status = status;
+    await storage.local.set({ [STORAGE_KEY_PENDING_TIPS]: tips });
+  }
+}
+
+/**
+ * Removes a pending social tip.
+ */
+export async function removePendingSocialTip(tipId: string): Promise<void> {
+  const tips = await getPendingSocialTips();
+  const filtered = tips.filter((t) => t.tipId !== tipId);
+  await storage.local.set({ [STORAGE_KEY_PENDING_TIPS]: filtered });
+}
+
+/**
+ * Clears all pending social tips.
+ */
+export async function clearAllPendingSocialTips(): Promise<void> {
+  await storage.local.remove(STORAGE_KEY_PENDING_TIPS);
+}

@@ -213,7 +213,14 @@ export type MessageType =
   // Get connected sites list
   | { type: 'GET_CONNECTED_SITES' }
   // Disconnect a site
-  | { type: 'DISCONNECT_SITE'; origin: string };
+  | { type: 'DISCONNECT_SITE'; origin: string }
+  // Social tipping
+  | { type: 'LOOKUP_SOCIAL'; platform: string; username: string }
+  | { type: 'CREATE_SOCIAL_TIP'; platform: string; username: string; asset: AssetType; amount: number; recipientBtcPubkey?: string }
+  | { type: 'GET_CLAIMABLE_TIPS' }
+  | { type: 'CLAIM_SOCIAL_TIP'; tipId: string; asset: AssetType }
+  | { type: 'GET_SENT_SOCIAL_TIPS' }
+  | { type: 'CLAWBACK_SOCIAL_TIP'; tipId: string };
 
 /**
  * Context needed to finalize a Grin send transaction.
@@ -271,4 +278,23 @@ export interface UserKeysResponse {
     publicKey: string;
     publicSpendKey?: string;
   }>;
+}
+
+// Social tipping types
+export interface SocialLookupResult {
+  registered: boolean;
+  userId: string | null;
+  publicKeys: {
+    btc: string | null;
+    ltc: string | null;
+    xmr: string | null;
+    wow: string | null;
+    grin: string | null;
+  } | null;
+}
+
+export interface SocialTipResult {
+  tipId: string;
+  status: string;
+  shareUrl?: string;
 }

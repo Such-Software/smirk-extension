@@ -32,6 +32,32 @@
  *    - Fetch encrypted_key and tip_address from backend
  *    - Decrypt spend key, derive view key
  *    - Sweep funds from tip address to recipient's wallet
+ *
+ * Fund Transfer Flow (GRIN) - Voucher Model:
+ * Unlike UTXO chains, Grin uses interactive Mimblewimble transactions.
+ * Social tips use a "voucher" approach where the sender pre-commits funds
+ * and the recipient can claim them without interaction.
+ *
+ * 1. Sender creates voucher:
+ *    - Sender sends Grin to themselves (creates a confirmed output)
+ *    - Extract the output's raw blinding factor (32 bytes)
+ *    - Store voucher: { commitment, proof, amount, blinding_factor (encrypted) }
+ *    - The blinding factor is encrypted with recipient's BTC public key (ECIES)
+ *
+ * 2. Recipient claims voucher:
+ *    - Decrypt blinding factor using BTC private key
+ *    - Build a "voucher sweep" transaction:
+ *      - Input: voucher output (using stored blinding factor)
+ *      - Output: recipient's new output (using their own key derivation)
+ *    - Since claimer controls BOTH blinding factors (voucher + their output),
+ *      they can build the kernel excess and sign it non-interactively
+ *    - Broadcast the transaction
+ *
+ * Technical details for Grin voucher sweep:
+ * - Kernel excess = output_blind - input_blind (no interaction needed)
+ * - Claimer provides both partial signatures → can finalize themselves
+ * - This is similar to a self-transfer/consolidation transaction
+ * - Requires custom transaction building in grin/voucher.ts
  */
 
 import type { MessageResponse, AssetType, SocialLookupResult, SocialTipResult } from '@/types';
@@ -200,9 +226,10 @@ export async function handleCreateSocialTip(
 
     const isPublic = !platform || !username;
 
-    // Grin requires interactive transactions - not yet implemented for social tips
+    // Grin requires voucher model - see grin/voucher.ts for implementation plan
+    // Unlike UTXO chains, Grin needs custom tx building with raw blinding factors
     if (asset === 'grin') {
-      return { success: false, error: 'Grin social tips require voucher implementation (coming soon)' };
+      return { success: false, error: 'Grin social tips use vouchers (in development). Use Grin relay send instead.' };
     }
 
     // Public tips are not yet implemented with real funds

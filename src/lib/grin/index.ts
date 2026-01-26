@@ -52,6 +52,15 @@ export {
 // Re-export WASM initialization from loader
 export { initializeGrinWasm, isGrinWasmInitialized } from './loader';
 
+// Re-export voucher functions (for social tips)
+export {
+  createGrinVoucher,
+  claimGrinVoucher,
+  extractBlindingFactor,
+  type GrinVoucher,
+  type GrinVoucherPendingTip,
+} from './voucher';
+
 // Import everything needed for createSendTransaction
 import {
   initializeGrinWasm,

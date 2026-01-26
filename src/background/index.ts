@@ -55,15 +55,13 @@ import {
   AUTO_LOCK_ALARM,
 } from './state';
 
-// Settings, auto-lock, and connected sites
+// Settings and auto-lock
 import {
   handleGetSettings,
   handleUpdateSettings,
   handleResetAutoLockTimer,
   resetAutoLockTimer,
   handleAutoLockAlarm,
-  handleGetConnectedSites,
-  handleDisconnectSite,
 } from './settings';
 
 // Wallet operations
@@ -110,6 +108,9 @@ import {
   handleGrinCreateSend,
   handleGrinFinalizeAndBroadcast,
   handleGrinCancelSend,
+  handleGrinCreateInvoice,
+  handleGrinSignInvoice,
+  handleGrinFinalizeInvoice,
 } from './grin-handlers';
 
 // Tips operations
@@ -277,6 +278,29 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
 
     case 'GRIN_CANCEL_SEND':
       return handleGrinCancelSend(message.slateId, message.inputIds);
+
+    // =========================================================================
+    // Grin RSR Invoice Flow
+    // =========================================================================
+    case 'GRIN_CREATE_INVOICE':
+      return handleGrinCreateInvoice(message.amount);
+
+    case 'GRIN_SIGN_INVOICE':
+      return handleGrinSignInvoice(message.invoiceSlatepack);
+
+    case 'GRIN_FINALIZE_INVOICE':
+      return handleGrinFinalizeInvoice(
+        message.signedSlatepack,
+        message.originalSlatepack,
+        message.slateId,
+        message.secretKeyHex,
+        message.secretNonceHex,
+        message.outputInfo,
+        message.publicBlindExcess,
+        message.publicNonce,
+        message.receiverAddress,
+        message.amount
+      );
 
     // =========================================================================
     // Tips

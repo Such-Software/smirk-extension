@@ -2,24 +2,6 @@
 
 ## Current Priority
 
-### High Priority
-
-1. **RSR Flow (Receive-Sign-Return)** - Invoice flow
-   - Create I1 invoice slate
-   - Sender signs I1 to S2
-   - Recipient finalizes S2 to S3 and broadcasts
-
-2. **Slatepack Relay UX**
-   - Auto-refresh pending list
-   - Notification when slatepack arrives
-   - Expiry countdown display
-
-3. **QR Code Scanning**
-   - Camera permission for address scanning
-
-4. **Configurable Fee Levels**
-   - Low/medium/high fee options for BTC/LTC
-
 ### Lower Priority
 
 5. **Security Enhancements**
@@ -91,6 +73,23 @@ Recipient creates I1 → Sender signs S2 → Recipient finalizes S3 + broadcasts
 
 ## Completed
 
+- [x] Grin RSR invoice flow (2026-01-25)
+  - Uses standard slatepack format compatible with grin-wallet
+  - Receiver creates I1 via "Request" tab in Receive screen
+  - Sender signs via "Pay Invoice" tab in Send screen
+  - Receiver finalizes and broadcasts via "Request" tab
+  - State byte patching (I1→S1, I2→S2) for WASM compatibility
+- [x] Block explorer links for all assets (2026-01-25)
+  - BTC: mempool.space, LTC: litecoinspace.org
+  - XMR: monerohash.com, WOW: explore.wowne.ro
+  - GRIN: grincoin.org/kernel/{excess}
+- [x] Configurable fee levels (2026-01-25)
+  - Slow/Normal/Fast presets for BTC/LTC
+  - Custom sat/vB input option
+- [x] Slatepack Relay UX (2026-01-25)
+  - GrinPendingBanner shows pending receive state
+  - Expiry countdown display already implemented
+  - Pending txs visible quickly via mempool API
 - [x] Connected sites management UI (2026-01-25)
   - Show connected sites in Settings
   - Disconnect individual sites

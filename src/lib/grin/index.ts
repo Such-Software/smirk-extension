@@ -31,6 +31,16 @@ export { decodeSlatepack, reconstructSlateFromSerialized, encodeSlatepack } from
 // Re-export signing functions
 export { signSlate, finalizeSlate, ProofBuilder } from './signing';
 
+// Re-export invoice functions (RSR flow - standard slatepack format)
+export {
+  createInvoice,
+  signInvoice,
+  finalizeInvoice,
+  isInvoiceSlate,
+  type CreateInvoiceResult,
+  type SignInvoiceResult,
+} from './invoice';
+
 // Re-export utilities
 export {
   getTransactionJson,

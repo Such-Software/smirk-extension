@@ -24,4 +24,5 @@ export {
   getBech32m,
   getSlateInput,
   getSlateOutput,
+  getSlateParticipant,
 } from './esm/init-esm';

@@ -188,6 +188,22 @@ export type MessageType =
   | { type: 'GRIN_CREATE_SEND'; amount: number; fee: number; recipientAddress?: string }
   | { type: 'GRIN_FINALIZE_AND_BROADCAST'; slatepack: string; sendContext: GrinSendContext }
   | { type: 'GRIN_CANCEL_SEND'; slateId: string; inputIds: string[] }
+  // Grin invoice (RSR) flow
+  | { type: 'GRIN_CREATE_INVOICE'; amount: number }
+  | { type: 'GRIN_SIGN_INVOICE'; invoiceSlatepack: string }
+  | {
+      type: 'GRIN_FINALIZE_INVOICE';
+      signedSlatepack: string;
+      originalSlatepack: string; // The I1 slatepack we created (needed to parse compact I2)
+      slateId: string;
+      secretKeyHex: string;
+      secretNonceHex: string;
+      outputInfo: { keyId: string; nChild: number; commitment: string; proof: string };
+      publicBlindExcess: string;
+      publicNonce: string;
+      receiverAddress: string;
+      amount: number;
+    }
   // Website API (window.smirk) - from content script
   | { type: 'SMIRK_API'; method: string; params?: unknown; origin: string; siteName: string; favicon?: string }
   // Approval popup responses

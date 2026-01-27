@@ -81,7 +81,7 @@ export interface BalanceData {
 }
 
 // Wallet screen types
-export type WalletScreen = 'main' | 'receive' | 'send' | 'tip' | 'settings' | 'grinPending' | 'inbox';
+export type WalletScreen = 'main' | 'receive' | 'send' | 'tip' | 'settings' | 'grinPending' | 'inbox' | 'sentTips';
 
 // Session storage keys for persisting popup state across popup closes
 const SCREEN_STATE_KEY = 'smirk_screen_state';

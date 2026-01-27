@@ -22,6 +22,7 @@ import {
 import { InboxView } from './InboxView';
 import { ReceiveView } from './ReceiveView';
 import { SendView } from './SendView';
+import { SentTipsView } from './SentTipsView';
 import { SettingsView } from './SettingsView';
 import { TipView } from './TipView';
 import { useToast } from './Toast';
@@ -341,6 +342,10 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     return <InboxView onBack={() => setScreen('main')} />;
   }
 
+  if (screen === 'sentTips') {
+    return <SentTipsView onBack={() => setScreen('main')} />;
+  }
+
   // =========================================================================
   // Main view
   // =========================================================================
@@ -400,7 +405,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
         />
 
         {/* Action Buttons */}
-        <div class="action-grid action-grid-4">
+        <div class="action-grid action-grid-5">
           <button class="action-btn" onClick={() => setScreen('receive')}>
             <span class="action-icon">📥</span>
             <span class="action-label">Receive</span>
@@ -416,6 +421,10 @@ export function WalletView({ onLock }: { onLock: () => void }) {
           <button class="action-btn" onClick={() => setScreen('inbox')}>
             <span class="action-icon">📬</span>
             <span class="action-label">Inbox</span>
+          </button>
+          <button class="action-btn" onClick={() => setScreen('sentTips')}>
+            <span class="action-icon">📋</span>
+            <span class="action-label">Sent</span>
           </button>
         </div>
 

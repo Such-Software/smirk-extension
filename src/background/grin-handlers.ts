@@ -1217,11 +1217,21 @@ export async function handleGrinFinalizeInvoice(
       }
     );
 
+    // Record the receive transaction FIRST so broadcastGrinTransaction can update it with kernel_excess
+    await api.recordGrinTransaction({
+      userId: authState.userId,
+      slateId: finalizedSlate.id,
+      amount: amount,
+      fee: 0, // Receiver doesn't pay fee
+      direction: 'receive',
+      counterpartyAddress: '', // TODO: Get from parsed I2 slatepack
+    });
+
     // Get the transaction JSON for broadcast
     const txJson = getTransactionJson(finalizedSlate);
     console.log('[Grin Invoice] Transaction JSON for broadcast');
 
-    // Broadcast to network
+    // Broadcast to network (this will UPDATE the record with kernel_excess)
     const broadcastResult = await api.broadcastGrinTransaction({
       userId: authState.userId,
       slateId: finalizedSlate.id,
@@ -1240,16 +1250,6 @@ export async function handleGrinFinalizeInvoice(
       amount: amount,
       commitment: outputInfo.commitment,
       txSlateId: finalizedSlate.id,
-    });
-
-    // Record the receive transaction
-    await api.recordGrinTransaction({
-      userId: authState.userId,
-      slateId: finalizedSlate.id,
-      amount: amount,
-      fee: 0, // Receiver doesn't pay fee
-      direction: 'receive',
-      counterpartyAddress: '', // TODO: Get from parsed I2 slatepack
     });
 
     // Update transaction status to finalized

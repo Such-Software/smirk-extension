@@ -449,7 +449,16 @@ export async function handleCreateSocialTip(
         };
       }
 
-      // Broadcast the voucher transaction
+      // Record the send transaction FIRST so broadcastGrinTransaction can update it with kernel_excess
+      await api.recordGrinTransaction({
+        userId: authState.userId,
+        slateId: voucherResult.slate.id,
+        amount: Number(voucherResult.voucherOutput.amount),
+        fee: Number(voucherResult.slate.fee),
+        direction: 'send',
+      });
+
+      // Broadcast the voucher transaction (this will UPDATE the record with kernel_excess)
       const txJson = getTransactionJson(voucherResult.slate);
       console.log('[SocialTip] Broadcasting Grin voucher transaction...');
 
@@ -493,15 +502,6 @@ export async function handleCreateSocialTip(
           txSlateId: voucherResult.slate.id,
         });
       }
-
-      // Record the send transaction
-      await api.recordGrinTransaction({
-        userId: authState.userId,
-        slateId: voucherResult.slate.id,
-        amount: Number(voucherResult.voucherOutput.amount),
-        fee: Number(voucherResult.slate.fee),
-        direction: 'send',
-      });
 
       // For Grin, store voucher data for later encryption
       // We'll handle Grin specially below since we need to encrypt more data
@@ -908,7 +908,16 @@ export async function handleClaimSocialTip(
         };
       }
 
-      // Broadcast the claim transaction
+      // Record the receive transaction FIRST so broadcastGrinTransaction can update it with kernel_excess
+      await api.recordGrinTransaction({
+        userId: authState.userId,
+        slateId: claimResult.slate.id,
+        amount: Number(claimResult.outputInfo.amount),
+        fee: Number(claimResult.slate.fee),
+        direction: 'receive',
+      });
+
+      // Broadcast the claim transaction (this will UPDATE the record with kernel_excess)
       const txJson = getTransactionJson(claimResult.slate);
       console.log('[ClaimTip] Broadcasting Grin voucher claim transaction...');
 
@@ -932,15 +941,6 @@ export async function handleClaimSocialTip(
         amount: Number(claimResult.outputInfo.amount),
         commitment: claimResult.outputInfo.commitment,
         txSlateId: claimResult.slate.id,
-      });
-
-      // Record the receive transaction
-      await api.recordGrinTransaction({
-        userId: authState.userId,
-        slateId: claimResult.slate.id,
-        amount: Number(claimResult.outputInfo.amount),
-        fee: Number(claimResult.slate.fee),
-        direction: 'receive',
       });
 
       finalTxid = claimResult.slate.id;
@@ -1245,7 +1245,16 @@ export async function handleClaimPublicTip(
         };
       }
 
-      // Broadcast
+      // Record transaction FIRST so broadcastGrinTransaction can update it with kernel_excess
+      await api.recordGrinTransaction({
+        userId: authState.userId,
+        slateId: claimGrinResult.slate.id,
+        amount: Number(claimGrinResult.outputInfo.amount),
+        fee: Number(claimGrinResult.slate.fee),
+        direction: 'receive',
+      });
+
+      // Broadcast (this will UPDATE the record with kernel_excess)
       const txJson = getTransactionJson(claimGrinResult.slate);
       const broadcastResult = await api.broadcastGrinTransaction({
         userId: authState.userId,
@@ -1257,7 +1266,7 @@ export async function handleClaimPublicTip(
         return { success: false, error: `Grin broadcast failed: ${broadcastResult.error}` };
       }
 
-      // Record output and transaction
+      // Record output
       await api.recordGrinOutput({
         userId: authState.userId,
         keyId: claimGrinResult.outputInfo.keyId,
@@ -1265,14 +1274,6 @@ export async function handleClaimPublicTip(
         amount: Number(claimGrinResult.outputInfo.amount),
         commitment: claimGrinResult.outputInfo.commitment,
         txSlateId: claimGrinResult.slate.id,
-      });
-
-      await api.recordGrinTransaction({
-        userId: authState.userId,
-        slateId: claimGrinResult.slate.id,
-        amount: Number(claimGrinResult.outputInfo.amount),
-        fee: Number(claimGrinResult.slate.fee),
-        direction: 'receive',
       });
 
       finalTxid = claimGrinResult.slate.id;
@@ -1622,7 +1623,17 @@ export async function handleClawbackSocialTip(
         };
       }
 
-      // Broadcast the clawback transaction
+      // Record the receive transaction FIRST so broadcastGrinTransaction can update it with kernel_excess
+      // (clawback is a receive for the sender)
+      await api.recordGrinTransaction({
+        userId: authState.userId,
+        slateId: claimResult.slate.id,
+        amount: Number(claimResult.outputInfo.amount),
+        fee: Number(claimResult.slate.fee),
+        direction: 'receive',
+      });
+
+      // Broadcast the clawback transaction (this will UPDATE the record with kernel_excess)
       const txJson = getTransactionJson(claimResult.slate);
       console.log('[Clawback] Broadcasting Grin voucher clawback transaction...');
 
@@ -1646,15 +1657,6 @@ export async function handleClawbackSocialTip(
         amount: Number(claimResult.outputInfo.amount),
         commitment: claimResult.outputInfo.commitment,
         txSlateId: claimResult.slate.id,
-      });
-
-      // Record the receive transaction (clawback is a receive for the sender)
-      await api.recordGrinTransaction({
-        userId: authState.userId,
-        slateId: claimResult.slate.id,
-        amount: Number(claimResult.outputInfo.amount),
-        fee: Number(claimResult.slate.fee),
-        direction: 'receive',
       });
 
       finalTxid = claimResult.slate.id;

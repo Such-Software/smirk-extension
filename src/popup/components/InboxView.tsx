@@ -1,7 +1,10 @@
 /**
- * Inbox view for claimable social tips.
+ * Inbox view for incoming social tips.
  *
- * Displays incoming tips that the user can claim.
+ * Displays:
+ * - Tips waiting for confirmations (XMR/WOW/GRIN)
+ * - Tips ready to claim
+ *
  * For targeted tips, claims and credits the user's account.
  */
 
@@ -10,13 +13,17 @@ import type { AssetType } from '@/types';
 import { ASSETS, formatBalance, sendMessage } from '../shared';
 import { useToast } from './Toast';
 
-interface ClaimableTip {
+interface ReceivedTip {
   id: string;
   asset: AssetType;
   amount: number;
   from_platform: string | null;
   created_at: string;
   encrypted_key: string | null;
+  status: string;
+  funding_confirmations: number;
+  confirmations_required: number;
+  is_claimable: boolean;
 }
 
 interface InboxViewProps {
@@ -25,21 +32,29 @@ interface InboxViewProps {
 
 export function InboxView({ onBack }: InboxViewProps) {
   const { showToast } = useToast();
-  const [tips, setTips] = useState<ClaimableTip[]>([]);
+  const [tips, setTips] = useState<ReceivedTip[]>([]);
   const [loading, setLoading] = useState(true);
   const [claiming, setClaiming] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchClaimableTips();
+    fetchReceivedTips();
+    // Poll for updates every 30 seconds for pending confirmations
+    const interval = setInterval(fetchReceivedTips, 30000);
+    return () => clearInterval(interval);
   }, []);
 
-  const fetchClaimableTips = async () => {
+  const fetchReceivedTips = async () => {
     try {
       setLoading(true);
       setError(null);
-      const result = await sendMessage<{ tips: ClaimableTip[] }>({ type: 'GET_CLAIMABLE_TIPS' });
-      setTips(result.tips);
+      console.log('[InboxView] Fetching received tips...');
+      const result = await sendMessage<{ tips: ReceivedTip[] }>({ type: 'GET_RECEIVED_TIPS' });
+      console.log('[InboxView] Raw result:', result);
+      // Only show pending tips (not already claimed/clawed back)
+      const pendingTips = result.tips.filter(t => t.status === 'pending');
+      console.log('[InboxView] Pending tips:', pendingTips);
+      setTips(pendingTips);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load tips');
     } finally {
@@ -63,7 +78,13 @@ export function InboxView({ onBack }: InboxViewProps) {
       // Remove the claimed tip from the list
       setTips((prev) => prev.filter((t) => t.id !== tipId));
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to claim tip', 'error');
+      const errorMsg = err instanceof Error ? err.message : 'Failed to claim tip';
+      // Check if it's a confirmation-related error
+      if (errorMsg.includes('confirmation') || errorMsg.includes('unspent')) {
+        showToast('Tip is still confirming. Please wait.', 'error');
+      } else {
+        showToast(errorMsg, 'error');
+      }
     } finally {
       setClaiming(null);
     }
@@ -84,6 +105,19 @@ export function InboxView({ onBack }: InboxViewProps) {
     return date.toLocaleDateString();
   };
 
+  const getConfirmationStatus = (tip: ReceivedTip) => {
+    if (tip.confirmations_required === 0) {
+      return { text: 'Ready', className: 'status-ready' };
+    }
+    if (tip.funding_confirmations >= tip.confirmations_required) {
+      return { text: 'Confirmed', className: 'status-ready' };
+    }
+    return {
+      text: `${tip.funding_confirmations}/${tip.confirmations_required} confirmations`,
+      className: 'status-pending',
+    };
+  };
+
   return (
     <>
       <header class="header">
@@ -91,7 +125,7 @@ export function InboxView({ onBack }: InboxViewProps) {
           Back
         </button>
         <h1>Inbox</h1>
-        <button class="btn btn-icon" onClick={fetchClaimableTips} disabled={loading} title="Refresh">
+        <button class="btn btn-icon" onClick={fetchReceivedTips} disabled={loading} title="Refresh">
           {loading ? '...' : '↻'}
         </button>
       </header>
@@ -105,7 +139,7 @@ export function InboxView({ onBack }: InboxViewProps) {
         ) : error ? (
           <div class="error-state">
             <p>{error}</p>
-            <button class="btn btn-secondary" onClick={fetchClaimableTips}>
+            <button class="btn btn-secondary" onClick={fetchReceivedTips}>
               Try Again
             </button>
           </div>
@@ -120,9 +154,11 @@ export function InboxView({ onBack }: InboxViewProps) {
             {tips.map((tip) => {
               const asset = tip.asset as AssetType;
               const assetInfo = ASSETS[asset];
+              const confirmStatus = getConfirmationStatus(tip);
+              const canClaim = tip.is_claimable;
 
               return (
-                <div key={tip.id} class="tip-card">
+                <div key={tip.id} class={`tip-card ${!canClaim ? 'tip-pending' : ''}`}>
                   <div class="tip-asset">
                     <img
                       src={assetInfo.iconPath}
@@ -139,14 +175,20 @@ export function InboxView({ onBack }: InboxViewProps) {
                         )}
                         <span class="tip-time">{formatDate(tip.created_at)}</span>
                       </span>
+                      {tip.confirmations_required > 0 && (
+                        <span class={`tip-status ${confirmStatus.className}`}>
+                          {confirmStatus.text}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <button
-                    class="btn btn-primary btn-claim"
+                    class={`btn ${canClaim ? 'btn-primary' : 'btn-secondary'} btn-claim`}
                     onClick={() => handleClaim(tip.id, asset)}
-                    disabled={claiming === tip.id}
+                    disabled={claiming === tip.id || !canClaim}
+                    title={!canClaim ? 'Waiting for confirmations' : 'Claim this tip'}
                   >
-                    {claiming === tip.id ? 'Claiming...' : 'Claim'}
+                    {claiming === tip.id ? 'Claiming...' : canClaim ? 'Claim' : 'Pending'}
                   </button>
                 </div>
               );
@@ -195,6 +237,11 @@ export function InboxView({ onBack }: InboxViewProps) {
           border: 1px solid var(--border-color);
         }
 
+        .tip-card.tip-pending {
+          opacity: 0.85;
+          border-style: dashed;
+        }
+
         .tip-asset {
           display: flex;
           align-items: center;
@@ -228,10 +275,29 @@ export function InboxView({ onBack }: InboxViewProps) {
           text-transform: capitalize;
         }
 
+        .tip-status {
+          font-size: 11px;
+          font-weight: 500;
+          margin-top: 2px;
+        }
+
+        .status-pending {
+          color: var(--warning-color, #f59e0b);
+        }
+
+        .status-ready {
+          color: var(--success-color, #10b981);
+        }
+
         .btn-claim {
           padding: 8px 16px;
           font-size: 14px;
           min-width: 80px;
+        }
+
+        .btn-claim:disabled:not(.btn-primary) {
+          opacity: 0.6;
+          cursor: not-allowed;
         }
       `}</style>
     </>

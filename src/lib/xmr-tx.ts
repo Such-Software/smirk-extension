@@ -158,7 +158,7 @@ export async function initWasm(): Promise<SmirkWasmExports> {
       // Compile and initialize synchronously (works in Service Workers)
       const wasmBytes = await response.arrayBuffer();
       const wasmModule = await WebAssembly.compile(wasmBytes);
-      (smirkWasm as any).initSync(wasmModule);
+      (smirkWasm as any).initSync({ module: wasmModule });
 
       wasmInitialized = true;
       const exports = smirkWasm as unknown as SmirkWasmExports;

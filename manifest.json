@@ -3,6 +3,12 @@
   "name": "Smirk Wallet",
   "version": "0.1.0",
   "description": "Non-custodial multi-currency tip wallet for Telegram, Discord, and more",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "wallet@smirk.cash",
+      "strict_min_version": "109.0"
+    }
+  },
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
@@ -13,8 +19,7 @@
     "alarms"
   ],
   "host_permissions": [
-    "https://smirk.app/*",
-    "https://*.smirk.cash/*"
+    "<all_urls>"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -31,10 +36,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://smirk.app/*",
-        "https://*.smirk.cash/*",
-        "http://localhost/*",
-        "http://127.0.0.1/*"
+        "<all_urls>"
       ],
       "js": ["content.js"],
       "run_at": "document_start"

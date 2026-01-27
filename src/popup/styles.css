@@ -233,6 +233,23 @@ body {
   gap: 8px;
 }
 
+.action-grid.action-grid-5 {
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+}
+
+.action-grid-5 .action-btn {
+  padding: 12px 8px;
+}
+
+.action-grid-5 .action-icon {
+  font-size: 20px;
+}
+
+.action-grid-5 .action-label {
+  font-size: 10px;
+}
+
 .action-btn {
   display: flex;
   flex-direction: column;

@@ -49,6 +49,7 @@ export class SmirkApi extends ApiClient implements
   lookupSocial: SocialMethods['lookupSocial'];
   createSocialTip: SocialMethods['createSocialTip'];
   getClaimableTips: SocialMethods['getClaimableTips'];
+  getReceivedSocialTips: SocialMethods['getReceivedTips'];
   getSentSocialTips: SocialMethods['getSentSocialTips'];
   claimSocialTip: SocialMethods['claimSocialTip'];
   clawbackSocialTip: SocialMethods['clawbackSocialTip'];
@@ -67,6 +68,7 @@ export class SmirkApi extends ApiClient implements
   submitLwsTx: WalletLwsMethods['submitLwsTx'];
   getLwsHistory: WalletLwsMethods['getLwsHistory'];
   registerLws: WalletLwsMethods['registerLws'];
+  deactivateLws: WalletLwsMethods['deactivateLws'];
 
   // Grin methods
   createGrinRelay: GrinMethods['createGrinRelay'];
@@ -120,6 +122,7 @@ export class SmirkApi extends ApiClient implements
     this.lookupSocial = social.lookupSocial;
     this.createSocialTip = social.createSocialTip;
     this.getClaimableTips = social.getClaimableTips;
+    this.getReceivedSocialTips = social.getReceivedTips;
     this.getSentSocialTips = social.getSentSocialTips;
     this.claimSocialTip = social.claimSocialTip;
     this.clawbackSocialTip = social.clawbackSocialTip;
@@ -138,6 +141,7 @@ export class SmirkApi extends ApiClient implements
     this.submitLwsTx = lws.submitLwsTx;
     this.getLwsHistory = lws.getLwsHistory;
     this.registerLws = lws.registerLws;
+    this.deactivateLws = lws.deactivateLws;
 
     // Assign grin methods
     this.createGrinRelay = grin.createGrinRelay;

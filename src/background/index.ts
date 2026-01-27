@@ -137,6 +137,7 @@ import {
   handleLookupSocial,
   handleCreateSocialTip,
   handleGetClaimableTips,
+  handleGetReceivedTips,
   handleClaimSocialTip,
   handleGetSentSocialTips,
   handleClawbackSocialTip,
@@ -356,6 +357,9 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
 
     case 'GET_CLAIMABLE_TIPS':
       return handleGetClaimableTips();
+
+    case 'GET_RECEIVED_TIPS':
+      return handleGetReceivedTips();
 
     case 'CLAIM_SOCIAL_TIP':
       return handleClaimSocialTip(message.tipId, message.asset);

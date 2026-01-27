@@ -47,6 +47,10 @@ export interface ClaimableTip {
   created_at: string;
   encrypted_key: string | null;
   tip_address: string | null;
+  /** Current number of confirmations for funding tx */
+  funding_confirmations: number;
+  /** Required confirmations before tip is claimable (XMR/GRIN=10, WOW=4, BTC/LTC=0) */
+  confirmations_required: number;
 }
 
 export interface SentTip {
@@ -61,11 +65,38 @@ export interface SentTip {
   created_at: string;
   claimed_at: string | null;
   clawed_back_at: string | null;
+  /** Current number of confirmations for funding tx */
+  funding_confirmations: number;
+  /** Required confirmations before tip is claimable (XMR/GRIN=10, WOW=4, BTC/LTC=0) */
+  confirmations_required: number;
+  /** Whether the tip has enough confirmations to be claimed */
+  is_claimable: boolean;
 }
 
 // ============================================================================
 // Methods interface
 // ============================================================================
+
+/** Received tip (includes confirmation status for pending tips) */
+export interface ReceivedTip {
+  id: string;
+  sender_user_id: string;
+  recipient_platform: string | null;
+  recipient_username: string | null;
+  asset: AssetType;
+  amount: number;
+  is_public: boolean;
+  status: string;
+  created_at: string;
+  claimed_at: string | null;
+  clawed_back_at: string | null;
+  /** Current number of confirmations for funding tx */
+  funding_confirmations: number;
+  /** Required confirmations before tip is claimable (XMR/GRIN=10, WOW=4, BTC/LTC=0) */
+  confirmations_required: number;
+  /** Whether the tip has enough confirmations to be claimed */
+  is_claimable: boolean;
+}
 
 export interface SocialMethods {
   /**
@@ -85,9 +116,15 @@ export interface SocialMethods {
   ): Promise<ApiResponse<CreateSocialTipResponse>>;
 
   /**
-   * Get tips the current user can claim.
+   * Get tips the current user can claim (only confirmed tips).
    */
   getClaimableTips(): Promise<ApiResponse<{ tips: ClaimableTip[] }>>;
+
+  /**
+   * Get all received tips (full history, includes unconfirmed).
+   * Use this to show tips waiting for confirmations.
+   */
+  getReceivedTips(): Promise<ApiResponse<{ tips: ReceivedTip[] }>>;
 
   /**
    * Get tips sent by the current user.
@@ -129,6 +166,12 @@ export function createSocialMethods(client: ApiClient): SocialMethods {
 
     async getClaimableTips() {
       return client.request<{ tips: ClaimableTip[] }>('/tips/social/claimable', {
+        method: 'GET',
+      });
+    },
+
+    async getReceivedTips() {
+      return client.request<{ tips: ReceivedTip[] }>('/tips/social/received', {
         method: 'GET',
       });
     },

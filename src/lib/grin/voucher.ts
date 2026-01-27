@@ -556,6 +556,9 @@ export async function createGrinVoucherTransaction(
   const feeBN = new BigNumber(fee.toString());
   const heightBN = new BigNumber(currentHeight.toString());
 
+  // Voucher transactions don't need payment proofs - they're self-sends
+  // that will be claimed by someone else. Using NO_SENDER_ADDRESS and
+  // NO_RECEIVER_ADDRESS prevents hasPaymentProof() from returning true.
   const slate = new Slate(
     amountBN,
     true, // isMainnet
@@ -564,8 +567,8 @@ export async function createGrinVoucherTransaction(
     Slate.NO_LOCK_HEIGHT,
     Slate.NO_RELATIVE_HEIGHT,
     Slate.NO_TIME_TO_LIVE_CUT_OFF_HEIGHT,
-    keys.slatepackAddress, // sender = self
-    keys.slatepackAddress  // receiver = self (voucher transaction)
+    Slate.NO_SENDER_ADDRESS,
+    Slate.NO_RECEIVER_ADDRESS
   );
 
   // === Create SlateInputs from selected UTXOs ===

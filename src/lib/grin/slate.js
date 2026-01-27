@@ -5454,28 +5454,32 @@ class Slate {
 			
 			// Initialize kernel commits
 			var kernelCommits = [
-			
+
 				// Kernels sum
 				kernelsSum
 			];
-			
-			// Try
-			try {
-			
-				// Get offset excess
-				var offsetExcess = this.getOffsetExcess();
+
+			// Check if offset is not zero (zero offset doesn't affect the sum)
+			if(Common.arraysAreEqual(this.getOffset(), Slate.ZERO_OFFSET) === false) {
+
+				// Try
+				try {
+
+					// Get offset excess
+					var offsetExcess = this.getOffsetExcess();
+				}
+
+				// Catch errors
+				catch(error) {
+
+					// Return false
+					return false;
+				}
+
+				// Append offset excess to kernel commits
+				kernelCommits.push(offsetExcess);
 			}
-			
-			// Catch errors
-			catch(error) {
-			
-				// Return false
-				return false;
-			}
-			
-			// Append offset excess to kernel commits
-			kernelCommits.push(offsetExcess);
-			
+
 			// Check if getting kernels sum with offset from kernel commits failed
 			var kernelsSumWithOffset = Secp256k1Zkp.pedersenCommitSum(kernelCommits, []);
 			

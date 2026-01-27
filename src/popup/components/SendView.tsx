@@ -46,6 +46,7 @@ export function SendView({
   const [sending, setSending] = useState(false);
   const [calculatingMax, setCalculatingMax] = useState(false);
   const [isSweep, setIsSweep] = useState(false);
+  const [maxCalculatedAmount, setMaxCalculatedAmount] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [txid, setTxid] = useState<string | null>(null);
 
@@ -151,6 +152,11 @@ export function SendView({
           asset,
         });
 
+        // Auto-detect sweep mode for XMR/WOW: if amount matches calculated max or
+        // is very close to available balance, use sweep mode
+        const shouldSweepXmr = isSweep ||
+          (maxCalculatedAmount !== null && Math.abs(amountAtomic - maxCalculatedAmount) < 1000);
+
         // Send transaction using WASM
         const result = await sendXmrTransaction(
           asset as XmrAsset,
@@ -160,7 +166,7 @@ export function SendView({
           recipientAddress.trim(),
           amountAtomic,
           'mainnet',
-          isSweep // Pass sweep flag - if true, ignores amountAtomic and sends max
+          shouldSweepXmr // Auto-detect sweep for max sends
         );
 
         setTxid(result.txHash);
@@ -185,13 +191,21 @@ export function SendView({
           return;
         }
 
+        // Auto-detect sweep mode: if amount is very close to available balance or matches
+        // the calculated max, use sweep mode to avoid fee estimation mismatch
+        // Threshold: within 1000 sats for BTC, or 100 litoshis for LTC
+        const sweepThreshold = asset === 'btc' ? 1000 : 100;
+        const shouldSweep = isSweep ||
+          (maxCalculatedAmount !== null && Math.abs(amountAtomic - maxCalculatedAmount) < sweepThreshold) ||
+          (availableBalance - amountAtomic < sweepThreshold);
+
         const result = await sendMessage<{ txid: string; fee: number; actualAmount: number }>({
           type: 'SEND_TX',
           asset: asset as 'btc' | 'ltc',
           recipientAddress: recipientAddress.trim(),
           amount: amountAtomic,
           feeRate: feeRateNum,
-          sweep: isSweep, // Pass sweep flag for max sends
+          sweep: shouldSweep, // Auto-detect sweep for max sends
         });
 
         setTxid(result.txid);
@@ -230,6 +244,7 @@ export function SendView({
 
         if (maxAmount > 0) {
           setAmount(formatBalanceFull(maxAmount, asset));
+          setMaxCalculatedAmount(maxAmount);
           setIsSweep(true); // Mark as sweep for transaction building
         } else {
           setError('Balance too low to cover network fee');
@@ -255,6 +270,7 @@ export function SendView({
 
         if (result.maxAmount > 0) {
           setAmount(formatBalanceFull(result.maxAmount, asset));
+          setMaxCalculatedAmount(result.maxAmount);
           setIsSweep(true); // Mark as sweep mode for BTC/LTC max send
         } else {
           setError('Balance too low to cover network fee');
@@ -399,6 +415,7 @@ export function SendView({
                   onInput={(e) => {
                     setAmount((e.target as HTMLInputElement).value);
                     setIsSweep(false); // Manual input clears sweep mode
+                    // Don't clear maxCalculatedAmount - we use it for auto-detection
                   }}
                   disabled={sending}
                   style={{ flex: 1, fontFamily: 'monospace' }}

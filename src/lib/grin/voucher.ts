@@ -282,6 +282,10 @@ export async function claimGrinVoucher(
   const feeBN = new BigNumber(fee.toString());
   const heightBN = new BigNumber(currentHeight.toString());
 
+  // Voucher claim transactions don't need payment proofs - we're redeeming a
+  // self-contained voucher output. Using NO_SENDER_ADDRESS and NO_RECEIVER_ADDRESS
+  // prevents hasPaymentProof() from returning true, avoiding the "payment proof
+  // missing receiver signature" error during verifyAfterFinalize.
   const slate = new Slate(
     amountBN,
     true, // isMainnet
@@ -290,8 +294,8 @@ export async function claimGrinVoucher(
     Slate.NO_LOCK_HEIGHT,
     Slate.NO_RELATIVE_HEIGHT,
     Slate.NO_TIME_TO_LIVE_CUT_OFF_HEIGHT,
-    keys.slatepackAddress, // sender (claimer)
-    keys.slatepackAddress  // receiver (also claimer - self-transfer)
+    Slate.NO_SENDER_ADDRESS,
+    Slate.NO_RECEIVER_ADDRESS
   );
 
   // === Add the voucher as input ===

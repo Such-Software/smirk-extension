@@ -27,13 +27,150 @@ npm run build
 npm run typecheck
 ```
 
-## Loading in Chrome
+## Loading in Chrome (Development)
 
 1. Run `npm run build`
 2. Go to `chrome://extensions`
 3. Enable "Developer mode"
 4. Click "Load unpacked"
-5. Select the `smirk-extension` folder
+5. Select the `dist` folder
+
+## Distribution
+
+### Building for Release
+
+```bash
+# Build production version
+npm run build
+
+# Create distributable zip
+cd dist && zip -r ../smirk-wallet.zip . && cd ..
+```
+
+### Chrome Web Store
+
+1. Go to [Chrome Developer Dashboard](https://chrome.google.com/webstore/devconsole)
+2. Click "New Item" → Upload `smirk-wallet.zip`
+3. Fill in listing details:
+   - Name: Smirk Wallet
+   - Description: Non-custodial multi-currency wallet for crypto tipping
+   - Category: Productivity
+   - Screenshots: 1280x800 or 640x400
+   - Icon: 128x128 PNG
+4. Submit for review (usually 1-3 business days)
+
+**Note:** First submissions may take longer. Crypto extensions often get extra scrutiny.
+
+### Firefox Add-ons
+
+The extension uses browser-agnostic APIs and works on Firefox without changes.
+
+1. Go to [Firefox Add-on Developer Hub](https://addons.mozilla.org/developers/)
+2. Click "Submit a New Add-on"
+3. Upload `smirk-wallet.zip`
+4. Firefox requires source code for review - upload the full source repo as a zip
+5. Fill in listing details
+6. Submit for review (usually 1-2 days)
+
+**Testing locally on Firefox:**
+```bash
+# Install web-ext CLI
+npm install -g web-ext
+
+# Run in Firefox (from dist folder)
+cd dist && web-ext run
+```
+
+### Safari (macOS/iOS)
+
+Safari requires converting the extension using Xcode.
+
+**Prerequisites:**
+- macOS with Xcode installed
+- Apple Developer account ($99/year for distribution)
+
+**Steps:**
+```bash
+# Convert extension to Safari format
+xcrun safari-web-extension-converter dist --project-location ./safari-build --app-name "Smirk Wallet"
+
+# Open in Xcode
+open safari-build/Smirk\ Wallet/Smirk\ Wallet.xcodeproj
+```
+
+Then in Xcode:
+1. Select your development team
+2. Build and run to test locally
+3. Archive and submit to App Store Connect for review
+
+**Note:** Safari extensions are distributed through the Mac App Store, not as standalone downloads.
+
+### Direct Distribution (GitHub Releases)
+
+For users who prefer manual installation or when store versions are pending review.
+
+#### Installing from ZIP (Chrome/Brave/Edge)
+
+1. **Download** `smirk-wallet.zip` from [Releases](https://github.com/user/smirk-extension/releases)
+2. **Unzip** to a permanent folder (e.g., `~/Extensions/smirk-wallet/`)
+   - ⚠️ Don't delete this folder after installing - Chrome needs it!
+3. **Open Extensions page**:
+   - Chrome: `chrome://extensions`
+   - Brave: `brave://extensions`
+   - Edge: `edge://extensions`
+4. **Enable Developer Mode** (toggle in top-right corner)
+5. **Click "Load unpacked"**
+6. **Select the unzipped folder** (the one containing `manifest.json`)
+7. **Done!** Click the puzzle piece icon in toolbar and pin Smirk Wallet
+
+**Updating:** Download new zip → unzip to same folder (overwrite) → go to extensions page → click refresh icon on Smirk Wallet
+
+#### Installing from ZIP (Firefox)
+
+Firefox treats manually loaded extensions as "temporary" - they disappear when Firefox restarts. For persistent installation, use Firefox Add-ons store or Firefox Developer/Nightly edition.
+
+**Temporary install (testing):**
+1. **Download** `smirk-wallet.zip` and unzip
+2. Go to `about:debugging#/runtime/this-firefox`
+3. Click **"Load Temporary Add-on..."**
+4. Select `manifest.json` from the unzipped folder
+
+**Permanent install (Firefox Developer/Nightly only):**
+1. Go to `about:config` → set `xpinstall.signatures.required` to `false`
+2. Go to `about:addons` → gear icon → **"Install Add-on From File..."**
+3. Select the `.zip` file directly
+
+#### GitHub Release Template
+
+```markdown
+## Smirk Wallet vX.X.X
+
+### Download
+- `smirk-wallet.zip` - Manual installation (see instructions below)
+
+### Installation (Chrome/Brave/Edge)
+1. Download and unzip `smirk-wallet.zip` to a permanent folder
+2. Go to `chrome://extensions` (or `brave://extensions` / `edge://extensions`)
+3. Enable **Developer Mode** (top-right toggle)
+4. Click **Load unpacked** → select the unzipped folder
+5. Pin the extension from the puzzle piece menu
+
+### Installation (Firefox)
+1. Download and unzip `smirk-wallet.zip`
+2. Go to `about:debugging#/runtime/this-firefox`
+3. Click **Load Temporary Add-on** → select `manifest.json`
+   - Note: Temporary extensions reset on Firefox restart
+
+### What's New
+- Feature X
+- Bug fix Y
+```
+
+### Version Bumping
+
+Update version in these files before release:
+- `package.json` - `"version": "x.x.x"`
+- `manifest.json` - `"version": "x.x.x"`
 
 ## Architecture
 

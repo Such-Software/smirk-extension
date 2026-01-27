@@ -31,6 +31,8 @@ export interface CreateSocialTipRequest {
   claim_key_hash?: string;
   tip_address?: string;
   funding_txid?: string;
+  /** Private view key for tip address (XMR/WOW only, for 0-conf detection) */
+  tip_view_key?: string;
 }
 
 export interface CreateSocialTipResponse {

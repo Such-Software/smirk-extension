@@ -5599,24 +5599,30 @@ class Slate {
 				kernelsSum
 			];
 
-			// Try
-			try {
+			// Check if offset is not zero (zero offset doesn't affect the sum)
+			if(Common.arraysAreEqual(this.getOffset(), Slate.ZERO_OFFSET) === false) {
 
-				// Get offset excess
-				var offsetExcess = this.getOffsetExcess();
-				console.log('[Slate.verifyKernelSums] offsetExcess:', Common.toHexString(offsetExcess));
+				// Try
+				try {
+
+					// Get offset excess
+					var offsetExcess = this.getOffsetExcess();
+					console.log('[Slate.verifyKernelSums] offsetExcess:', Common.toHexString(offsetExcess));
+				}
+
+				// Catch errors
+				catch(error) {
+
+					console.error('[Slate.verifyKernelSums] Error getting offset excess:', error);
+					// Return false
+					return false;
+				}
+
+				// Append offset excess to kernel commits
+				kernelCommits.push(offsetExcess);
+			} else {
+				console.log('[Slate.verifyKernelSums] Skipping zero offset');
 			}
-
-			// Catch errors
-			catch(error) {
-
-				console.error('[Slate.verifyKernelSums] Error getting offset excess:', error);
-				// Return false
-				return false;
-			}
-
-			// Append offset excess to kernel commits
-			kernelCommits.push(offsetExcess);
 
 			// Check if getting kernels sum with offset from kernel commits failed
 			var kernelsSumWithOffset = Secp256k1Zkp.pedersenCommitSum(kernelCommits, []);

@@ -145,6 +145,9 @@ function TxItem({
   const received = tx.total_received ?? 0;
   const sent = tx.total_sent ?? 0;
   const isIncoming = (isXmrWow || isGrin) ? received > sent : true;
+  // Net amount: for outgoing, subtract change (received) from spent (sent)
+  // For incoming, it's just the received amount
+  const netAmount = isIncoming ? received : (sent - received);
   const isPending = tx.is_pending || tx.height === 0;
   const isCancelled = tx.is_cancelled === true;
 
@@ -200,8 +203,8 @@ function TxItem({
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        {/* Amount for XMR/WOW/Grin */}
-        {(isXmrWow || isGrin) && (received > 0 || sent > 0) && (
+        {/* Amount for XMR/WOW/Grin - show net amount (spent minus change) */}
+        {(isXmrWow || isGrin) && netAmount > 0 && (
           <div
             style={{
               fontSize: '11px',
@@ -210,7 +213,7 @@ function TxItem({
             }}
           >
             {isIncoming ? '+' : '-'}
-            {formatBalance(isIncoming ? received : sent, asset)}
+            {formatBalance(netAmount, asset)}
           </div>
         )}
 

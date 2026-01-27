@@ -142,6 +142,18 @@ const smirk = {
   async getPublicKeys(): Promise<SmirkPublicKeys | null> {
     return sendRequest<SmirkPublicKeys | null>('getPublicKeys');
   },
+
+  /**
+   * Claim a public tip using the URL fragment key.
+   * @param tipId - The tip ID from the URL
+   * @param fragmentKey - The base64url-encoded key from the URL fragment
+   */
+  async claimPublicTip(tipId: string, fragmentKey: string): Promise<{ success: boolean; txid?: string; error?: string }> {
+    if (!tipId || !fragmentKey) {
+      throw new Error('tipId and fragmentKey are required');
+    }
+    return sendRequest<{ success: boolean; txid?: string; error?: string }>('claimPublicTip', { tipId, fragmentKey });
+  },
 };
 
 // Freeze the API to prevent modification

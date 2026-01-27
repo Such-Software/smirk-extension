@@ -98,6 +98,17 @@ export interface ReceivedTip {
   is_claimable: boolean;
 }
 
+export interface PublicTipInfo {
+  id: string;
+  asset: AssetType;
+  amount: number;
+  status: string;
+  created_at: string;
+  is_public: boolean;
+  funding_confirmations: number;
+  confirmations_required: number;
+}
+
 export interface SocialMethods {
   /**
    * Look up if a username is registered for social tipping.
@@ -142,6 +153,12 @@ export interface SocialMethods {
    * Clawback a tip (sender reclaims unclaimed funds).
    */
   clawbackSocialTip(tipId: string): Promise<ApiResponse<{ success: boolean }>>;
+
+  /**
+   * Get public tip info (unauthenticated).
+   * Only works for public tips - returns 404 for targeted tips.
+   */
+  getPublicSocialTip(tipId: string): Promise<ApiResponse<PublicTipInfo>>;
 }
 
 // ============================================================================
@@ -193,6 +210,14 @@ export function createSocialMethods(client: ApiClient): SocialMethods {
       return client.request<{ success: boolean }>(
         `/tips/social/${tipId}/clawback`,
         { method: 'POST' }
+      );
+    },
+
+    async getPublicSocialTip(tipId: string) {
+      return client.request<PublicTipInfo>(
+        `/tips/social/${tipId}/public`,
+        { method: 'GET' },
+        false // No auth required
       );
     },
   };

@@ -141,6 +141,7 @@ import {
   handleClaimSocialTip,
   handleGetSentSocialTips,
   handleClawbackSocialTip,
+  handleGetPublicTipShareUrl,
 } from './social';
 
 // =============================================================================
@@ -369,6 +370,9 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
 
     case 'CLAWBACK_SOCIAL_TIP':
       return handleClawbackSocialTip(message.tipId);
+
+    case 'GET_PUBLIC_TIP_SHARE_URL':
+      return handleGetPublicTipShareUrl(message.tipId);
 
     // =========================================================================
     // Unknown

@@ -113,6 +113,17 @@ export function TipView({
 
   // State for share URL (public tips)
   const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [loadingShareUrl, setLoadingShareUrl] = useState(false);
+  const [shareUrlPending, setShareUrlPending] = useState(false);
+
+  // Confirmation requirements by asset (0 = immediately claimable)
+  const CONFIRMATION_REQUIREMENTS: Record<AssetType, number> = {
+    btc: 0,
+    ltc: 0,
+    xmr: 10,
+    wow: 4,
+    grin: 10,
+  };
 
   // Handle tip creation
   const handleSendTip = async (e: Event) => {
@@ -138,7 +149,7 @@ export function TipView({
       // For targeted tips, include the recipient's BTC public key for encryption
       const recipientBtcPubkey = platform !== 'free' ? lookupResult?.publicKeys?.btc : undefined;
 
-      const result = await sendMessage<{ tipId: string; status: string; shareUrl?: string }>({
+      const result = await sendMessage<{ tipId: string; status: string; isPublic?: boolean }>({
         type: 'CREATE_SOCIAL_TIP',
         platform: platform === 'free' ? '' : platform!,
         username: platform === 'free' ? '' : normalizeUsername(username),
@@ -148,9 +159,34 @@ export function TipView({
       });
 
       setTipId(result.tipId);
-      if (result.shareUrl) {
-        setShareUrl(result.shareUrl);
+
+      // For public tips, try to get the share URL
+      // BTC/LTC have 0 confirmations required so URL is available immediately
+      // XMR/WOW/GRIN need confirmations so URL won't be available yet
+      if (platform === 'free' && result.isPublic) {
+        const confirmationsNeeded = CONFIRMATION_REQUIREMENTS[asset];
+        if (confirmationsNeeded === 0) {
+          // URL should be available immediately
+          setLoadingShareUrl(true);
+          try {
+            const urlResult = await sendMessage<{ shareUrl: string | null; isPublic: boolean }>({
+              type: 'GET_PUBLIC_TIP_SHARE_URL',
+              tipId: result.tipId,
+            });
+            if (urlResult.shareUrl) {
+              setShareUrl(urlResult.shareUrl);
+            }
+          } catch {
+            // Silently fail - tip is created, just can't get URL yet
+          } finally {
+            setLoadingShareUrl(false);
+          }
+        } else {
+          // URL will be available after confirmations
+          setShareUrlPending(true);
+        }
       }
+
       setStep('success');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create tip');
@@ -248,6 +284,47 @@ export function TipView({
               </div>
             )}
 
+            {/* Loading share URL */}
+            {loadingShareUrl && (
+              <div
+                style={{
+                  background: 'var(--color-bg-card)',
+                  borderRadius: '8px',
+                  padding: '12px',
+                  marginBottom: '16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                }}
+              >
+                <span class="spinner" style={{ width: '14px', height: '14px' }} />
+                <span style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                  Getting share link...
+                </span>
+              </div>
+            )}
+
+            {/* Share URL pending confirmations */}
+            {shareUrlPending && !shareUrl && !loadingShareUrl && (
+              <div
+                style={{
+                  background: 'var(--color-bg-card)',
+                  borderRadius: '8px',
+                  padding: '12px',
+                  marginBottom: '16px',
+                  border: '1px solid var(--color-warning)',
+                }}
+              >
+                <div style={{ fontSize: '11px', color: 'var(--color-warning)', marginBottom: '4px', fontWeight: 500 }}>
+                  ⏳ Share Link Pending
+                </div>
+                <div style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                  The share link will be available once the transaction has {CONFIRMATION_REQUIREMENTS[asset]} confirmations.
+                  Check your Sent Tips later to copy the link.
+                </div>
+              </div>
+            )}
+
             <div
               style={{
                 background: 'var(--color-bg-card)',
@@ -274,14 +351,24 @@ export function TipView({
             </div>
 
             <div style={{ display: 'flex', gap: '8px' }}>
-              <button
-                class="btn btn-secondary"
-                style={{ flex: 1 }}
-                onClick={shareUrl ? copyShareUrl : copyTipId}
-              >
-                {shareUrl ? 'Copy Link' : 'Copy ID'}
-              </button>
-              <button class="btn btn-primary" style={{ flex: 1 }} onClick={onTipSent}>
+              {shareUrl ? (
+                <button
+                  class="btn btn-secondary"
+                  style={{ flex: 1 }}
+                  onClick={copyShareUrl}
+                >
+                  Copy Link
+                </button>
+              ) : !shareUrlPending ? (
+                <button
+                  class="btn btn-secondary"
+                  style={{ flex: 1 }}
+                  onClick={copyTipId}
+                >
+                  Copy ID
+                </button>
+              ) : null}
+              <button class="btn btn-primary" style={{ flex: shareUrlPending && !shareUrl ? 'unset' : 1, width: shareUrlPending && !shareUrl ? '100%' : 'auto' }} onClick={onTipSent}>
                 Done
               </button>
             </div>

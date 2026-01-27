@@ -359,14 +359,18 @@ export interface PendingSocialTip {
   encryptedTipKey: string;
   /** Salt used for encryption */
   encryptedTipKeySalt: string;
-  /** Recipient platform (e.g., "telegram") */
+  /** Recipient platform (e.g., "telegram") - empty for public tips */
   recipientPlatform: string;
-  /** Recipient username */
+  /** Recipient username - empty for public tips */
   recipientUsername: string;
   /** Unix timestamp when created */
   createdAt: number;
   /** Status: pending, claimed, clawed_back */
   status: 'pending' | 'claimed' | 'clawed_back';
+  /** Whether this is a public tip (claimable by anyone with the URL) */
+  isPublic?: boolean;
+  /** Base64url-encoded URL fragment key for public tips (stored until tip is confirmed) */
+  publicFragmentKey?: string;
 }
 
 const STORAGE_KEY_PENDING_TIPS = 'pendingSocialTips';

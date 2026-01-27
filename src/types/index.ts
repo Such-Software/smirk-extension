@@ -220,7 +220,8 @@ export type MessageType =
   | { type: 'GET_CLAIMABLE_TIPS' }
   | { type: 'CLAIM_SOCIAL_TIP'; tipId: string; asset: AssetType }
   | { type: 'GET_SENT_SOCIAL_TIPS' }
-  | { type: 'CLAWBACK_SOCIAL_TIP'; tipId: string };
+  | { type: 'CLAWBACK_SOCIAL_TIP'; tipId: string }
+  | { type: 'GET_PUBLIC_TIP_SHARE_URL'; tipId: string };
 
 /**
  * Context needed to finalize a Grin send transaction.
@@ -296,5 +297,8 @@ export interface SocialLookupResult {
 export interface SocialTipResult {
   tipId: string;
   status: string;
+  /** Whether this is a public tip (claimable by anyone with the URL) */
+  isPublic?: boolean;
+  /** Share URL - only available after tip is confirmed for public tips */
   shareUrl?: string;
 }

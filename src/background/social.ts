@@ -668,6 +668,9 @@ export async function handleCreateSocialTip(
             recipientUsername: username,
             createdAt: Date.now(),
             status: 'pending',
+            isPublic,
+            // Store fragment key for public tips - share URL will be generated later when confirmed
+            publicFragmentKey: isPublic ? urlFragmentKey!.encoded : undefined,
           };
 
           await addPendingSocialTip(pendingTip);
@@ -679,17 +682,19 @@ export async function handleCreateSocialTip(
       }
     }
 
-    // Build share URL for public tips
-    const shareUrl = isPublic
-      ? `https://smirk.cash/tip/${result.data!.tip_id}#${urlFragmentKey!.encoded}`
-      : undefined;
+    // For public tips, the share URL is NOT returned immediately.
+    // The fragment key is stored locally and the share URL can only be retrieved
+    // once the tip has enough confirmations to be claimable.
+    // This prevents users from sharing the URL prematurely and causing a stampede
+    // of users refreshing/racing to claim an unconfirmed tip.
 
     return {
       success: true,
       data: {
         tipId: result.data!.tip_id,
         status: result.data!.status,
-        shareUrl,
+        isPublic,
+        // shareUrl is intentionally NOT included - use getPublicTipShareUrl once confirmed
       },
     };
   } catch (err) {
@@ -1675,6 +1680,52 @@ export async function handleClawbackSocialTip(
     return {
       success: false,
       error: err instanceof Error ? err.message : 'Failed to clawback tip',
+    };
+  }
+}
+
+/**
+ * Get the share URL for a public tip.
+ *
+ * The share URL is only available after the tip has been created and stored locally.
+ * This is intentionally separate from the tip creation response to prevent users
+ * from sharing the URL before the tip has enough confirmations.
+ *
+ * @param tipId - The tip ID
+ * @returns Share URL if available, null otherwise
+ */
+export async function handleGetPublicTipShareUrl(
+  tipId: string
+): Promise<MessageResponse<{ shareUrl: string | null; isPublic: boolean }>> {
+  try {
+    // Get the pending tip from local storage
+    const pendingTip = await getPendingSocialTip(tipId);
+
+    if (!pendingTip) {
+      return {
+        success: true,
+        data: { shareUrl: null, isPublic: false },
+      };
+    }
+
+    if (!pendingTip.isPublic || !pendingTip.publicFragmentKey) {
+      return {
+        success: true,
+        data: { shareUrl: null, isPublic: false },
+      };
+    }
+
+    // Build the share URL
+    const shareUrl = `https://smirk.cash/tip/${tipId}#${pendingTip.publicFragmentKey}`;
+
+    return {
+      success: true,
+      data: { shareUrl, isPublic: true },
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Failed to get share URL',
     };
   }
 }

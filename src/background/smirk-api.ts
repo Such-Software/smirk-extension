@@ -33,7 +33,7 @@ import {
   incrementApprovalRequestId,
   type PendingApprovalRequest,
 } from './state';
-import { handleClaimPublicTip } from './tips';
+import { handleClaimPublicTip } from './social';
 
 // Static imports for crypto libraries (avoid dynamic imports which trigger modulepreload polyfill in service worker)
 import { secp256k1 } from '@noble/curves/secp256k1';

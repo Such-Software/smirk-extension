@@ -33,6 +33,7 @@ import {
   incrementApprovalRequestId,
   type PendingApprovalRequest,
 } from './state';
+import { handleClaimPublicTip } from './tips';
 
 // Static imports for crypto libraries (avoid dynamic imports which trigger modulepreload polyfill in service worker)
 import { secp256k1 } from '@noble/curves/secp256k1';
@@ -82,6 +83,11 @@ export async function handleSmirkApi(
 
     case 'getPublicKeys':
       return handleSmirkGetPublicKeys(origin);
+
+    case 'claimPublicTip': {
+      const { tipId, fragmentKey } = params as { tipId: string; fragmentKey: string };
+      return handleSmirkClaimPublicTip(origin, tipId, fragmentKey);
+    }
 
     default:
       return { success: false, error: `Unknown method: ${method}` };
@@ -695,4 +701,57 @@ async function signMessageWithAllKeys(message: string): Promise<Array<{
   }
 
   return signatures;
+}
+
+// =============================================================================
+// Public Tip Claiming
+// =============================================================================
+
+/**
+ * Handle claimPublicTip request from website.
+ *
+ * Claims a public tip using the URL fragment key.
+ * Requires wallet to be unlocked and site to be connected.
+ *
+ * @param origin - Website origin
+ * @param tipId - The tip ID
+ * @param fragmentKey - Base64url-encoded encryption key from URL fragment
+ * @returns Claim result with txid on success
+ */
+async function handleSmirkClaimPublicTip(
+  origin: string,
+  tipId: string,
+  fragmentKey: string
+): Promise<MessageResponse> {
+  // Check if connected
+  const connected = await isOriginConnected(origin);
+  if (!connected) {
+    return { success: false, error: 'Site is not connected. Call connect() first.' };
+  }
+
+  // Check if wallet is unlocked
+  if (!isUnlocked) {
+    return { success: false, error: 'Wallet is locked. Please unlock your wallet first.' };
+  }
+
+  // Claim the tip
+  const result = await handleClaimPublicTip(tipId, fragmentKey);
+
+  if (result.success && result.data) {
+    return {
+      success: true,
+      data: {
+        success: true,
+        txid: result.data.txid,
+      },
+    };
+  } else {
+    return {
+      success: true, // API call succeeded, but claim failed
+      data: {
+        success: false,
+        error: result.error || 'Failed to claim tip',
+      },
+    };
+  }
 }

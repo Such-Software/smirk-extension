@@ -64,8 +64,12 @@ import type { MessageResponse, AssetType, SocialLookupResult, SocialTipResult } 
 import { api } from '@/lib/api';
 import {
   createEncryptedTipPayload,
+  createPublicTipPayload,
   decryptTipPayload,
+  decryptPublicTipPayload,
+  decodeUrlFragmentKey,
   generatePrivateKey,
+  generateUrlFragmentKey,
   getPublicKey,
   bytesToHex,
   hexToBytes,
@@ -234,14 +238,16 @@ export async function handleCreateSocialTip(
 
     const isPublic = !platform || !username;
 
-    // Public tips are not yet implemented with real funds
-    if (isPublic) {
-      return { success: false, error: 'Public tips not yet implemented' };
+    // Targeted tip: requires recipient's BTC public key for encryption
+    if (!isPublic && !recipientBtcPubkey) {
+      return { success: false, error: 'Recipient BTC public key required for targeted tips' };
     }
 
-    // Targeted tip: requires recipient's BTC public key for encryption
-    if (!recipientBtcPubkey) {
-      return { success: false, error: 'Recipient BTC public key required for targeted tips' };
+    // For public tips, generate URL fragment key
+    let urlFragmentKey: { bytes: Uint8Array; encoded: string } | null = null;
+    if (isPublic) {
+      urlFragmentKey = generateUrlFragmentKey();
+      console.log('[SocialTip] Creating public tip with URL fragment');
     }
 
     // Get sender's wallet state
@@ -515,58 +521,88 @@ export async function handleCreateSocialTip(
       return { success: false, error: `Social tips not supported for ${asset}` };
     }
 
-    // Step 6: Encrypt tip private key with recipient's BTC public key using ECIES
-    const recipientPubkeyBytes = hexToBytes(recipientBtcPubkey);
-
+    // Step 6: Encrypt tip private key
+    // - For targeted tips: ECIES encryption with recipient's BTC public key
+    // - For public tips: symmetric encryption with URL fragment key
     let encrypted_key: string;
 
-    if (asset === 'grin') {
-      // For Grin, we need to encrypt the full voucher data:
-      // - blinding factor (secret - proves ownership)
-      // - commitment (identifies the UTXO)
-      // - proof (range proof - needed for tx input)
-      // - nChild (for reference)
-      // - amount (for verification)
-      const grinVoucherData = JSON.stringify({
-        blindingFactor: bytesToHex(tipPrivateKey),
-        commitment: tipAddress,
-        proof: (globalThis as any).__grinVoucherProof,
-        nChild: (globalThis as any).__grinVoucherNChild,
-        amount: actualAmount,
-        features: 0, // Plain output
-      });
+    if (isPublic) {
+      // Public tip: encrypt with URL fragment key
+      if (asset === 'grin') {
+        // For Grin, encrypt the full voucher data
+        const grinVoucherData = JSON.stringify({
+          blindingFactor: bytesToHex(tipPrivateKey),
+          commitment: tipAddress,
+          proof: (globalThis as any).__grinVoucherProof,
+          nChild: (globalThis as any).__grinVoucherNChild,
+          amount: actualAmount,
+          features: 0,
+        });
+        delete (globalThis as any).__grinVoucherProof;
+        delete (globalThis as any).__grinVoucherNChild;
 
-      // Clean up temp globals
-      delete (globalThis as any).__grinVoucherProof;
-      delete (globalThis as any).__grinVoucherNChild;
-
-      // Encrypt the JSON data
-      const voucherDataBytes = new TextEncoder().encode(grinVoucherData);
-      const { encryptedKey, ephemeralPubkey } = createEncryptedTipPayload(
-        voucherDataBytes,
-        recipientPubkeyBytes
-      );
-      encrypted_key = ephemeralPubkey + encryptedKey;
-
-      console.log(`[SocialTip] Encrypted Grin voucher data (${voucherDataBytes.length} bytes)`);
-
+        const voucherDataBytes = new TextEncoder().encode(grinVoucherData);
+        encrypted_key = createPublicTipPayload(voucherDataBytes, urlFragmentKey!.bytes);
+      } else {
+        encrypted_key = createPublicTipPayload(tipPrivateKey, urlFragmentKey!.bytes);
+      }
+      console.log(`[SocialTip] Created public tip with symmetric encryption`);
     } else {
-      // For other assets, just encrypt the private key
-      const { encryptedKey, ephemeralPubkey } = createEncryptedTipPayload(
-        tipPrivateKey,
-        recipientPubkeyBytes
-      );
-      encrypted_key = ephemeralPubkey + encryptedKey;
+      // Targeted tip: ECIES encryption with recipient's BTC public key
+      const recipientPubkeyBytes = hexToBytes(recipientBtcPubkey!);
+
+      if (asset === 'grin') {
+        // For Grin, we need to encrypt the full voucher data:
+        // - blinding factor (secret - proves ownership)
+        // - commitment (identifies the UTXO)
+        // - proof (range proof - needed for tx input)
+        // - nChild (for reference)
+        // - amount (for verification)
+        const grinVoucherData = JSON.stringify({
+          blindingFactor: bytesToHex(tipPrivateKey),
+          commitment: tipAddress,
+          proof: (globalThis as any).__grinVoucherProof,
+          nChild: (globalThis as any).__grinVoucherNChild,
+          amount: actualAmount,
+          features: 0, // Plain output
+        });
+
+        // Clean up temp globals
+        delete (globalThis as any).__grinVoucherProof;
+        delete (globalThis as any).__grinVoucherNChild;
+
+        // Encrypt the JSON data
+        const voucherDataBytes = new TextEncoder().encode(grinVoucherData);
+        const { encryptedKey, ephemeralPubkey } = createEncryptedTipPayload(
+          voucherDataBytes,
+          recipientPubkeyBytes
+        );
+        encrypted_key = ephemeralPubkey + encryptedKey;
+
+        console.log(`[SocialTip] Encrypted Grin voucher data (${voucherDataBytes.length} bytes)`);
+
+      } else {
+        // For other assets, just encrypt the private key
+        const { encryptedKey, ephemeralPubkey } = createEncryptedTipPayload(
+          tipPrivateKey,
+          recipientPubkeyBytes
+        );
+        encrypted_key = ephemeralPubkey + encryptedKey;
+      }
     }
+
+    // Compute claim_key_hash for public tips (for tracking, not security)
+    const claim_key_hash = isPublic ? bytesToHex(sha256(urlFragmentKey!.bytes)) : undefined;
 
     // Step 7: Create tip on backend
     const result = await api.createSocialTip({
-      platform,
-      username,
+      platform: isPublic ? undefined : platform,
+      username: isPublic ? undefined : username,
       asset,
       amount: actualAmount!,
-      is_public: false,
+      is_public: isPublic,
       encrypted_key,
+      claim_key_hash,
       tip_address: tipAddress,
       funding_txid: fundingTxid!,
     });
@@ -643,12 +679,17 @@ export async function handleCreateSocialTip(
       }
     }
 
+    // Build share URL for public tips
+    const shareUrl = isPublic
+      ? `https://smirk.cash/tip/${result.data!.tip_id}#${urlFragmentKey!.encoded}`
+      : undefined;
+
     return {
       success: true,
       data: {
         tipId: result.data!.tip_id,
         status: result.data!.status,
-        shareUrl: undefined,
+        shareUrl,
       },
     };
   } catch (err) {
@@ -1032,6 +1073,294 @@ export async function handleClaimSocialTip(
       data: {
         success: true,
         encryptedKey: encrypted_key,
+        txid: finalTxid,
+      },
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Failed to claim tip',
+    };
+  }
+}
+
+/**
+ * Claim a public tip using URL fragment key (called from website via window.smirk API).
+ *
+ * Flow:
+ * 1. Get tip info from backend
+ * 2. Check if tip is claimable (enough confirmations)
+ * 3. Decrypt tip data using URL fragment key (symmetric decryption)
+ * 4. Sweep funds to user's wallet
+ * 5. Mark as claimed on backend
+ */
+export async function handleClaimPublicTip(
+  tipId: string,
+  fragmentKey: string
+): Promise<MessageResponse<{ success: boolean; txid?: string }>> {
+  try {
+    if (!isUnlocked) {
+      return { success: false, error: 'Wallet is locked' };
+    }
+
+    // Step 1: Get public tip info from backend
+    const tipInfoResult = await api.getPublicSocialTip(tipId);
+    if (tipInfoResult.error || !tipInfoResult.data) {
+      return { success: false, error: tipInfoResult.error || 'Failed to get tip info' };
+    }
+
+    const tipInfo = tipInfoResult.data;
+    const tipAsset = tipInfo.asset as AssetType;
+
+    // Step 2: Check confirmations
+    if (tipInfo.funding_confirmations < tipInfo.confirmations_required) {
+      return {
+        success: false,
+        error: `Tip needs ${tipInfo.confirmations_required - tipInfo.funding_confirmations} more confirmations`,
+      };
+    }
+
+    if (tipInfo.status !== 'pending') {
+      return { success: false, error: `Tip is not claimable (status: ${tipInfo.status})` };
+    }
+
+    // Step 3: Claim on backend to get encrypted_key
+    const claimResult = await api.claimSocialTip(tipId);
+    if (claimResult.error || !claimResult.data) {
+      return { success: false, error: claimResult.error || 'Failed to claim tip' };
+    }
+
+    const { encrypted_key, tip_address } = claimResult.data;
+
+    if (!encrypted_key) {
+      return { success: false, error: 'No encrypted key in tip' };
+    }
+
+    if (!tip_address) {
+      return { success: false, error: 'No tip address - this tip may not have real funds' };
+    }
+
+    console.log(`[ClaimPublicTip] Claiming ${tipAsset} from tip address: ${tip_address}`);
+
+    // Step 4: Decrypt tip data using URL fragment key (symmetric)
+    let decryptedData: Uint8Array;
+    try {
+      const keyBytes = decodeUrlFragmentKey(fragmentKey);
+      decryptedData = decryptPublicTipPayload(encrypted_key, keyBytes);
+    } catch (err) {
+      return { success: false, error: 'Invalid claim key - failed to decrypt tip data' };
+    }
+
+    console.log(`[ClaimPublicTip] Decrypted tip data (${decryptedData.length} bytes)`);
+
+    // Step 5: Sweep funds (same logic as targeted tips)
+    let finalTxid: string;
+    let actualAmount: number;
+
+    // Get recipient's address for the tip asset (where to sweep funds)
+    const state = await getWalletState();
+    const recipientKey = state.keys[tipAsset];
+    if (!recipientKey) {
+      return { success: false, error: `No ${tipAsset} key found in wallet` };
+    }
+    const recipientAddress = getAddressForAsset(tipAsset, recipientKey);
+
+    if (tipAsset === 'grin') {
+      // Grin voucher claim
+      let voucherData: {
+        blindingFactor: string;
+        commitment: string;
+        proof: string;
+        nChild: number;
+        amount: number;
+        features: number;
+      };
+
+      try {
+        const jsonStr = new TextDecoder().decode(decryptedData);
+        voucherData = JSON.parse(jsonStr);
+      } catch (err) {
+        return { success: false, error: 'Failed to parse Grin voucher data' };
+      }
+
+      console.log(`[ClaimPublicTip] Grin voucher: commitment=${voucherData.commitment.slice(0, 16)}..., amount=${voucherData.amount}`);
+
+      // Initialize Grin WASM wallet
+      let keys = grinWasmKeys;
+      if (!keys) {
+        if (!unlockedMnemonic) {
+          return { success: false, error: 'Grin wallet not initialized - please re-unlock wallet' };
+        }
+        keys = await initGrinWallet(unlockedMnemonic);
+        setGrinWasmKeys(keys);
+      }
+
+      const authState = await getAuthState();
+      if (!authState?.userId) {
+        return { success: false, error: 'Not authenticated' };
+      }
+
+      // Get next child index and current height
+      const outputsResult = await api.getGrinOutputs(authState.userId);
+      if (outputsResult.error) {
+        return { success: false, error: `Failed to fetch Grin outputs: ${outputsResult.error}` };
+      }
+      const nextChildIndex = outputsResult.data?.next_child_index ?? 0;
+
+      const heightsResult = await api.getBlockchainHeights();
+      if (heightsResult.error || !heightsResult.data?.grin) {
+        return { success: false, error: 'Failed to get Grin blockchain height' };
+      }
+      const currentHeight = BigInt(heightsResult.data.grin);
+
+      const voucherBlindingFactor = hexToBytes(voucherData.blindingFactor);
+
+      let claimGrinResult;
+      try {
+        claimGrinResult = await claimGrinVoucher(
+          keys,
+          {
+            commitment: voucherData.commitment,
+            proof: voucherData.proof,
+            amount: voucherData.amount,
+            features: voucherData.features,
+            txSlateId: '',
+            keyId: '',
+            nChild: voucherData.nChild,
+            createdAt: 0,
+          },
+          voucherBlindingFactor,
+          nextChildIndex,
+          currentHeight
+        );
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : 'Failed to build voucher claim transaction',
+        };
+      }
+
+      // Broadcast
+      const txJson = getTransactionJson(claimGrinResult.slate);
+      const broadcastResult = await api.broadcastGrinTransaction({
+        userId: authState.userId,
+        slateId: claimGrinResult.slate.id,
+        tx: txJson,
+      });
+
+      if (broadcastResult.error) {
+        return { success: false, error: `Grin broadcast failed: ${broadcastResult.error}` };
+      }
+
+      // Record output and transaction
+      await api.recordGrinOutput({
+        userId: authState.userId,
+        keyId: claimGrinResult.outputInfo.keyId,
+        nChild: claimGrinResult.outputInfo.nChild,
+        amount: Number(claimGrinResult.outputInfo.amount),
+        commitment: claimGrinResult.outputInfo.commitment,
+        txSlateId: claimGrinResult.slate.id,
+      });
+
+      await api.recordGrinTransaction({
+        userId: authState.userId,
+        slateId: claimGrinResult.slate.id,
+        amount: Number(claimGrinResult.outputInfo.amount),
+        fee: Number(claimGrinResult.slate.fee),
+        direction: 'receive',
+      });
+
+      finalTxid = claimGrinResult.slate.id;
+      actualAmount = Number(claimGrinResult.outputInfo.amount);
+
+    } else if (tipAsset === 'btc' || tipAsset === 'ltc') {
+      // BTC/LTC sweep
+      const tipPrivateKey = decryptedData;
+
+      const utxoResult = await api.getUtxos(tipAsset, tip_address);
+      if (utxoResult.error || !utxoResult.data) {
+        return { success: false, error: utxoResult.error || 'Failed to fetch tip UTXOs' };
+      }
+
+      const utxos: Utxo[] = utxoResult.data.utxos;
+      if (utxos.length === 0) {
+        return { success: false, error: 'No UTXOs at tip address - funds may already be claimed' };
+      }
+
+      const totalValue = utxos.reduce((sum, u) => sum + u.value, 0);
+      console.log(`[ClaimPublicTip] Found ${utxos.length} UTXOs with total value: ${totalValue}`);
+
+      const feeResult = await api.estimateFee(tipAsset);
+      const feeRate = feeResult.data?.normal ?? 10;
+
+      let txHex: string;
+      try {
+        const txResult = createBtcSignedTransaction(
+          tipAsset,
+          utxos,
+          recipientAddress,
+          0,
+          recipientAddress,
+          tipPrivateKey,
+          feeRate,
+          true // sweep mode
+        );
+        txHex = txResult.txHex;
+        actualAmount = txResult.actualAmount;
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : 'Failed to create sweep transaction',
+        };
+      }
+
+      const broadcastResult = await api.broadcastTx(tipAsset, txHex);
+      if (broadcastResult.error) {
+        return { success: false, error: `Sweep broadcast failed: ${broadcastResult.error}` };
+      }
+
+      finalTxid = broadcastResult.data!.txid;
+
+    } else if (tipAsset === 'xmr' || tipAsset === 'wow') {
+      // XMR/WOW sweep
+      const tipSpendKey = decryptedData;
+      const tipViewKey = deriveViewKeyFromSpendKey(tipSpendKey);
+
+      console.log(`[ClaimPublicTip] Sweeping ${tipAsset} from ${tip_address} to ${recipientAddress}`);
+
+      try {
+        const txResult = await sendXmrTransaction(
+          tipAsset,
+          tip_address,
+          bytesToHex(tipViewKey),
+          bytesToHex(tipSpendKey),
+          recipientAddress,
+          0, // amount ignored for sweep
+          'mainnet',
+          true // sweep mode
+        );
+        finalTxid = txResult.txHash;
+        actualAmount = txResult.actualAmount;
+
+        // Deactivate tip address from LWS
+        api.deactivateLws(tipAsset, tip_address).catch(() => {});
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : 'Failed to sweep funds',
+        };
+      }
+
+    } else {
+      return { success: false, error: `Claiming not supported for ${tipAsset}` };
+    }
+
+    console.log(`[ClaimPublicTip] Success! txid=${finalTxid}, amount=${actualAmount!}`);
+
+    return {
+      success: true,
+      data: {
+        success: true,
         txid: finalTxid,
       },
     };

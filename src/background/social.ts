@@ -262,6 +262,7 @@ export async function handleCreateSocialTip(
     let tipPrivateKey: Uint8Array;
     let fundingTxid: string;
     let actualAmount: number;
+    let tipViewKeyHex: string | undefined; // For XMR/WOW only - used for 0-conf webhook registration
 
     if (asset === 'btc' || asset === 'ltc') {
       // BTC/LTC flow
@@ -345,7 +346,7 @@ export async function handleCreateSocialTip(
       console.log(`[SocialTip] Generated ${asset} tip address: ${tipAddress}`);
 
       // Step 2: Register tip address with LWS (required for recipient to query unspent outputs)
-      const tipViewKeyHex = bytesToHex(tipKeys.viewKey);
+      tipViewKeyHex = bytesToHex(tipKeys.viewKey); // Save for backend 0-conf webhook registration
       console.log(`[SocialTip] Registering ${asset} tip address with LWS...`);
       const registerResult = await api.registerLws(authState.userId, asset, tipAddress, tipViewKeyHex);
       if (registerResult.error) {
@@ -605,6 +606,8 @@ export async function handleCreateSocialTip(
       claim_key_hash,
       tip_address: tipAddress,
       funding_txid: fundingTxid!,
+      // For XMR/WOW: send view key so backend can register 0-conf webhook
+      tip_view_key: tipViewKeyHex,
     });
 
     if (result.error) {

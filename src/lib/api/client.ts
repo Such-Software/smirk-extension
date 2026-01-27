@@ -57,8 +57,8 @@ export class ApiClient {
     const url = `${this.baseUrl}${endpoint}`;
     const method = options.method || 'GET';
 
-    // Debug logging for Grin endpoints
-    if (endpoint.includes('/grin/')) {
+    // Debug logging for Grin and social tips endpoints
+    if (endpoint.includes('/grin/') || endpoint.includes('/tips/social')) {
       console.log(`[API] ${method} ${url}`, {
         hasAuth: !!accessToken,
         body: options.body ? JSON.parse(options.body as string) : undefined,

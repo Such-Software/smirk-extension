@@ -174,6 +174,8 @@ export type MessageType =
   | { type: 'ESTIMATE_FEE'; asset: 'btc' | 'ltc' }
   | { type: 'GET_WALLET_KEYS'; asset: 'xmr' | 'wow' }
   | { type: 'REVEAL_SEED'; password: string }
+  | { type: 'GET_FINGERPRINT'; password: string }
+  | { type: 'CHANGE_PASSWORD'; oldPassword: string; newPassword: string }
   | { type: 'ADD_PENDING_TX'; txHash: string; asset: AssetType; amount: number; fee: number }
   | { type: 'GET_PENDING_TXS'; asset: AssetType }
   // Grin WASM wallet operations

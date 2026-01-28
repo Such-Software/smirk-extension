@@ -204,6 +204,86 @@ export function decryptPublicTipPayload(
 }
 
 // ============================================================================
+// Bitcoin Message Signing
+// ============================================================================
+
+/**
+ * Encode a length as Bitcoin-style varint.
+ */
+function encodeVarint(n: number): Uint8Array {
+  if (n < 253) {
+    return new Uint8Array([n]);
+  } else if (n <= 0xffff) {
+    const buf = new Uint8Array(3);
+    buf[0] = 0xfd;
+    buf[1] = n & 0xff;
+    buf[2] = (n >> 8) & 0xff;
+    return buf;
+  } else if (n <= 0xffffffff) {
+    const buf = new Uint8Array(5);
+    buf[0] = 0xfe;
+    buf[1] = n & 0xff;
+    buf[2] = (n >> 8) & 0xff;
+    buf[3] = (n >> 16) & 0xff;
+    buf[4] = (n >> 24) & 0xff;
+    return buf;
+  } else {
+    throw new Error('Message too long for varint encoding');
+  }
+}
+
+/**
+ * Create Bitcoin-style message hash.
+ * Format: SHA256(SHA256("\x18Bitcoin Signed Message:\n" + varint(len) + message))
+ */
+function bitcoinMessageHash(message: string): Uint8Array {
+  const prefix = new TextEncoder().encode('\x18Bitcoin Signed Message:\n');
+  const messageBytes = new TextEncoder().encode(message);
+  const lenBytes = encodeVarint(messageBytes.length);
+
+  // Concatenate: prefix + length + message
+  const fullMessage = new Uint8Array(
+    prefix.length + lenBytes.length + messageBytes.length
+  );
+  fullMessage.set(prefix, 0);
+  fullMessage.set(lenBytes, prefix.length);
+  fullMessage.set(messageBytes, prefix.length + lenBytes.length);
+
+  // Double SHA256
+  const firstHash = sha256(fullMessage);
+  return sha256(firstHash);
+}
+
+/**
+ * Sign a message using Bitcoin message signing format.
+ *
+ * Returns compact signature (r || s) as hex string (128 chars).
+ * This format is compatible with the backend's verify_bitcoin_signature.
+ *
+ * @param message - The message to sign
+ * @param privateKey - 32-byte secp256k1 private key
+ */
+export function signBitcoinMessage(
+  message: string,
+  privateKey: Uint8Array
+): string {
+  const msgHash = bitcoinMessageHash(message);
+
+  // Sign the hash using secp256k1
+  // @noble/curves returns a Signature object with r and s
+  const signature = secp256k1.sign(msgHash, privateKey, {
+    lowS: true, // Ensure low-S for malleability protection
+  });
+
+  // Get raw r and s values as 32-byte arrays
+  const r = signature.r.toString(16).padStart(64, '0');
+  const s = signature.s.toString(16).padStart(64, '0');
+
+  // Return compact format (r || s) as hex
+  return r + s;
+}
+
+// ============================================================================
 // Utility functions
 // ============================================================================
 

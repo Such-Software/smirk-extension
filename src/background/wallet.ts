@@ -29,6 +29,7 @@ import {
   bytesToHex,
   encrypt,
   randomBytes,
+  signBitcoinMessage,
 } from '@/lib/crypto';
 import {
   generateMnemonicPhrase,
@@ -649,12 +650,24 @@ async function registerWithBackend(state: WalletState, seedFingerprint?: string)
     throw new Error('No keys to register');
   }
 
+  // Sign timestamp to prove ownership of BTC private key
+  const btcPrivateKey = unlockedKeys.get('btc');
+  if (!btcPrivateKey) {
+    throw new Error('BTC private key not available - wallet must be unlocked');
+  }
+
+  const signedTimestamp = Math.floor(Date.now() / 1000);
+  const message = `smirk-auth-${signedTimestamp}`;
+  const signature = signBitcoinMessage(message, btcPrivateKey);
+
   const result = await api.extensionRegister({
     keys,
     walletBirthday: state.walletBirthday?.timestamp,
     seedFingerprint,
     xmrStartHeight: state.walletBirthday?.heights?.xmr,
     wowStartHeight: state.walletBirthday?.heights?.wow,
+    signedTimestamp,
+    signature,
   });
 
   if (result.error) {
@@ -676,6 +689,52 @@ async function registerWithBackend(state: WalletState, seedFingerprint?: string)
   console.log('Registered with backend:', auth.user.isNew ? 'new user' : 'existing user');
 
   return auth.user.id;
+}
+
+/**
+ * Register XMR/WOW with LWS using already-unlocked view keys.
+ *
+ * Used by ensureValidAuth when re-registering after failed initial registration.
+ * Uses the unlockedViewKeys Map which is populated during wallet unlock.
+ *
+ * @param userId - User ID from backend registration
+ * @param state - Wallet state with public keys
+ */
+async function registerWithLwsFromUnlockedKeys(
+  userId: string,
+  state: WalletState
+): Promise<void> {
+  // Register XMR with LWS
+  if (state.keys.xmr?.publicSpendKey && state.keys.xmr?.publicViewKey) {
+    const xmrViewKey = unlockedViewKeys.get('xmr');
+    if (xmrViewKey) {
+      const xmrAddress = getAddressForAsset('xmr', state.keys.xmr);
+      const xmrResult = await api.registerLws(userId, 'xmr', xmrAddress, bytesToHex(xmrViewKey));
+      if (xmrResult.error) {
+        console.warn('Failed to register XMR with LWS:', xmrResult.error);
+      } else {
+        console.log('XMR registered with LWS:', xmrResult.data?.message);
+      }
+    } else {
+      console.warn('XMR view key not available for LWS registration');
+    }
+  }
+
+  // Register WOW with LWS
+  if (state.keys.wow?.publicSpendKey && state.keys.wow?.publicViewKey) {
+    const wowViewKey = unlockedViewKeys.get('wow');
+    if (wowViewKey) {
+      const wowAddress = getAddressForAsset('wow', state.keys.wow);
+      const wowResult = await api.registerLws(userId, 'wow', wowAddress, bytesToHex(wowViewKey));
+      if (wowResult.error) {
+        console.warn('Failed to register WOW with LWS:', wowResult.error);
+      } else {
+        console.log('WOW registered with LWS:', wowResult.data?.message);
+      }
+    } else {
+      console.warn('WOW view key not available for LWS registration');
+    }
+  }
 }
 
 /**
@@ -929,11 +988,12 @@ async function ensureValidAuth(state: WalletState): Promise<void> {
   const maxRetries = 3;
   const baseDelay = 1000; // 1 second
 
+  let userId: string | undefined;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      await registerWithBackend(state, seedFingerprint);
+      userId = await registerWithBackend(state, seedFingerprint);
       console.log('Re-registration successful');
-      return;
+      break;
     } catch (err) {
       console.error(`Re-registration attempt ${attempt}/${maxRetries} failed:`, err);
 
@@ -944,6 +1004,17 @@ async function ensureValidAuth(state: WalletState): Promise<void> {
       } else {
         throw err;
       }
+    }
+  }
+
+  // Also register with LWS if we have the view keys unlocked
+  if (userId) {
+    try {
+      await registerWithLwsFromUnlockedKeys(userId, state);
+      console.log('LWS re-registration successful');
+    } catch (err) {
+      console.warn('LWS re-registration failed (non-fatal):', err);
+      // Continue - LWS registration failure shouldn't block wallet use
     }
   }
 }
@@ -996,6 +1067,120 @@ export async function handleRevealSeed(password: string): Promise<MessageRespons
     }
 
     return { success: true, data: { words } };
+  } catch {
+    return { success: false, error: 'Invalid password' };
+  }
+}
+
+/**
+ * Get the seed fingerprint for the current wallet.
+ *
+ * Requires password to decrypt the mnemonic and compute the fingerprint.
+ *
+ * @param password - Wallet password
+ * @returns Seed fingerprint (64 hex chars, 256 bits)
+ */
+export async function handleGetFingerprint(password: string): Promise<MessageResponse<{ fingerprint: string }>> {
+  const state = await getWalletState();
+
+  if (!state.encryptedSeed || !state.seedSalt) {
+    return { success: false, error: 'No wallet found' };
+  }
+
+  try {
+    const mnemonicBytes = await decryptPrivateKey(state.encryptedSeed, state.seedSalt, password);
+    const mnemonic = new TextDecoder().decode(mnemonicBytes);
+    const fingerprint = computeSeedFingerprint(mnemonic);
+    return { success: true, data: { fingerprint } };
+  } catch {
+    return { success: false, error: 'Invalid password' };
+  }
+}
+
+/**
+ * Change the wallet password.
+ *
+ * Decrypts all encrypted data with old password and re-encrypts with new password.
+ *
+ * @param oldPassword - Current wallet password
+ * @param newPassword - New wallet password
+ * @returns Success status
+ */
+export async function handleChangePassword(
+  oldPassword: string,
+  newPassword: string
+): Promise<MessageResponse<{ changed: boolean }>> {
+  if (!newPassword || newPassword.length < 1) {
+    return { success: false, error: 'New password cannot be empty' };
+  }
+
+  const state = await getWalletState();
+
+  if (!state.encryptedSeed || !state.seedSalt) {
+    return { success: false, error: 'No wallet found' };
+  }
+
+  try {
+    // Decrypt mnemonic with old password to verify it's correct
+    const mnemonicBytes = await decryptPrivateKey(state.encryptedSeed, state.seedSalt, oldPassword);
+    const mnemonic = new TextDecoder().decode(mnemonicBytes);
+
+    // Verify it's a valid mnemonic
+    if (!isValidMnemonic(mnemonic)) {
+      return { success: false, error: 'Invalid password' };
+    }
+
+    // Generate new salt and derive new encryption key
+    const newSalt = randomBytes(16);
+    const newSaltHex = bytesToHex(newSalt);
+    const newEncryptionKey = await deriveKeyFromPassword(newPassword, newSalt);
+    const encryptWithNewKey = (data: Uint8Array): string => bytesToHex(encrypt(data, newEncryptionKey));
+
+    // Re-encrypt mnemonic
+    state.encryptedSeed = encryptWithNewKey(mnemonicBytes);
+    state.seedSalt = newSaltHex;
+
+    // Re-encrypt BIP39 seed if present
+    if (state.encryptedBip39Seed) {
+      const bip39Seed = mnemonicToSeed(mnemonic);
+      state.encryptedBip39Seed = encryptWithNewKey(bip39Seed);
+    }
+
+    // Re-encrypt all keys
+    const derivedKeys = deriveAllKeys(mnemonic);
+
+    for (const asset of Object.keys(state.keys) as AssetType[]) {
+      const key = state.keys[asset];
+      if (!key) continue;
+
+      const assetKeys = derivedKeys[asset];
+      if (!assetKeys) continue;
+
+      // Handle different key structures per asset type
+      if (asset === 'xmr' || asset === 'wow') {
+        // CryptonoteKeys: privateSpendKey + privateViewKey
+        const cryptoKeys = assetKeys as { privateSpendKey: Uint8Array; privateViewKey: Uint8Array };
+        key.privateKey = encryptWithNewKey(cryptoKeys.privateSpendKey);
+        key.privateKeySalt = newSaltHex;
+        if (key.privateViewKey) {
+          key.privateViewKey = encryptWithNewKey(cryptoKeys.privateViewKey);
+          key.privateViewKeySalt = newSaltHex;
+        }
+      } else {
+        // BTC/LTC/Grin: privateKey
+        const simpleKeys = assetKeys as { privateKey: Uint8Array };
+        key.privateKey = encryptWithNewKey(simpleKeys.privateKey);
+        key.privateKeySalt = newSaltHex;
+      }
+    }
+
+    // Save the updated state
+    await saveWalletState(state);
+
+    // Lock the wallet to force re-authentication with new password
+    await handleLockWallet();
+
+    return { success: true, data: { changed: true } };
   } catch {
     return { success: false, error: 'Invalid password' };
   }

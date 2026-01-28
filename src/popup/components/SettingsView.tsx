@@ -37,6 +37,22 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
   const [seedError, setSeedError] = useState('');
   const [revealingSeeed, setRevealingSeed] = useState(false);
 
+  // Fingerprint state
+  const [showFingerprintModal, setShowFingerprintModal] = useState(false);
+  const [fingerprintPassword, setFingerprintPassword] = useState('');
+  const [fingerprint, setFingerprint] = useState<string | null>(null);
+  const [fingerprintError, setFingerprintError] = useState('');
+  const [loadingFingerprint, setLoadingFingerprint] = useState(false);
+
+  // Change password state
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [passwordChanged, setPasswordChanged] = useState(false);
+
   // Connected sites state
   const [connectedSites, setConnectedSites] = useState<ConnectedSite[]>([]);
   const [disconnectingOrigin, setDisconnectingOrigin] = useState<string | null>(null);
@@ -132,6 +148,79 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
     setSeedPassword('');
     setSeedWords(null);
     setSeedError('');
+  };
+
+  const handleShowFingerprint = async () => {
+    if (!fingerprintPassword) {
+      setFingerprintError('Please enter your password');
+      return;
+    }
+
+    setLoadingFingerprint(true);
+    setFingerprintError('');
+
+    try {
+      const result = await sendMessage<{ fingerprint: string }>({
+        type: 'GET_FINGERPRINT',
+        password: fingerprintPassword,
+      });
+      setFingerprint(result.fingerprint);
+    } catch (err) {
+      setFingerprintError(err instanceof Error ? err.message : 'Invalid password');
+    } finally {
+      setLoadingFingerprint(false);
+    }
+  };
+
+  const closeFingerprintModal = () => {
+    setShowFingerprintModal(false);
+    setFingerprintPassword('');
+    setFingerprint(null);
+    setFingerprintError('');
+  };
+
+  const handleChangePassword = async () => {
+    if (!currentPassword) {
+      setPasswordError('Please enter your current password');
+      return;
+    }
+    if (!newPassword) {
+      setPasswordError('Please enter a new password');
+      return;
+    }
+    if (newPassword.length < 8) {
+      setPasswordError('New password must be at least 8 characters');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError('Passwords do not match');
+      return;
+    }
+
+    setChangingPassword(true);
+    setPasswordError('');
+
+    try {
+      await sendMessage<{ changed: boolean }>({
+        type: 'CHANGE_PASSWORD',
+        oldPassword: currentPassword,
+        newPassword: newPassword,
+      });
+      setPasswordChanged(true);
+    } catch (err) {
+      setPasswordError(err instanceof Error ? err.message : 'Failed to change password');
+    } finally {
+      setChangingPassword(false);
+    }
+  };
+
+  const closePasswordModal = () => {
+    setShowPasswordModal(false);
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setPasswordError('');
+    setPasswordChanged(false);
   };
 
   return (
@@ -259,6 +348,34 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
                 </button>
                 <div class="settings-hint">
                   View your 12-word seed phrase for backup
+                </div>
+              </div>
+
+              {/* Show Fingerprint */}
+              <div class="settings-card-divider">
+                <button
+                  class="btn btn-secondary"
+                  style={{ width: '100%' }}
+                  onClick={() => setShowFingerprintModal(true)}
+                >
+                  Show Seed Fingerprint
+                </button>
+                <div class="settings-hint">
+                  Unique identifier for your seed (for support)
+                </div>
+              </div>
+
+              {/* Change Password */}
+              <div class="settings-card-divider">
+                <button
+                  class="btn btn-secondary"
+                  style={{ width: '100%' }}
+                  onClick={() => setShowPasswordModal(true)}
+                >
+                  Change Password
+                </button>
+                <div class="settings-hint">
+                  Update your wallet encryption password
                 </div>
               </div>
             </div>
@@ -430,6 +547,177 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
                   style={{ width: '100%' }}
                   onClick={closeSeedModal}
                 >
+                  Done
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Fingerprint Modal */}
+      {showFingerprintModal && (
+        <div
+          class="modal-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeFingerprintModal();
+          }}
+        >
+          <div class="modal-content">
+            <h2 style={{ margin: '0 0 16px', fontSize: '18px', textAlign: 'center' }}>
+              {fingerprint ? 'Seed Fingerprint' : 'Enter Password'}
+            </h2>
+
+            {!fingerprint ? (
+              <>
+                <p style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '16px' }}>
+                  Enter your password to view your seed fingerprint.
+                </p>
+
+                <input
+                  type="password"
+                  class="form-input"
+                  placeholder="Enter your password"
+                  value={fingerprintPassword}
+                  onInput={(e) => setFingerprintPassword((e.target as HTMLInputElement).value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleShowFingerprint();
+                  }}
+                  style={{ marginBottom: '12px' }}
+                  autoFocus
+                />
+
+                {fingerprintError && (
+                  <p style={{ color: '#ef4444', fontSize: '13px', margin: '0 0 12px' }}>
+                    {fingerprintError}
+                  </p>
+                )}
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button class="btn btn-secondary" style={{ flex: 1 }} onClick={closeFingerprintModal}>
+                    Cancel
+                  </button>
+                  <button
+                    class="btn btn-primary"
+                    style={{ flex: 1 }}
+                    onClick={handleShowFingerprint}
+                    disabled={loadingFingerprint || !fingerprintPassword}
+                  >
+                    {loadingFingerprint ? <span class="spinner" style={{ width: '16px', height: '16px' }} /> : 'Show'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div
+                  style={{
+                    background: 'var(--color-bg-secondary)',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    marginBottom: '16px',
+                    fontFamily: 'monospace',
+                    fontSize: '11px',
+                    wordBreak: 'break-all',
+                    textAlign: 'center',
+                  }}
+                >
+                  {fingerprint}
+                </div>
+
+                <p style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '16px' }}>
+                  This fingerprint uniquely identifies your seed. You can share it with support if needed.
+                </p>
+
+                <button class="btn btn-primary" style={{ width: '100%' }} onClick={closeFingerprintModal}>
+                  Done
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Change Password Modal */}
+      {showPasswordModal && (
+        <div
+          class="modal-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closePasswordModal();
+          }}
+        >
+          <div class="modal-content">
+            <h2 style={{ margin: '0 0 16px', fontSize: '18px', textAlign: 'center' }}>
+              {passwordChanged ? 'Password Changed' : 'Change Password'}
+            </h2>
+
+            {!passwordChanged ? (
+              <>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '12px' }}>
+                  <input
+                    type="password"
+                    class="form-input"
+                    placeholder="Current password"
+                    value={currentPassword}
+                    onInput={(e) => setCurrentPassword((e.target as HTMLInputElement).value)}
+                    autoFocus
+                  />
+                  <input
+                    type="password"
+                    class="form-input"
+                    placeholder="New password (min 8 characters)"
+                    value={newPassword}
+                    onInput={(e) => setNewPassword((e.target as HTMLInputElement).value)}
+                  />
+                  <input
+                    type="password"
+                    class="form-input"
+                    placeholder="Confirm new password"
+                    value={confirmPassword}
+                    onInput={(e) => setConfirmPassword((e.target as HTMLInputElement).value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleChangePassword();
+                    }}
+                  />
+                </div>
+
+                {passwordError && (
+                  <p style={{ color: '#ef4444', fontSize: '13px', margin: '0 0 12px' }}>
+                    {passwordError}
+                  </p>
+                )}
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button class="btn btn-secondary" style={{ flex: 1 }} onClick={closePasswordModal}>
+                    Cancel
+                  </button>
+                  <button
+                    class="btn btn-primary"
+                    style={{ flex: 1 }}
+                    onClick={handleChangePassword}
+                    disabled={changingPassword || !currentPassword || !newPassword || !confirmPassword}
+                  >
+                    {changingPassword ? <span class="spinner" style={{ width: '16px', height: '16px' }} /> : 'Change'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div
+                  style={{
+                    background: 'var(--color-success-bg)',
+                    border: '1px solid var(--color-success)',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    marginBottom: '16px',
+                    fontSize: '13px',
+                    color: 'var(--color-success)',
+                    textAlign: 'center',
+                  }}
+                >
+                  Your password has been changed successfully. You will need to use your new password to unlock your wallet.
+                </div>
+
+                <button class="btn btn-primary" style={{ width: '100%' }} onClick={closePasswordModal}>
                   Done
                 </button>
               </>

@@ -29,6 +29,10 @@ export interface AuthMethods {
     seedFingerprint?: string;
     xmrStartHeight?: number;
     wowStartHeight?: number;
+    /** Unix timestamp (seconds) that was signed */
+    signedTimestamp: number;
+    /** Bitcoin message signature of "smirk-auth-{timestamp}" using BTC private key */
+    signature: string;
   }): Promise<ApiResponse<{
     accessToken: string;
     refreshToken: string;
@@ -141,6 +145,8 @@ export function createAuthMethods(client: ApiClient): AuthMethods {
           seed_fingerprint: params.seedFingerprint,
           xmr_start_height: params.xmrStartHeight,
           wow_start_height: params.wowStartHeight,
+          signed_timestamp: params.signedTimestamp,
+          signature: params.signature,
         }),
       });
       if (result.data) {

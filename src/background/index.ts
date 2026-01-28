@@ -74,6 +74,8 @@ import {
   handleUnlockWallet,
   handleLockWallet,
   handleRevealSeed,
+  handleGetFingerprint,
+  handleChangePassword,
   handleGetOnboardingState,
   handleSaveOnboardingState,
   handleClearOnboardingState,
@@ -191,6 +193,12 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
 
     case 'REVEAL_SEED':
       return handleRevealSeed(message.password);
+
+    case 'GET_FINGERPRINT':
+      return handleGetFingerprint(message.password);
+
+    case 'CHANGE_PASSWORD':
+      return handleChangePassword(message.oldPassword, message.newPassword);
 
     // =========================================================================
     // Onboarding State

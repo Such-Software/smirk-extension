@@ -547,7 +547,8 @@ async function createWalletFromMnemonic(
 
   // Register with backend, then register with LWS (LWS requires user_id from backend)
   // This is non-blocking - wallet works offline too
-  registerWithBackend(state, seedFingerprint)
+  // Includes retry logic in case of temporary network issues
+  registerWithBackendRetry(state, seedFingerprint)
     .then((userId) => {
       // Now register XMR/WOW with LWS using the user_id
       // For new wallets: LWS starts from current block
@@ -555,8 +556,8 @@ async function createWalletFromMnemonic(
       return registerWithLws(userId, state, derivedKeys, isRestore);
     })
     .catch((err) => {
-      console.warn('Failed to register with backend/LWS:', err);
-      // Continue working - we can retry later
+      console.warn('Failed to register with backend/LWS after retries:', err);
+      // Continue working - ensureValidAuth will retry on next unlock
     });
 
   return { success: true, data: { created: true, assets } };
@@ -565,6 +566,37 @@ async function createWalletFromMnemonic(
 // =============================================================================
 // Backend Registration
 // =============================================================================
+
+/**
+ * Register with backend with retry logic.
+ *
+ * Retries up to 3 times with exponential backoff (1s, 2s, 4s).
+ * Used during initial wallet creation to handle temporary network issues.
+ */
+async function registerWithBackendRetry(
+  state: WalletState,
+  seedFingerprint?: string
+): Promise<string> {
+  const maxRetries = 3;
+  const baseDelay = 1000;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await registerWithBackend(state, seedFingerprint);
+    } catch (err) {
+      console.error(`Backend registration attempt ${attempt}/${maxRetries} failed:`, err);
+
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt - 1);
+        console.log(`Retrying registration in ${delay}ms...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw new Error('Registration failed after all retries');
+}
 
 /**
  * Register wallet with backend server.
@@ -854,6 +886,8 @@ export async function handleUnlockWallet(password: string): Promise<MessageRespo
  * Checks existing auth state and either:
  * 1. Refreshes expired token
  * 2. Re-registers if no auth or refresh fails
+ *
+ * Includes retry logic for failed registrations (e.g., temporary network issues).
  */
 async function ensureValidAuth(state: WalletState): Promise<void> {
   const authState = await getAuthState();
@@ -885,18 +919,32 @@ async function ensureValidAuth(state: WalletState): Promise<void> {
     }
   }
 
-  // No valid auth - re-register with backend
+  // No valid auth - re-register with backend (with retry)
   console.log('No valid auth, re-registering with backend...');
 
   // Compute seed fingerprint if we have the mnemonic
   const seedFingerprint = unlockedMnemonic ? computeSeedFingerprint(unlockedMnemonic) : undefined;
 
-  try {
-    await registerWithBackend(state, seedFingerprint);
-    console.log('Re-registration successful');
-  } catch (err) {
-    console.error('Re-registration failed:', err);
-    throw err;
+  // Retry up to 3 times with exponential backoff
+  const maxRetries = 3;
+  const baseDelay = 1000; // 1 second
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await registerWithBackend(state, seedFingerprint);
+      console.log('Re-registration successful');
+      return;
+    } catch (err) {
+      console.error(`Re-registration attempt ${attempt}/${maxRetries} failed:`, err);
+
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt - 1); // 1s, 2s, 4s
+        console.log(`Retrying in ${delay}ms...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      } else {
+        throw err;
+      }
+    }
   }
 }
 

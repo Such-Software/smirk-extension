@@ -76,19 +76,21 @@ export function mnemonicToSeed(mnemonic: string, passphrase = ''): Uint8Array {
 
 /**
  * Computes a seed fingerprint for restore validation.
- * Format: hex(SHA256(SHA256(bip39_seed))[0:8]) = 16 hex chars
+ * Format: hex(SHA256(SHA256(bip39_seed))) = 64 hex chars (256 bits)
  *
  * This fingerprint is stored in the backend when creating a wallet,
  * and used to verify that a restore attempt is for a Smirk-created wallet.
+ *
+ * Security: 256 bits provides collision resistance of 2^128, making
+ * brute-force collision attacks infeasible.
  */
 export function computeSeedFingerprint(mnemonic: string, passphrase = ''): string {
   const seed = mnemonicToSeed(mnemonic, passphrase);
   // Double SHA256
   const hash1 = sha256(seed);
   const hash2 = sha256(hash1);
-  // Take first 8 bytes and convert to hex
-  const fingerprint = hash2.slice(0, 8);
-  return Array.from(fingerprint)
+  // Use full 256-bit hash (64 hex chars)
+  return Array.from(hash2)
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
 }

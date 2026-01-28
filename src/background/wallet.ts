@@ -29,6 +29,7 @@ import {
   bytesToHex,
   encrypt,
   randomBytes,
+  signBitcoinMessage,
 } from '@/lib/crypto';
 import {
   generateMnemonicPhrase,
@@ -649,12 +650,24 @@ async function registerWithBackend(state: WalletState, seedFingerprint?: string)
     throw new Error('No keys to register');
   }
 
+  // Sign timestamp to prove ownership of BTC private key
+  const btcPrivateKey = unlockedKeys.get('btc');
+  if (!btcPrivateKey) {
+    throw new Error('BTC private key not available - wallet must be unlocked');
+  }
+
+  const signedTimestamp = Math.floor(Date.now() / 1000);
+  const message = `smirk-auth-${signedTimestamp}`;
+  const signature = signBitcoinMessage(message, btcPrivateKey);
+
   const result = await api.extensionRegister({
     keys,
     walletBirthday: state.walletBirthday?.timestamp,
     seedFingerprint,
     xmrStartHeight: state.walletBirthday?.heights?.xmr,
     wowStartHeight: state.walletBirthday?.heights?.wow,
+    signedTimestamp,
+    signature,
   });
 
   if (result.error) {
@@ -676,6 +689,52 @@ async function registerWithBackend(state: WalletState, seedFingerprint?: string)
   console.log('Registered with backend:', auth.user.isNew ? 'new user' : 'existing user');
 
   return auth.user.id;
+}
+
+/**
+ * Register XMR/WOW with LWS using already-unlocked view keys.
+ *
+ * Used by ensureValidAuth when re-registering after failed initial registration.
+ * Uses the unlockedViewKeys Map which is populated during wallet unlock.
+ *
+ * @param userId - User ID from backend registration
+ * @param state - Wallet state with public keys
+ */
+async function registerWithLwsFromUnlockedKeys(
+  userId: string,
+  state: WalletState
+): Promise<void> {
+  // Register XMR with LWS
+  if (state.keys.xmr?.publicSpendKey && state.keys.xmr?.publicViewKey) {
+    const xmrViewKey = unlockedViewKeys.get('xmr');
+    if (xmrViewKey) {
+      const xmrAddress = getAddressForAsset('xmr', state.keys.xmr);
+      const xmrResult = await api.registerLws(userId, 'xmr', xmrAddress, bytesToHex(xmrViewKey));
+      if (xmrResult.error) {
+        console.warn('Failed to register XMR with LWS:', xmrResult.error);
+      } else {
+        console.log('XMR registered with LWS:', xmrResult.data?.message);
+      }
+    } else {
+      console.warn('XMR view key not available for LWS registration');
+    }
+  }
+
+  // Register WOW with LWS
+  if (state.keys.wow?.publicSpendKey && state.keys.wow?.publicViewKey) {
+    const wowViewKey = unlockedViewKeys.get('wow');
+    if (wowViewKey) {
+      const wowAddress = getAddressForAsset('wow', state.keys.wow);
+      const wowResult = await api.registerLws(userId, 'wow', wowAddress, bytesToHex(wowViewKey));
+      if (wowResult.error) {
+        console.warn('Failed to register WOW with LWS:', wowResult.error);
+      } else {
+        console.log('WOW registered with LWS:', wowResult.data?.message);
+      }
+    } else {
+      console.warn('WOW view key not available for LWS registration');
+    }
+  }
 }
 
 /**
@@ -929,11 +988,12 @@ async function ensureValidAuth(state: WalletState): Promise<void> {
   const maxRetries = 3;
   const baseDelay = 1000; // 1 second
 
+  let userId: string | undefined;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      await registerWithBackend(state, seedFingerprint);
+      userId = await registerWithBackend(state, seedFingerprint);
       console.log('Re-registration successful');
-      return;
+      break;
     } catch (err) {
       console.error(`Re-registration attempt ${attempt}/${maxRetries} failed:`, err);
 
@@ -944,6 +1004,17 @@ async function ensureValidAuth(state: WalletState): Promise<void> {
       } else {
         throw err;
       }
+    }
+  }
+
+  // Also register with LWS if we have the view keys unlocked
+  if (userId) {
+    try {
+      await registerWithLwsFromUnlockedKeys(userId, state);
+      console.log('LWS re-registration successful');
+    } catch (err) {
+      console.warn('LWS re-registration failed (non-fatal):', err);
+      // Continue - LWS registration failure shouldn't block wallet use
     }
   }
 }

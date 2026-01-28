@@ -28,6 +28,10 @@
 - [ ] Discord in platform selector
 - [ ] Signal / Matrix / Simplex (when backend supports)
 
+## Security
+
+- [ ] **Password strength requirement**: Minimum 8 characters
+
 ## Lower Priority
 
 - [ ] Biometric unlock (where supported)
@@ -55,6 +59,10 @@ Extension MUST use `next_child_index` from `/wallet/grin/user/{id}/outputs`.
 
 ## Completed
 
+- [x] **Security Hardening** (2026-01-28)
+  - Signed timestamp verification on registration (proves private key ownership)
+  - 256-bit seed fingerprint (increased from 64-bit)
+  - Bitcoin message signing for auth
 - [x] **Social Tipping MVP** (2026-01-27)
   - Telegram tipping with confirmation tracking
   - Grin vouchers (non-interactive)

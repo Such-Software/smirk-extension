@@ -6,7 +6,7 @@
 declare const import_meta_env: { VITE_API_BASE?: string };
 
 // API base URL - set via environment or default to production server
-const API_BASE = (import.meta as unknown as { env: typeof import_meta_env }).env.VITE_API_BASE || 'http://45.84.59.17:8080/api/v1';
+const API_BASE = (import.meta as unknown as { env: typeof import_meta_env }).env.VITE_API_BASE || 'https://backend.smirk.cash/api/v1';
 
 // Use globalThis to store the access token so it's shared across all module instances
 // This is needed because Vite's chunking can create multiple copies of the api module

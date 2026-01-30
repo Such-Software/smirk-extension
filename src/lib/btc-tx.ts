@@ -216,6 +216,9 @@ export function estimateFee(
 /**
  * Calculate maximum sendable amount given UTXOs and fee rate.
  *
+ * Uses the same fee calculation as createSignedTransaction() sweep mode
+ * to ensure the returned amount can actually be sent.
+ *
  * @param utxos - Available UTXOs
  * @param feeRate - Fee rate in sat/vbyte
  * @returns Maximum amount that can be sent
@@ -223,9 +226,14 @@ export function estimateFee(
 export function maxSendable(utxos: Utxo[], feeRate: number = 10): number {
   const totalValue = utxos.reduce((sum, u) => sum + u.value, 0);
 
+  // Use same fee calculation as createSignedTransaction sweep mode:
+  // - Enforce minimum fee rate
+  // - Add +1 satoshi buffer
+  const effectiveFeeRate = Math.max(feeRate, MIN_FEE_RATE);
+
   // Estimate tx size with all inputs and 1 output (no change needed for max send)
   const estimatedSize = 10 + 68 * utxos.length + 31;
-  const estimatedFee = Math.ceil(estimatedSize * feeRate);
+  const estimatedFee = Math.ceil(estimatedSize * effectiveFeeRate) + 1;
 
   return Math.max(0, totalValue - estimatedFee);
 }

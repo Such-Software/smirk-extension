@@ -332,7 +332,12 @@ export async function selectOutputs(
   if (sweep) {
     const totalInput = sorted.reduce((sum, o) => sum + o.amount, 0);
     // 1 output (recipient only, no change)
-    const fee = await estimateFee(sorted.length, 1, feePerByte, feeMask);
+    const baseFee = await estimateFee(sorted.length, 1, feePerByte, feeMask);
+
+    // Add small buffer to fee (0.1% or minimum feeMask amount) to ensure no dust remains
+    // This accounts for any variance between estimated and actual tx fee
+    const feeBuffer = Math.max(Math.ceil(baseFee * 0.001), feeMask);
+    const fee = baseFee + feeBuffer;
     const sweepAmount = totalInput - fee;
 
     if (sweepAmount <= 0) {
@@ -677,7 +682,12 @@ export async function maxSendable(
   const totalValue = outputs.reduce((sum, o) => sum + o.amount, 0);
 
   // Estimate fee for sending all outputs with 1 output (no change)
-  const fee = await estimateFee(outputs.length, 1, per_byte_fee, fee_mask);
+  const baseFee = await estimateFee(outputs.length, 1, per_byte_fee, fee_mask);
+
+  // Add small buffer (0.1% or minimum fee_mask amount) to ensure no dust remains
+  // This matches the buffer used in selectOutputs() sweep mode
+  const feeBuffer = Math.max(Math.ceil(baseFee * 0.001), fee_mask);
+  const fee = baseFee + feeBuffer;
 
   return Math.max(0, totalValue - fee);
 }

@@ -142,7 +142,7 @@ body {
 /* Content */
 .content {
   flex: 1;
-  padding: 20px;
+  padding: 16px;
   overflow-y: auto;
 }
 
@@ -151,8 +151,8 @@ body {
   background: var(--color-bg-card);
   border: 1px solid var(--color-border);
   border-radius: 16px;
-  padding: 24px;
-  margin-bottom: 20px;
+  padding: 16px;
+  margin-bottom: 12px;
   text-align: center;
 }
 
@@ -181,7 +181,7 @@ body {
   display: flex;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 
 .asset-tab {
@@ -225,12 +225,24 @@ body {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 12px;
-  margin-bottom: 24px;
+  margin-bottom: 16px;
 }
 
 .action-grid.action-grid-4 {
   grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
+  gap: 10px;
+}
+
+.action-grid-4 .action-btn {
+  padding: 14px 10px;
+}
+
+.action-grid-4 .action-icon {
+  font-size: 22px;
+}
+
+.action-grid-4 .action-label {
+  font-size: 11px;
 }
 
 .action-grid.action-grid-5 {

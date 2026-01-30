@@ -223,7 +223,11 @@ export type MessageType =
   | { type: 'CLAIM_SOCIAL_TIP'; tipId: string; asset: AssetType }
   | { type: 'GET_SENT_SOCIAL_TIPS' }
   | { type: 'CLAWBACK_SOCIAL_TIP'; tipId: string }
-  | { type: 'GET_PUBLIC_TIP_SHARE_URL'; tipId: string };
+  | { type: 'GET_PUBLIC_TIP_SHARE_URL'; tipId: string }
+  // Prices
+  | { type: 'GET_PRICES' }
+  // Tips received (history view)
+  | { type: 'GET_RECEIVED_TIPS' };
 
 /**
  * Context needed to finalize a Grin send transaction.

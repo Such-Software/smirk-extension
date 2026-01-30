@@ -147,6 +147,21 @@ import {
 } from './social';
 
 // =============================================================================
+// Prices Handler
+// =============================================================================
+
+/**
+ * Fetch cryptocurrency prices from backend.
+ */
+async function handleGetPrices(): Promise<MessageResponse> {
+  const result = await api.getPrices();
+  if (result.error) {
+    return { success: false, error: result.error };
+  }
+  return { success: true, ...result.data };
+}
+
+// =============================================================================
 // Message Handler
 // =============================================================================
 
@@ -381,6 +396,12 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
 
     case 'GET_PUBLIC_TIP_SHARE_URL':
       return handleGetPublicTipShareUrl(message.tipId);
+
+    // =========================================================================
+    // Prices
+    // =========================================================================
+    case 'GET_PRICES':
+      return handleGetPrices();
 
     // =========================================================================
     // Unknown

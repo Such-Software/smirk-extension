@@ -19,15 +19,15 @@ import {
   type BalanceData,
   type WalletScreen,
 } from '../shared';
-import { InboxView } from './InboxView';
+import { HistoryView } from './HistoryView';
 import { ReceiveView } from './ReceiveView';
 import { SendView } from './SendView';
-import { SentTipsView } from './SentTipsView';
 import { SettingsView } from './SettingsView';
 import { TipView } from './TipView';
 import { useToast } from './Toast';
 import { getGrinPendingReceive, type GrinPendingReceive } from '@/lib/storage';
-import { BalanceCard, TxList, GrinPendingBanner, type TxHistoryEntry } from './wallet';
+import { BalanceCard, GrinPendingBanner } from './wallet';
+import { InfoPanel } from './InfoPanel';
 
 // Check if we're already in a popped out window
 const isPopup = window.location.search.includes('popup=true');
@@ -48,18 +48,12 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     btc: null, ltc: null, xmr: null, wow: null, grin: null,
   });
   const [loadingBalance, setLoadingBalance] = useState<AssetType | null>(null);
-  const [history, setHistory] = useState<Record<AssetType, TxHistoryEntry[] | null>>({
-    btc: null, ltc: null, xmr: null, wow: null, grin: null,
-  });
-  const [loadingHistory, setLoadingHistory] = useState(false);
   // Pending outgoing amounts (for XMR/WOW - not yet confirmed txs)
   const [pendingOutgoing, setPendingOutgoing] = useState<Record<AssetType, number>>({
     btc: 0, ltc: 0, xmr: 0, wow: 0, grin: 0,
   });
   // Pending Grin receive (signed slatepack waiting for sender to finalize)
   const [grinPendingReceive, setGrinPendingReceive] = useState<GrinPendingReceive | null>(null);
-  // Track which Grin transaction is being cancelled
-  const [cancellingTxId, setCancellingTxId] = useState<string | null>(null);
 
   // =========================================================================
   // Effects
@@ -106,11 +100,10 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     fetchAddresses();
   }, []);
 
-  // Fetch balance and history when asset changes
+  // Fetch balance when asset changes
   useEffect(() => {
     if (addresses[activeAsset]) {
       fetchBalance(activeAsset);
-      fetchHistory(activeAsset);
     }
   }, [activeAsset, addresses[activeAsset]]);
 
@@ -200,22 +193,6 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     }
   };
 
-  const fetchHistory = async (asset: AssetType) => {
-    if (loadingHistory) return;
-    setLoadingHistory(true);
-    try {
-      const result = await sendMessage<{ transactions: TxHistoryEntry[] }>({
-        type: 'GET_HISTORY',
-        asset,
-      });
-      setHistory((prev) => ({ ...prev, [asset]: result.transactions }));
-    } catch (err) {
-      console.error(`Failed to fetch ${asset} history:`, err);
-    } finally {
-      setLoadingHistory(false);
-    }
-  };
-
   // =========================================================================
   // Event handlers
   // =========================================================================
@@ -224,25 +201,6 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     setActiveAsset(asset);
     localStorage.setItem(ACTIVE_ASSET_KEY, asset);
     saveScreenState(screen, asset);
-  };
-
-  const handleCancelGrinTx = async (tx: TxHistoryEntry, e: Event) => {
-    e.stopPropagation();
-    if (cancellingTxId) return;
-    setCancellingTxId(tx.txid);
-    try {
-      await sendMessage<{ cancelled: boolean }>({
-        type: 'GRIN_CANCEL_SEND',
-        slateId: tx.txid,
-        inputIds: tx.input_ids || [],
-      });
-      await fetchHistory('grin');
-      await fetchBalance('grin');
-    } catch (err) {
-      console.error('Failed to cancel Grin transaction:', err);
-    } finally {
-      setCancellingTxId(null);
-    }
   };
 
   const handlePopOut = async () => {
@@ -338,12 +296,8 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     );
   }
 
-  if (screen === 'inbox') {
-    return <InboxView onBack={() => setScreen('main')} />;
-  }
-
-  if (screen === 'sentTips') {
-    return <SentTipsView onBack={() => setScreen('main')} />;
+  if (screen === 'history') {
+    return <HistoryView activeAsset={activeAsset} onBack={() => setScreen('main')} />;
   }
 
   // =========================================================================
@@ -405,7 +359,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
         />
 
         {/* Action Buttons */}
-        <div class="action-grid action-grid-5">
+        <div class="action-grid action-grid-4">
           <button class="action-btn" onClick={() => setScreen('receive')}>
             <span class="action-icon">📥</span>
             <span class="action-label">Receive</span>
@@ -418,26 +372,14 @@ export function WalletView({ onLock }: { onLock: () => void }) {
             <span class="action-icon">🎁</span>
             <span class="action-label">Tip</span>
           </button>
-          <button class="action-btn" onClick={() => setScreen('inbox')}>
-            <span class="action-icon">📬</span>
-            <span class="action-label">Inbox</span>
-          </button>
-          <button class="action-btn" onClick={() => setScreen('sentTips')}>
-            <span class="action-icon">📋</span>
-            <span class="action-label">Sent</span>
+          <button class="action-btn" onClick={() => setScreen('history')}>
+            <span class="action-icon">📜</span>
+            <span class="action-label">History</span>
           </button>
         </div>
 
-        {/* Recent Activity */}
-        <div class="section-title">Recent Activity</div>
-        <TxList
-          asset={activeAsset}
-          transactions={history[activeAsset]}
-          loading={loadingHistory}
-          cancellingTxId={cancellingTxId}
-          onCancel={handleCancelGrinTx}
-          showToast={showToast}
-        />
+        {/* Info Panel - Prices & Stats */}
+        <InfoPanel />
       </div>
     </>
   );

@@ -182,6 +182,20 @@ export class SmirkApi extends ApiClient implements
   async healthCheck(): Promise<ApiResponse<{ status: string }>> {
     return this.request('/health', { method: 'GET' });
   }
+
+  /**
+   * Get current cryptocurrency prices.
+   */
+  async getPrices(): Promise<ApiResponse<{
+    btc: number | null;
+    ltc: number | null;
+    xmr: number | null;
+    wow: number | null;
+    grin: number | null;
+    updated_at: string;
+  }>> {
+    return this.request('/prices', { method: 'GET' });
+  }
 }
 
 // Default API instance

@@ -31,7 +31,7 @@ src/
 │   └── tips.ts         # Tip decryption and claiming
 ├── content/        # Content script - injects window.smirk
 ├── inject/         # Injected script - window.smirk API implementation
-├── popup/          # Main UI (Preact)
+├── popup/          # Main UI (Preact components)
 ├── lib/
 │   ├── crypto.ts        # BIP39, BIP44 key derivation
 │   ├── xmr-tx.ts        # XMR/WOW transaction signing via WASM

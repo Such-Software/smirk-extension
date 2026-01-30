@@ -1,42 +1,23 @@
 # Smirk Extension TODO
 
-## Known Issues (Alpha Blockers)
-
-### Fee Calculation / Max Send
-- [ ] **BTC/LTC Max Send**: Max button fails with "Insufficient funds"
-  - `maxSendable()` estimates for 1 output, `selectUtxos()` for 2 outputs
-  - Need sweep mode: single output, no change, recalculate fee
-- [ ] **XMR/WOW Max Send Dust**: Sweep leaves tiny dust balance
-  - Fee estimation slightly off
-- [ ] **Grin Fee Display**: Should show fee before confirming send
+## Known Issues (Alpha)
 
 ### UX
 - [ ] Pending tips not reflected in balance immediately
-- [ ] Clawback UI needs work
-- [ ] Main view is crowded (5 action buttons + activity list)
+- [ ] Clawback UI could be improved (confirmation flow)
+- [ ] Grin fee display before confirming send
 
 ---
-
-## Phase 2: Public Tips
-
-- [x] "Public tip" toggle in Social Tip UI
-- [x] Warning: "Anyone can claim this tip"
-- [x] Shareable link / payload copy
 
 ## Phase 3: Additional Platforms
 
 - [ ] Discord in platform selector
 - [ ] Signal / Matrix / Simplex (when backend supports)
 
-## Security
-
-- [x] **Password strength requirement**: Minimum 8 characters (change password modal)
-
 ## Lower Priority
 
 - [ ] Biometric unlock (where supported)
 - [ ] Address book / contacts
-- [ ] Fiat price display
 - [ ] Firefox/Safari ports
 - [ ] Hardware wallet support
 
@@ -59,6 +40,21 @@ Extension MUST use `next_child_index` from `/wallet/grin/user/{id}/outputs`.
 
 ## Completed
 
+- [x] **Stats & Prices Panel** (2026-01-30)
+  - InfoPanel component with Prices/Stats tabs
+  - Live USD prices for all 5 assets
+  - Tip count statistics
+- [x] **HistoryView with 3 Tabs** (2026-01-30)
+  - Consolidated Activity, Received Tips, Sent Tips
+  - 4-button main layout (Receive, Send, Tip, History)
+- [x] **UI Polish** (2026-01-30)
+  - Reduced spacing/padding across all views
+  - Fixed scrollbar issues on main view
+- [x] **BTC/LTC Max Send Fix** (2026-01-30)
+  - Proper sweep mode for entire balance
+  - Fee calculation aligned with single-output transactions
+- [x] **XMR/WOW Dust Fix** (2026-01-30)
+  - 0.1% fee buffer when sweeping to avoid dust
 - [x] **Settings Enhancements** (2026-01-30)
   - Show seed fingerprint button
   - Change password feature

@@ -163,6 +163,17 @@ async function handleGetPrices(): Promise<MessageResponse> {
   return { success: true, data: result.data };
 }
 
+/**
+ * Fetch sparkline data for an asset.
+ */
+async function handleGetSparkline(asset: string): Promise<MessageResponse> {
+  const result = await api.getSparkline(asset);
+  if (result.error) {
+    return { success: false, error: result.error };
+  }
+  return { success: true, data: result.data };
+}
+
 // =============================================================================
 // Message Handler
 // =============================================================================
@@ -404,6 +415,9 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
     // =========================================================================
     case 'GET_PRICES':
       return handleGetPrices();
+
+    case 'GET_SPARKLINE':
+      return handleGetSparkline(message.asset);
 
     // =========================================================================
     // Unknown

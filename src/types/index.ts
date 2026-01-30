@@ -226,6 +226,7 @@ export type MessageType =
   | { type: 'GET_PUBLIC_TIP_SHARE_URL'; tipId: string }
   // Prices
   | { type: 'GET_PRICES' }
+  | { type: 'GET_SPARKLINE'; asset: string }
   // Tips received (history view)
   | { type: 'GET_RECEIVED_TIPS' };
 

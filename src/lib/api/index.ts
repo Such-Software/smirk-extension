@@ -196,6 +196,18 @@ export class SmirkApi extends ApiClient implements
   }>> {
     return this.request('/prices', { method: 'GET' });
   }
+
+  /**
+   * Get sparkline data for an asset (2-week history, downsampled).
+   */
+  async getSparkline(asset: string): Promise<ApiResponse<{
+    prices: number[];
+    min: number;
+    max: number;
+    change_pct: number;
+  }>> {
+    return this.request(`/prices/sparkline/${asset}`, { method: 'GET' });
+  }
 }
 
 // Default API instance

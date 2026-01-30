@@ -6,8 +6,16 @@
 import { useState, useEffect } from 'preact/hooks';
 import type { AssetType } from '@/types';
 import { ASSETS, sendMessage } from '../shared';
+import { Sparkline } from './Sparkline';
 
 type TabType = 'prices' | 'stats';
+
+interface SparklineData {
+  prices: number[];
+  min: number;
+  max: number;
+  change_pct: number;
+}
 
 interface Prices {
   btc: number | null;
@@ -33,6 +41,7 @@ export function InfoPanel({ activeAsset }: Props) {
   const [activeTab, setActiveTab] = useState<TabType>('prices');
   const [prices, setPrices] = useState<Prices | null>(null);
   const [loadingPrices, setLoadingPrices] = useState(false);
+  const [sparkline, setSparkline] = useState<SparklineData | null>(null);
   const [sentTips, setSentTips] = useState<SocialTip[]>([]);
   const [receivedTips, setReceivedTips] = useState<SocialTip[]>([]);
   const [loadingStats, setLoadingStats] = useState(false);
@@ -43,6 +52,13 @@ export function InfoPanel({ activeAsset }: Props) {
       fetchPrices();
     }
   }, [activeTab]);
+
+  // Fetch sparkline when asset changes
+  useEffect(() => {
+    if (activeTab === 'prices') {
+      fetchSparkline();
+    }
+  }, [activeAsset, activeTab]);
 
   // Fetch stats when switching to stats tab or when asset changes
   useEffect(() => {
@@ -71,6 +87,16 @@ export function InfoPanel({ activeAsset }: Props) {
       console.error('[InfoPanel] Failed to fetch prices:', err);
     } finally {
       setLoadingPrices(false);
+    }
+  };
+
+  const fetchSparkline = async () => {
+    try {
+      const result = await sendMessage<SparklineData>({ type: 'GET_SPARKLINE', asset: activeAsset });
+      setSparkline(result);
+    } catch (err) {
+      console.error('[InfoPanel] Failed to fetch sparkline:', err);
+      setSparkline(null);
     }
   };
 
@@ -154,6 +180,20 @@ export function InfoPanel({ activeAsset }: Props) {
                     <span class="price-main-value">{formatPrice(currentPrice)}</span>
                   </div>
                 </div>
+                {/* Sparkline chart */}
+                {sparkline && sparkline.prices.length > 1 && (
+                  <div class="sparkline-container">
+                    <Sparkline
+                      data={sparkline.prices}
+                      width={260}
+                      height={45}
+                      strokeColor="var(--color-yellow)"
+                    />
+                    <div class="sparkline-change" style={{ color: sparkline.change_pct >= 0 ? '#4ade80' : '#f87171' }}>
+                      {sparkline.change_pct >= 0 ? '+' : ''}{sparkline.change_pct.toFixed(1)}% (2w)
+                    </div>
+                  </div>
+                )}
                 {prices?.updated_at && (
                   <div class="price-updated">
                     Updated {formatUpdatedAt(prices.updated_at)}
@@ -267,6 +307,28 @@ export function InfoPanel({ activeAsset }: Props) {
         .price-updated {
           font-size: 11px;
           color: var(--color-text-faint);
+        }
+
+        .sparkline-container {
+          width: 100%;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 4px;
+          margin-top: 4px;
+        }
+
+        .sparkline-change {
+          font-size: 11px;
+          font-weight: 600;
+        }
+
+        .sparkline-empty {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: var(--color-text-faint);
+          font-size: 11px;
         }
 
         .stats-grid {

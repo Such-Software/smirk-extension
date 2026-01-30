@@ -1,20 +1,13 @@
 /**
  * Info panel component with Stats and Prices tabs.
- * Displays tipping stats and current cryptocurrency prices.
+ * Shows current asset's price and tip statistics.
  */
 
 import { useState, useEffect } from 'preact/hooks';
 import type { AssetType } from '@/types';
-import { ASSETS, sendMessage, formatBalance } from '../shared';
+import { ASSETS, sendMessage } from '../shared';
 
-type TabType = 'stats' | 'prices';
-
-interface TipStats {
-  sent_count: number;
-  sent_total_usd: number;
-  received_count: number;
-  received_total_usd: number;
-}
+type TabType = 'prices' | 'stats';
 
 interface Prices {
   btc: number | null;
@@ -25,20 +18,38 @@ interface Prices {
   updated_at: string;
 }
 
-export function InfoPanel() {
-  const [activeTab, setActiveTab] = useState<TabType>('prices');
-  const [stats, setStats] = useState<TipStats | null>(null);
-  const [prices, setPrices] = useState<Prices | null>(null);
-  const [loadingStats, setLoadingStats] = useState(false);
-  const [loadingPrices, setLoadingPrices] = useState(false);
+interface SocialTip {
+  id: string;
+  asset: string;
+  amount: number;
+  status: string;
+}
 
+interface Props {
+  activeAsset: AssetType;
+}
+
+export function InfoPanel({ activeAsset }: Props) {
+  const [activeTab, setActiveTab] = useState<TabType>('prices');
+  const [prices, setPrices] = useState<Prices | null>(null);
+  const [loadingPrices, setLoadingPrices] = useState(false);
+  const [sentTips, setSentTips] = useState<SocialTip[]>([]);
+  const [receivedTips, setReceivedTips] = useState<SocialTip[]>([]);
+  const [loadingStats, setLoadingStats] = useState(false);
+
+  // Fetch prices on mount and when switching to prices tab
   useEffect(() => {
-    if (activeTab === 'stats') {
-      fetchStats();
-    } else {
+    if (activeTab === 'prices') {
       fetchPrices();
     }
   }, [activeTab]);
+
+  // Fetch stats when switching to stats tab or when asset changes
+  useEffect(() => {
+    if (activeTab === 'stats') {
+      fetchStats();
+    }
+  }, [activeTab, activeAsset]);
 
   // Auto-refresh prices every 5 minutes
   useEffect(() => {
@@ -48,39 +59,35 @@ export function InfoPanel() {
     }
   }, [activeTab]);
 
+  const fetchPrices = async () => {
+    if (loadingPrices) return;
+    setLoadingPrices(true);
+    try {
+      console.log('[InfoPanel] Fetching prices...');
+      const result = await sendMessage<Prices>({ type: 'GET_PRICES' });
+      console.log('[InfoPanel] Prices result:', result);
+      setPrices(result);
+    } catch (err) {
+      console.error('[InfoPanel] Failed to fetch prices:', err);
+    } finally {
+      setLoadingPrices(false);
+    }
+  };
+
   const fetchStats = async () => {
     if (loadingStats) return;
     setLoadingStats(true);
     try {
       const [sent, received] = await Promise.all([
-        sendMessage<{ tips: Array<{ amount: number; asset: string }> }>({ type: 'GET_SENT_SOCIAL_TIPS' }),
-        sendMessage<{ tips: Array<{ amount: number; asset: string }> }>({ type: 'GET_RECEIVED_TIPS' }),
+        sendMessage<{ tips: SocialTip[] }>({ type: 'GET_SENT_SOCIAL_TIPS' }),
+        sendMessage<{ tips: SocialTip[] }>({ type: 'GET_RECEIVED_TIPS' }),
       ]);
-
-      // Calculate totals (simplified - would need prices for accurate USD)
-      setStats({
-        sent_count: sent.tips.length,
-        sent_total_usd: 0, // Would need price conversion
-        received_count: received.tips.length,
-        received_total_usd: 0,
-      });
+      setSentTips(sent.tips || []);
+      setReceivedTips(received.tips || []);
     } catch (err) {
-      console.error('Failed to fetch stats:', err);
+      console.error('[InfoPanel] Failed to fetch stats:', err);
     } finally {
       setLoadingStats(false);
-    }
-  };
-
-  const fetchPrices = async () => {
-    if (loadingPrices) return;
-    setLoadingPrices(true);
-    try {
-      const result = await sendMessage<Prices>({ type: 'GET_PRICES' });
-      setPrices(result);
-    } catch (err) {
-      console.error('Failed to fetch prices:', err);
-    } finally {
-      setLoadingPrices(false);
     }
   };
 
@@ -103,7 +110,12 @@ export function InfoPanel() {
     return `${diffMins} mins ago`;
   };
 
-  const assetOrder: AssetType[] = ['btc', 'ltc', 'xmr', 'grin', 'wow'];
+  // Filter tips for current asset
+  const assetSentTips = sentTips.filter(t => t.asset === activeAsset);
+  const assetReceivedTips = receivedTips.filter(t => t.asset === activeAsset);
+
+  const assetInfo = ASSETS[activeAsset];
+  const currentPrice = prices?.[activeAsset];
 
   return (
     <div class="info-panel">
@@ -113,7 +125,7 @@ export function InfoPanel() {
           class={`info-tab ${activeTab === 'prices' ? 'active' : ''}`}
           onClick={() => setActiveTab('prices')}
         >
-          Prices
+          Price
         </button>
         <button
           class={`info-tab ${activeTab === 'stats' ? 'active' : ''}`}
@@ -126,29 +138,21 @@ export function InfoPanel() {
       {/* Tab Content */}
       <div class="info-content">
         {activeTab === 'prices' ? (
-          <div class="prices-content">
+          <div class="price-single">
             {loadingPrices && !prices ? (
               <div class="info-loading"><div class="spinner" /></div>
             ) : (
               <>
-                <div class="price-list">
-                  {assetOrder.map((asset) => {
-                    const assetInfo = ASSETS[asset];
-                    const price = prices?.[asset];
-                    return (
-                      <div key={asset} class="price-row">
-                        <div class="price-asset">
-                          <img
-                            src={assetInfo.iconPath}
-                            alt={assetInfo.symbol}
-                            class="price-icon"
-                          />
-                          <span class="price-symbol">{assetInfo.symbol}</span>
-                        </div>
-                        <span class="price-value">{formatPrice(price)}</span>
-                      </div>
-                    );
-                  })}
+                <div class="price-main">
+                  <img
+                    src={assetInfo.iconPath}
+                    alt={assetInfo.symbol}
+                    class="price-main-icon"
+                  />
+                  <div class="price-main-info">
+                    <span class="price-main-symbol">{assetInfo.symbol}</span>
+                    <span class="price-main-value">{formatPrice(currentPrice)}</span>
+                  </div>
                 </div>
                 {prices?.updated_at && (
                   <div class="price-updated">
@@ -160,21 +164,19 @@ export function InfoPanel() {
           </div>
         ) : (
           <div class="stats-content">
-            {loadingStats && !stats ? (
+            {loadingStats ? (
               <div class="info-loading"><div class="spinner" /></div>
-            ) : stats ? (
+            ) : (
               <div class="stats-grid">
                 <div class="stat-item">
-                  <span class="stat-value">{stats.sent_count}</span>
-                  <span class="stat-label">Tips Sent</span>
+                  <span class="stat-value">{assetReceivedTips.length}</span>
+                  <span class="stat-label">Received</span>
                 </div>
                 <div class="stat-item">
-                  <span class="stat-value">{stats.received_count}</span>
-                  <span class="stat-label">Tips Received</span>
+                  <span class="stat-value">{assetSentTips.length}</span>
+                  <span class="stat-label">Sent</span>
                 </div>
               </div>
-            ) : (
-              <div class="stats-empty">No stats available</div>
             )}
           </div>
         )}
@@ -195,7 +197,7 @@ export function InfoPanel() {
 
         .info-tab {
           flex: 1;
-          padding: 10px 12px;
+          padding: 8px 12px;
           border: none;
           background: transparent;
           color: var(--color-text-muted);
@@ -217,93 +219,81 @@ export function InfoPanel() {
 
         .info-content {
           padding: 12px;
-          min-height: 120px;
+          min-height: 80px;
         }
 
         .info-loading {
           display: flex;
           align-items: center;
           justify-content: center;
-          height: 100px;
+          height: 60px;
         }
 
-        .price-list {
+        .price-single {
           display: flex;
           flex-direction: column;
-          gap: 8px;
-        }
-
-        .price-row {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 6px 0;
-        }
-
-        .price-asset {
-          display: flex;
           align-items: center;
           gap: 8px;
         }
 
-        .price-icon {
-          width: 20px;
-          height: 20px;
+        .price-main {
+          display: flex;
+          align-items: center;
+          gap: 12px;
         }
 
-        .price-symbol {
-          font-size: 13px;
-          font-weight: 500;
+        .price-main-icon {
+          width: 32px;
+          height: 32px;
+        }
+
+        .price-main-info {
+          display: flex;
+          flex-direction: column;
+        }
+
+        .price-main-symbol {
+          font-size: 12px;
           color: var(--color-text-muted);
+          text-transform: uppercase;
         }
 
-        .price-value {
-          font-size: 13px;
-          font-weight: 600;
+        .price-main-value {
+          font-size: 20px;
+          font-weight: 700;
           color: var(--color-text);
         }
 
         .price-updated {
-          margin-top: 8px;
           font-size: 11px;
           color: var(--color-text-faint);
-          text-align: center;
         }
 
         .stats-grid {
           display: grid;
           grid-template-columns: 1fr 1fr;
-          gap: 16px;
+          gap: 12px;
         }
 
         .stat-item {
           display: flex;
           flex-direction: column;
           align-items: center;
-          gap: 4px;
-          padding: 16px;
+          gap: 2px;
+          padding: 12px 8px;
           background: var(--color-bg-input);
           border-radius: 8px;
         }
 
         .stat-value {
-          font-size: 24px;
+          font-size: 20px;
           font-weight: 700;
           color: var(--color-yellow);
         }
 
         .stat-label {
-          font-size: 12px;
+          font-size: 11px;
           color: var(--color-text-muted);
-        }
-
-        .stats-empty {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          height: 100px;
-          color: var(--color-text-muted);
-          font-size: 14px;
         }
       `}</style>
     </div>

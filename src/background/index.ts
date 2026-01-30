@@ -154,11 +154,13 @@ import {
  * Fetch cryptocurrency prices from backend.
  */
 async function handleGetPrices(): Promise<MessageResponse> {
+  console.log('[handleGetPrices] Fetching prices...');
   const result = await api.getPrices();
+  console.log('[handleGetPrices] Result:', result);
   if (result.error) {
     return { success: false, error: result.error };
   }
-  return { success: true, ...result.data };
+  return { success: true, data: result.data };
 }
 
 // =============================================================================

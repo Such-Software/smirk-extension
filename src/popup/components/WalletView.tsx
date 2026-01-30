@@ -379,7 +379,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
         </div>
 
         {/* Info Panel - Prices & Stats */}
-        <InfoPanel />
+        <InfoPanel activeAsset={activeAsset} />
       </div>
     </>
   );

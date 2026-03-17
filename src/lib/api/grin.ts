@@ -56,6 +56,7 @@ export interface GrinMethods {
   // User balance and history
   getGrinUserBalance(userId: string): Promise<ApiResponse<{
     confirmed: number;
+    locked: number;
     pending: number;
     total: number;
   }>>;

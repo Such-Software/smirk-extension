@@ -47,7 +47,7 @@ import { getAddressForAsset } from './wallet';
 export async function handleGetBalance(
   asset: AssetType
 ): Promise<MessageResponse<
-  | { asset: AssetType; confirmed: number; unconfirmed: number; total: number }
+  | { asset: AssetType; confirmed: number; unconfirmed: number; total: number; locked?: number }
   | {
       asset: 'xmr' | 'wow';
       total_received: number;
@@ -215,7 +215,7 @@ async function handleLwsBalance(
  */
 async function handleGrinBalance(
   asset: 'grin'
-): Promise<MessageResponse<{ asset: AssetType; confirmed: number; unconfirmed: number; total: number }>> {
+): Promise<MessageResponse<{ asset: AssetType; confirmed: number; unconfirmed: number; total: number; locked?: number }>> {
   const authState = await getAuthState();
   if (!authState?.userId) {
     return { success: false, error: 'Not authenticated' };
@@ -233,6 +233,7 @@ async function handleGrinBalance(
       asset,
       confirmed: result.data!.confirmed,
       unconfirmed: result.data!.pending,
+      locked: result.data!.locked,
       total: result.data!.total,
     },
   };

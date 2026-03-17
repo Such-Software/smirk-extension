@@ -218,6 +218,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
             confirmed: result.confirmed,
             unconfirmed: result.unconfirmed,
             total: result.total,
+            locked: result.locked,
             error: undefined,
           },
         }));

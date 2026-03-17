@@ -117,6 +117,7 @@ export interface UtxoBalanceResponse {
   confirmed: number;
   unconfirmed: number;
   total: number;
+  locked?: number;
 }
 
 // Balance response from background - LWS raw format (XMR/WOW)

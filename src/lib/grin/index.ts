@@ -234,11 +234,9 @@ export async function createSendTransaction(
 
   if (hasChange) {
     // Create identifier for change output
-    // Use depth 3 (account/change/index pattern)
-    const changeIdentifier = new Identifier(
-      3,
-      new Uint32Array([0, 0, nextChildIndex, 0])
-    );
+    // NOTE: Identifier constructor only takes 1 arg, must use setValue() for depth + paths
+    const changeIdentifier = new Identifier();
+    changeIdentifier.setValue(3, new Uint32Array([0, 0, nextChildIndex, 0]));
 
     const changeAmountBN = new BigNumber(changeAmount.toString());
 

@@ -180,6 +180,17 @@ export async function handleGrinSignInvoice(
       );
 
       await lockGrinOutputs(userId, result.inputIds, result.slateId);
+
+      // Record change output now — in the invoice flow, the receiver finalizes,
+      // so the sender must record their change output at signing time.
+      if (result.changeOutput) {
+        await recordGrinOutput(userId, {
+          keyId: result.changeOutput.keyId,
+          nChild: result.changeOutput.nChild,
+          amount: Number(result.changeOutput.amount),
+          commitment: result.changeOutput.commitment,
+        }, result.slateId);
+      }
     } catch (backendErr) {
       console.error('[Grin Invoice] Failed to record/lock, rolling back:', backendErr);
       // Best-effort rollback — unlock outputs and cancel transaction

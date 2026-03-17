@@ -4430,10 +4430,15 @@ class Slate {
 								
 								// Check if purpose is send response
 								if(purpose === Slate.COMPACT_SLATE_PURPOSE_SEND_RESPONSE) {
-								
+
+									// Replace initial slate's inputs/outputs with compact data
+									// to avoid duplicating items already copied from the initial slate
+									this.inputs = [];
+									this.outputs = [];
+
 									// Add inputs
 									this.addInputs(inputs, false, outputs["length"]);
-									
+
 									// Add outputs
 									this.addOutputs(outputs, false);
 								}
@@ -4856,12 +4861,17 @@ class Slate {
 								throw "Unsupported slate.";
 							}
 							
+							// Replace initial slate's inputs/outputs with parsed data
+							// to avoid duplicating items already copied from the initial slate
+							this.inputs = [];
+							this.outputs = [];
+
 							// Add inputs
 							this.addInputs(inputs, false, outputs["length"]);
-							
+
 							// Add outputs
 							this.addOutputs(outputs, false);
-						
+
 							// Check if serialized slate's amount isn't supported
 							if("amt" in serializedSlate === true && ((Common.isNumberString(serializedSlate["amt"]) === false && serializedSlate["amt"] instanceof BigNumber === false) || (new BigNumber(serializedSlate["amt"])).isInteger() === false || (new BigNumber(serializedSlate["amt"])).isLessThan(Slate.MINIMUM_AMOUNT) === true)) {
 							

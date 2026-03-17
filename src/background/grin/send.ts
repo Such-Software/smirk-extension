@@ -90,6 +90,18 @@ export async function handleGrinCreateSend(
     try {
       await recordGrinTransaction(userId, result.slate.id, amount, fee, 'send', recipientAddress);
       await lockGrinOutputs(userId, result.inputIds, result.slate.id);
+
+      // Record change output now, before broadcast — if the service worker dies
+      // between broadcast and recording, the change output would be lost forever.
+      // If broadcast later fails, reconciliation will clean up the unconfirmed output.
+      if (result.changeOutput) {
+        await recordGrinOutput(userId, {
+          keyId: result.changeOutput.keyId,
+          nChild: result.changeOutput.nChild,
+          amount: Number(result.changeOutput.amount),
+          commitment: result.changeOutput.commitment,
+        }, result.slate.id);
+      }
     } catch (backendErr) {
       console.error('[Grin] Failed to record/lock, rolling back:', backendErr);
       try {
@@ -285,15 +297,8 @@ export async function handleGrinFinalizeAndBroadcast(
     // Mark inputs as spent
     await spendGrinOutputs(userId, sendContext.slateId);
 
-    // Record change output if any
-    if (sendContext.changeOutput) {
-      await recordGrinOutput(userId, {
-        keyId: sendContext.changeOutput.keyId,
-        nChild: sendContext.changeOutput.nChild,
-        amount: sendContext.changeOutput.amount,
-        commitment: sendContext.changeOutput.commitment,
-      }, sendContext.slateId);
-    }
+    // Change output was already recorded in handleGrinCreateSend (before broadcast)
+    // to prevent loss if the service worker dies between broadcast and recording.
 
     // Update transaction status
     await updateGrinTransactionStatus(userId, sendContext.slateId, 'finalized');

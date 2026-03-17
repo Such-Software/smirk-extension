@@ -205,8 +205,11 @@ export async function createInvoice(
     Crypto.SWITCH_TYPE_REGULAR
   );
 
-  // Use the output blinding factor as our secret key for signing
-  // This is the receiver's contribution to the kernel excess
+  // Use the output blinding factor as our secret key for signing.
+  // The compact SEND_INITIAL format doesn't carry the offset, so we cannot
+  // use a random key + offset adjustment like SRS does. Instead, using outputBlind
+  // directly means the kernel excess will include outputBlind*G, and since the
+  // commitment also uses outputBlind, verifyKernelSums will balance.
   const secretKey = new Uint8Array(outputBlind);
 
   // Generate secret nonce for participant
@@ -558,6 +561,7 @@ export async function signInvoice(
       identifier,
       switchType: Crypto.SWITCH_TYPE_REGULAR,
     });
+
   }
 
   let changeOutputInfo: SignInvoiceResult['changeOutput'] = undefined;
@@ -565,10 +569,9 @@ export async function signInvoice(
 
   // Create change output if needed
   if (hasChange) {
-    const changeIdentifier = new Identifier(
-      3,
-      new Uint32Array([0, 0, nextChildIndex, 0])
-    );
+    // NOTE: Identifier constructor only takes 1 arg, must use setValue() for depth + paths
+    const changeIdentifier = new Identifier();
+    changeIdentifier.setValue(3, new Uint32Array([0, 0, nextChildIndex, 0]));
 
     const changeAmountBN = new BigNumber(changeAmount.toString());
 
@@ -772,7 +775,6 @@ export async function finalizeInvoice(
   const Common = getCommon();
   const Consensus = getConsensus();
   const Slatepack = getSlatepack();
-
   console.log('[finalizeInvoice] Finalizing invoice:', originalInvoice.slateId);
 
   // First, decode the original I1 slatepack to use as initial slate for parsing I2
@@ -867,11 +869,8 @@ export async function finalizeInvoice(
   const amount = BigInt(slate.getAmount().toFixed());
   const fee = BigInt(slate.getFee().toFixed());
 
-  console.log('[finalizeInvoice] Amount:', amount.toString(), 'Fee:', fee.toString());
-  console.log('[finalizeInvoice] Slate reconstructed');
-  console.log('[finalizeInvoice] Inputs:', slate.getInputs?.()?.length);
-  console.log('[finalizeInvoice] Outputs:', slate.getOutputs?.()?.length);
-  console.log('[finalizeInvoice] Participants:', slate.getParticipants?.()?.length);
+  console.log('[finalizeInvoice] Slate reconstructed, inputs:', slate.getInputs?.()?.length,
+    'outputs:', slate.getOutputs?.()?.length, 'participants:', slate.getParticipants?.()?.length);
 
   // Get base fee for verification
   const baseFee = Consensus.getBaseFee(true);

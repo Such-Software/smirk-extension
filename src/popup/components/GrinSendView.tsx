@@ -177,6 +177,7 @@ export function GrinSendView({
       setSendContext(result.sendContext);
       setAmountNanogrin(amountNano);
       console.log('Created send slate:', result.slateId);
+      await copyToClipboard(result.slatepack, showToast, 'Slatepack copied to clipboard');
 
       // Persist state so it survives popup close
       await saveGrinSendState({

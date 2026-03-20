@@ -97,6 +97,7 @@ export function ReceiveView({
         slatepack: inputSlatepack.trim(),
       });
       setOutputSlatepack(result.signedSlatepack);
+      await copyToClipboard(result.signedSlatepack, showToast, 'Signed slatepack copied to clipboard');
 
       // Save to storage so it persists across popup closes
       const pending: GrinPendingReceive = {
@@ -177,6 +178,7 @@ export function ReceiveView({
       };
       await saveGrinPendingInvoice(pending);
       setPendingInvoice(pending);
+      await copyToClipboard(result.slatepack, showToast, 'Invoice copied to clipboard');
     } catch (err) {
       console.error('Failed to create invoice:', err);
       setGrinError(err instanceof Error ? err.message : 'Failed to create invoice');

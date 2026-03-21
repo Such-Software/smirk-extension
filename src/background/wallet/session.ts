@@ -184,6 +184,16 @@ export async function handleUnlockWallet(password: string): Promise<MessageRespo
       // Continue anyway - wallet works offline, just social tips won't work
     }
 
+    // Always re-register LWS addresses on unlock (non-blocking).
+    // This ensures the backend has the correct address even if the wallet
+    // was restored with a different seed while auth was still valid.
+    const authState = await getAuthState();
+    if (authState?.userId) {
+      registerWithLwsFromUnlockedKeys(authState.userId, state)
+        .then(() => console.log('LWS registration verified on unlock'))
+        .catch(err => console.warn('LWS registration on unlock failed (non-fatal):', err));
+    }
+
     return { success: true, data: { unlocked: true } };
   } catch {
     return { success: false, error: 'Invalid password' };
@@ -281,14 +291,6 @@ export async function ensureValidAuth(state: WalletState): Promise<void> {
     }
   }
 
-  // Also register with LWS if we have the view keys unlocked
-  if (userId) {
-    try {
-      await registerWithLwsFromUnlockedKeys(userId, state);
-      console.log('LWS re-registration successful');
-    } catch (err) {
-      console.warn('LWS re-registration failed (non-fatal):', err);
-      // Continue - LWS registration failure shouldn't block wallet use
-    }
-  }
+  // Note: LWS registration is handled separately on every unlock
+  // (not just on re-registration) to catch address changes from restores.
 }

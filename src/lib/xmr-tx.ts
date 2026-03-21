@@ -648,8 +648,8 @@ export async function sendTransaction(
     sweep
   );
 
-  // Broadcast
-  const broadcastResponse = await api.submitLwsTx(asset, txHex);
+  // Broadcast (include recipient info for instant smirk-to-smirk pending detection)
+  const broadcastResponse = await api.submitLwsTx(asset, txHex, recipientAddress, actualAmount, txHash);
   if (broadcastResponse.error || !broadcastResponse.data?.success) {
     throw new Error(
       broadcastResponse.error ||

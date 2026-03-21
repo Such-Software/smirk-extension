@@ -57,7 +57,10 @@ export interface WalletLwsMethods {
 
   submitLwsTx(
     asset: 'xmr' | 'wow',
-    txHex: string
+    txHex: string,
+    recipientAddress?: string,
+    amount?: number,
+    txHash?: string
   ): Promise<ApiResponse<{
     success: boolean;
     status: string;
@@ -134,10 +137,16 @@ export function createWalletLwsMethods(client: ApiClient): WalletLwsMethods {
       });
     },
 
-    async submitLwsTx(asset, txHex) {
+    async submitLwsTx(asset, txHex, recipientAddress?, amount?, txHash?) {
       return request('/wallet/lws/submit', {
         method: 'POST',
-        body: JSON.stringify({ asset, tx_hex: txHex }),
+        body: JSON.stringify({
+          asset,
+          tx_hex: txHex,
+          recipient_address: recipientAddress,
+          amount,
+          tx_hash: txHash,
+        }),
       });
     },
 

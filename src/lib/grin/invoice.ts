@@ -495,8 +495,10 @@ export async function signInvoice(
     }
 
     if (totalSelected < requiredAmount) {
+      const haveGrin = Number(totalSelected) / 1_000_000_000;
+      const needGrin = Number(requiredAmount) / 1_000_000_000;
       throw new Error(
-        `Insufficient balance: have ${totalSelected}, need ${requiredAmount}`
+        `Insufficient balance: have ${haveGrin.toFixed(4)} GRIN, need ${needGrin.toFixed(4)} GRIN`
       );
     }
 

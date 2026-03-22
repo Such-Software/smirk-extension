@@ -153,7 +153,10 @@ export async function createSendTransaction(
     }
 
     if (totalSelected < requiredAmount) {
-      throw new Error(`Insufficient balance: have ${totalSelected}, need ${requiredAmount} (amount: ${amount}, fee: ${fee})`);
+      const haveGrin = Number(totalSelected) / 1_000_000_000;
+      const needGrin = Number(requiredAmount) / 1_000_000_000;
+      const feeGrin = Number(fee) / 1_000_000_000;
+      throw new Error(`Insufficient balance: have ${haveGrin.toFixed(4)} GRIN, need ${needGrin.toFixed(4)} GRIN (amount + fee ${feeGrin.toFixed(4)})`);
     }
 
     // Check if we need more inputs than estimated

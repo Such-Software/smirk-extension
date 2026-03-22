@@ -123,6 +123,7 @@ export function ReceiveView({
     setPendingReceive(null);
     setInputSlatepack('');
     setOutputSlatepack('');
+    onBack();
   };
 
   // Copy output slatepack to clipboard

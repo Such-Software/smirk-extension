@@ -14,13 +14,17 @@ import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from '@scure/b
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { HDKey } from '@scure/bip32';
 import { sha256 } from '@noble/hashes/sha256';
+import { hmac } from '@noble/hashes/hmac';
+import { sha512 } from '@noble/hashes/sha512';
+import { keccak_256 } from '@noble/hashes/sha3';
 import { ed25519 } from '@noble/curves/ed25519';
 
 // BIP44 coin types (from SLIP-0044)
 const COIN_TYPES = {
   btc: 0,
   ltc: 2,
-  // XMR/WOW/Grin don't use standard BIP44 - we derive custom
+  xmr: 128,
+  wow: 2086,
 } as const;
 
 /** Grin key set - ed25519 for slatepack addresses */
@@ -202,6 +206,92 @@ function scalarToBytes(scalar: bigint): Uint8Array {
   return bytes;
 }
 
+// =============================================================================
+// SLIP-10 ed25519 HD Key Derivation (BIP44 standard for Monero)
+// =============================================================================
+
+/**
+ * SLIP-10 ed25519 hierarchical deterministic key derivation.
+ * Ref: https://github.com/satoshilabs/slips/blob/master/slip-0010.md
+ *
+ * Ed25519 SLIP-10 only supports hardened derivation (all indices are hardened).
+ * The path components should be raw indices (0, 44, 128) — hardening is applied automatically.
+ *
+ * @param seed - BIP39 seed (64 bytes)
+ * @param path - Array of path components, e.g. [44, 128, 0] for m/44'/128'/0'
+ * @returns 32-byte private key at the derived path
+ */
+function slip10DeriveEd25519(seed: Uint8Array, path: number[]): Uint8Array {
+  // Master key: HMAC-SHA512("ed25519 seed", seed)
+  let I = hmac(sha512, new TextEncoder().encode('ed25519 seed'), seed);
+  let key = I.slice(0, 32);
+  let chainCode = I.slice(32, 64);
+
+  // Derive each path component (hardened only for ed25519)
+  for (const index of path) {
+    const hardenedIndex = (index | 0x80000000) >>> 0; // Set hardened bit
+    const data = new Uint8Array(37); // 0x00 + key(32) + index(4)
+    data[0] = 0x00;
+    data.set(key, 1);
+    data[33] = (hardenedIndex >>> 24) & 0xff;
+    data[34] = (hardenedIndex >>> 16) & 0xff;
+    data[35] = (hardenedIndex >>> 8) & 0xff;
+    data[36] = hardenedIndex & 0xff;
+
+    I = hmac(sha512, chainCode, data);
+    key = I.slice(0, 32);
+    chainCode = I.slice(32, 64);
+  }
+
+  return key;
+}
+
+/**
+ * Derives Monero/Wownero keys using standard BIP44/SLIP-10 derivation.
+ *
+ * This matches Cake Wallet, Exodus, and other standard wallets:
+ * - Path: m/44'/128'/0' (XMR) or m/44'/2086'/0' (WOW)
+ * - View key: Keccak-256(spend_key) mod l (Monero standard Hs() function)
+ *
+ * @param masterSeed - BIP39 seed (64 bytes)
+ * @param coinType - SLIP-44 coin type (128 for XMR, 2086 for WOW)
+ */
+function deriveBip44MoneroKeys(
+  masterSeed: Uint8Array,
+  coinType: number
+): CryptonoteKeys {
+  // SLIP-10 ed25519 derivation: m/44'/coinType'/0'
+  const rawKey = slip10DeriveEd25519(masterSeed, [44, coinType, 0]);
+
+  // Reduce to valid ed25519 scalar
+  const spendKeyScalar = bytesToScalar(rawKey);
+  const privateSpendKey = scalarToBytes(spendKeyScalar);
+
+  // View key: Keccak-256(spend_key) mod l — Monero standard Hs() function
+  const viewKeySeed = keccak_256(privateSpendKey);
+  const viewKeyScalar = bytesToScalar(viewKeySeed);
+  const privateViewKey = scalarToBytes(viewKeyScalar);
+
+  // Public keys via ed25519 scalar multiplication
+  const publicSpendKey = ed25519.ExtendedPoint.BASE.multiply(
+    spendKeyScalar
+  ).toRawBytes();
+  const publicViewKey = ed25519.ExtendedPoint.BASE.multiply(
+    viewKeyScalar
+  ).toRawBytes();
+
+  return {
+    privateSpendKey,
+    privateViewKey,
+    publicSpendKey,
+    publicViewKey,
+  };
+}
+
+// =============================================================================
+// Legacy Grin Key Derivation (v1 — custom, will be replaced)
+// =============================================================================
+
 /**
  * Derives Grin keys from master seed.
  *
@@ -229,16 +319,34 @@ function deriveGrinKey(masterSeed: Uint8Array): GrinKeys {
   return { privateKey, publicKey };
 }
 
+/** Derivation version: 1 = legacy custom, 2 = standard BIP44/SLIP-10 */
+export type DerivationVersion = 1 | 2;
+
 /**
  * Derives all wallet keys from a mnemonic phrase.
+ *
+ * @param mnemonic - BIP39 12-word mnemonic
+ * @param passphrase - Optional BIP39 passphrase
+ * @param version - Derivation version (1 = legacy custom, 2 = BIP44/SLIP-10 standard)
  */
-export function deriveAllKeys(mnemonic: string, passphrase = ''): DerivedKeys {
+export function deriveAllKeys(mnemonic: string, passphrase = '', version: DerivationVersion = 1): DerivedKeys {
   if (!isValidMnemonic(mnemonic)) {
     throw new Error('Invalid mnemonic phrase');
   }
 
   const masterSeed = mnemonicToSeed(mnemonic, passphrase);
 
+  if (version === 2) {
+    return {
+      btc: deriveBip44Key(masterSeed, COIN_TYPES.btc),
+      ltc: deriveBip44Key(masterSeed, COIN_TYPES.ltc),
+      xmr: deriveBip44MoneroKeys(masterSeed, COIN_TYPES.xmr),
+      wow: deriveBip44MoneroKeys(masterSeed, COIN_TYPES.wow),
+      grin: deriveGrinKey(masterSeed), // Grin WASM wallet handles its own derivation
+    };
+  }
+
+  // v1: legacy custom derivation (for existing wallets)
   return {
     btc: deriveBip44Key(masterSeed, COIN_TYPES.btc),
     ltc: deriveBip44Key(masterSeed, COIN_TYPES.ltc),
@@ -251,12 +359,21 @@ export function deriveAllKeys(mnemonic: string, passphrase = ''): DerivedKeys {
 /**
  * Gets the derivation info for display/documentation.
  */
-export function getDerivationInfo(): Record<string, string> {
+export function getDerivationInfo(version: DerivationVersion = 2): Record<string, string> {
+  if (version === 2) {
+    return {
+      btc: "m/44'/0'/0'/0/0 (BIP44 standard)",
+      ltc: "m/44'/2'/0'/0/0 (BIP44 standard)",
+      xmr: "m/44'/128'/0' (SLIP-10 ed25519, Cake Wallet compatible)",
+      wow: "m/44'/2086'/0' (SLIP-10 ed25519)",
+      grin: 'MWC WASM wallet derivation',
+    };
+  }
   return {
     btc: "m/44'/0'/0'/0/0 (BIP44 standard)",
     ltc: "m/44'/2'/0'/0/0 (BIP44 standard)",
-    xmr: 'SHA256(master || "smirk:xmr:v1") - custom derivation',
-    wow: 'SHA256(master || "smirk:wow:v1") - custom derivation',
+    xmr: 'SHA256(master || "smirk:xmr:v1") - legacy custom',
+    wow: 'SHA256(master || "smirk:wow:v1") - legacy custom',
     grin: 'SHA256(master || "smirk:grin:v1") - custom derivation',
   };
 }

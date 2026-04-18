@@ -441,12 +441,18 @@ describe('Utility Functions', () => {
       expect(info.ltc).toContain('BIP44');
     });
 
-    it('XMR/WOW/Grin have custom derivation', () => {
-      const info = getDerivationInfo();
+    it('v2 shows SLIP-10 for XMR/WOW', () => {
+      const info = getDerivationInfo(2);
 
-      expect(info.xmr).toContain('custom');
-      expect(info.wow).toContain('custom');
-      expect(info.grin).toContain('custom');
+      expect(info.xmr).toContain('SLIP-10');
+      expect(info.wow).toContain('SLIP-10');
+    });
+
+    it('v1 shows custom derivation for XMR/WOW', () => {
+      const info = getDerivationInfo(1);
+
+      expect(info.xmr).toContain('legacy');
+      expect(info.wow).toContain('legacy');
     });
   });
 });
@@ -476,6 +482,78 @@ describe('Cross-Asset Key Isolation', () => {
     expect(bytesToHex(keys1.btc.privateKey)).not.toBe(bytesToHex(keys2.btc.privateKey));
     expect(bytesToHex(keys1.xmr.privateSpendKey)).not.toBe(bytesToHex(keys2.xmr.privateSpendKey));
     expect(bytesToHex(keys1.grin.privateKey)).not.toBe(bytesToHex(keys2.grin.privateKey));
+  });
+});
+
+// =============================================================================
+// Snapshot Tests: Freeze derivation outputs to detect silent changes
+// =============================================================================
+
+describe('Derivation Snapshots (v1 legacy)', () => {
+  const keys = deriveAllKeys(TEST_MNEMONIC, '', 1);
+
+  it('SNAPSHOT: v1 XMR spend key is stable', () => {
+    expect(bytesToHex(keys.xmr.privateSpendKey)).toMatchInlineSnapshot(`"256b07fd2e0d5fb5d6509f63fbf8e7a8c244e98cab8e1551989cb283a6fad90d"`);
+  });
+
+  it('SNAPSHOT: v1 XMR view key is stable', () => {
+    expect(bytesToHex(keys.xmr.privateViewKey)).toMatchInlineSnapshot(`"f9d7eed6d731e7510e16fa679606ace9bca73607dc95bcd97d6d71b69c40e204"`);
+  });
+
+  it('SNAPSHOT: v1 WOW spend key is stable', () => {
+    expect(bytesToHex(keys.wow.privateSpendKey)).toMatchInlineSnapshot(`"798923ab09b7da721292c75bdaa40bced6f1b83e9159dbaf82475a97a00ee104"`);
+  });
+});
+
+describe('BIP44/SLIP-10 Derivation (v2 standard)', () => {
+  const v1 = deriveAllKeys(TEST_MNEMONIC, '', 1);
+  const v2 = deriveAllKeys(TEST_MNEMONIC, '', 2);
+
+  it('v2 XMR keys differ from v1', () => {
+    expect(bytesToHex(v2.xmr.privateSpendKey)).not.toBe(bytesToHex(v1.xmr.privateSpendKey));
+    expect(bytesToHex(v2.xmr.privateViewKey)).not.toBe(bytesToHex(v1.xmr.privateViewKey));
+  });
+
+  it('v2 WOW keys differ from v1', () => {
+    expect(bytesToHex(v2.wow.privateSpendKey)).not.toBe(bytesToHex(v1.wow.privateSpendKey));
+  });
+
+  it('v2 BTC keys are same as v1 (BIP44 unchanged)', () => {
+    expect(bytesToHex(v2.btc.privateKey)).toBe(bytesToHex(v1.btc.privateKey));
+  });
+
+  it('v2 LTC keys are same as v1 (BIP44 unchanged)', () => {
+    expect(bytesToHex(v2.ltc.privateKey)).toBe(bytesToHex(v1.ltc.privateKey));
+  });
+
+  it('v2 XMR keys are 32 bytes and valid scalars', () => {
+    expect(v2.xmr.privateSpendKey.length).toBe(32);
+    expect(v2.xmr.privateViewKey.length).toBe(32);
+    const l = 2n ** 252n + 27742317777372353535851937790883648493n;
+    expect(bytesToBigInt(v2.xmr.privateSpendKey)).toBeLessThan(l);
+    expect(bytesToBigInt(v2.xmr.privateViewKey)).toBeLessThan(l);
+  });
+
+  it('v2 is deterministic', () => {
+    const v2b = deriveAllKeys(TEST_MNEMONIC, '', 2);
+    expect(bytesToHex(v2.xmr.privateSpendKey)).toBe(bytesToHex(v2b.xmr.privateSpendKey));
+    expect(bytesToHex(v2.wow.privateSpendKey)).toBe(bytesToHex(v2b.wow.privateSpendKey));
+  });
+
+  it('SNAPSHOT: v2 XMR spend key is stable', () => {
+    expect(bytesToHex(v2.xmr.privateSpendKey)).toMatchInlineSnapshot(`"8f2d521d4334f4d5d174c47aacb346e7633516416fae089d74ecfd0c389a6b08"`);
+  });
+
+  it('SNAPSHOT: v2 XMR view key is stable', () => {
+    expect(bytesToHex(v2.xmr.privateViewKey)).toMatchInlineSnapshot(`"84b0087a63854856686f80596a5a1a6090795b4d1311139173262170d7e7180f"`);
+  });
+
+  it('SNAPSHOT: v2 WOW spend key is stable', () => {
+    expect(bytesToHex(v2.wow.privateSpendKey)).toMatchInlineSnapshot(`"3c79c0c51f9b2b8b7d7d26e6e3cca68c1020037a87b2e89c346f1cd857d4cf04"`);
+  });
+
+  it('XMR and WOW use different SLIP-44 coin types', () => {
+    expect(bytesToHex(v2.xmr.privateSpendKey)).not.toBe(bytesToHex(v2.wow.privateSpendKey));
   });
 });
 

@@ -201,7 +201,8 @@ export async function handleUnlockWallet(password: string): Promise<MessageRespo
 
         // Migrate: derive and store Grin key if missing
         if (!state.keys.grin) {
-          const derivedKeysAll = deriveAllKeys(unlockedMnemonic);
+          const walletVersion = state.derivationVersion || 1;
+          const derivedKeysAll = deriveAllKeys(unlockedMnemonic, '', walletVersion);
           state.keys.grin = {
             asset: 'grin',
             publicKey: bytesToHex(derivedKeysAll.grin.publicKey),

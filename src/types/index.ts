@@ -54,6 +54,8 @@ export interface WalletState {
   encryptedBip39Seed?: string;
   // PBKDF2 iteration count (undefined = legacy 100K, new wallets use 600K)
   pbkdf2Iterations?: number;
+  // Key derivation version (undefined/1 = legacy custom, 2 = BIP44/SLIP-10 standard)
+  derivationVersion?: 1 | 2;
   // Whether user has confirmed backup
   backupConfirmed?: boolean;
   // Wallet creation info (timestamp + block heights for efficient sync)

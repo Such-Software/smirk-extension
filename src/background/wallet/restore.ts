@@ -47,27 +47,30 @@ export async function handleRestoreWallet(
   }
 
   // Check if this wallet was previously created in Smirk
+  // Try v2 keys first (BIP44/SLIP-10), fall back to v1 (legacy custom)
   const fingerprint = computeSeedFingerprint(mnemonic);
-  const derivedKeys = deriveAllKeys(mnemonic);
 
-  // Build keys array for restore check
-  const keysToCheck: Array<{ asset: string; publicKey: string; publicSpendKey?: string }> = [
-    { asset: 'btc', publicKey: bytesToHex(getPublicKey(derivedKeys.btc.privateKey)) },
-    { asset: 'ltc', publicKey: bytesToHex(getPublicKey(derivedKeys.ltc.privateKey)) },
-    {
-      asset: 'xmr',
-      publicKey: bytesToHex(derivedKeys.xmr.publicSpendKey),
-      publicSpendKey: bytesToHex(derivedKeys.xmr.publicViewKey),
-    },
-    {
-      asset: 'wow',
-      publicKey: bytesToHex(derivedKeys.wow.publicSpendKey),
-      publicSpendKey: bytesToHex(derivedKeys.wow.publicViewKey),
-    },
-    { asset: 'grin', publicKey: bytesToHex(derivedKeys.grin.publicKey) },
-  ];
+  function buildKeysToCheck(version: 1 | 2) {
+    const dk = deriveAllKeys(mnemonic, '', version);
+    return [
+      { asset: 'btc', publicKey: bytesToHex(getPublicKey(dk.btc.privateKey)) },
+      { asset: 'ltc', publicKey: bytesToHex(getPublicKey(dk.ltc.privateKey)) },
+      { asset: 'xmr', publicKey: bytesToHex(dk.xmr.publicSpendKey), publicSpendKey: bytesToHex(dk.xmr.publicViewKey) },
+      { asset: 'wow', publicKey: bytesToHex(dk.wow.publicSpendKey), publicSpendKey: bytesToHex(dk.wow.publicViewKey) },
+      { asset: 'grin', publicKey: bytesToHex(dk.grin.publicKey) },
+    ];
+  }
 
-  const checkResult = await api.checkRestore({ fingerprint, keys: keysToCheck });
+  // Try v2 first
+  let checkResult = await api.checkRestore({ fingerprint, keys: buildKeysToCheck(2) });
+  let restoredVersion: 1 | 2 = 2;
+
+  // If v2 keys don't match, try v1 (wallet was created before migration)
+  if (checkResult.data && checkResult.data.exists && checkResult.data.keysValid === false) {
+    console.log('v2 keys did not match, trying v1 legacy derivation...');
+    checkResult = await api.checkRestore({ fingerprint, keys: buildKeysToCheck(1) });
+    restoredVersion = 1;
+  }
 
   // REQUIRE successful check - don't allow restore if we can't verify
   if (checkResult.error) {
@@ -115,7 +118,8 @@ export async function handleRestoreWallet(
   console.log('Restore heights from backend:', restoreHeights);
 
   // Pass isRestore=true and original heights so LWS registration uses stored heights
-  const result = await createWalletFromMnemonic(mnemonic, password, true, true, restoreHeights);
+  // Use the derivation version that matched during restore check
+  const result = await createWalletFromMnemonic(mnemonic, password, true, true, restoreHeights, restoredVersion);
 
   // Clear onboarding state on success
   if (result.success) {

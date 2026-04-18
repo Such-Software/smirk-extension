@@ -149,8 +149,9 @@ export async function handleChangePassword(
       state.encryptedBip39Seed = encryptWithNewKey(bip39Seed);
     }
 
-    // Re-encrypt all keys
-    const derivedKeys = deriveAllKeys(mnemonic);
+    // Re-encrypt all keys (use the wallet's derivation version)
+    const walletVersion = state.derivationVersion || 1;
+    const derivedKeys = deriveAllKeys(mnemonic, '', walletVersion);
 
     for (const asset of Object.keys(state.keys) as AssetType[]) {
       const key = state.keys[asset];

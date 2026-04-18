@@ -194,10 +194,13 @@ export async function createWalletFromMnemonic(
   password: string,
   backupConfirmed: boolean,
   isRestore: boolean = false,
-  restoreHeights?: RestoreHeights
+  restoreHeights?: RestoreHeights,
+  derivationVersion: 1 | 2 = 2
 ): Promise<MessageResponse<{ created: boolean; assets: AssetType[] }>> {
-  // Derive all keys from mnemonic
-  const derivedKeys = deriveAllKeys(mnemonic) as DerivedKeys;
+  // Derive all keys from mnemonic using specified version
+  // New wallets use v2 (BIP44/SLIP-10 standard)
+  // Restore may use v1 if wallet was created before migration
+  const derivedKeys = deriveAllKeys(mnemonic, '', derivationVersion) as DerivedKeys;
 
   // Derive encryption key ONCE and reuse for all keys
   // Uses 600K PBKDF2 iterations (OWASP recommendation)
@@ -263,6 +266,7 @@ export async function createWalletFromMnemonic(
     seedSalt: saltHex,
     encryptedBip39Seed,
     pbkdf2Iterations: PBKDF2_ITERATIONS,
+    derivationVersion,
     backupConfirmed,
     walletBirthday,
   };

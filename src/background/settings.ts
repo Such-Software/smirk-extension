@@ -63,7 +63,7 @@ export async function handleUpdateSettings(
     setCachedAutoLockMinutes(settings.autoLockMinutes);
     // Restart timer with new setting
     if (isUnlocked) {
-      resetAutoLockTimer();
+      await resetAutoLockTimer();
     }
   }
 
@@ -86,7 +86,7 @@ export async function handleResetAutoLockTimer(): Promise<MessageResponse<{ rese
   if (!isUnlocked) {
     return { success: true, data: { reset: false } };
   }
-  resetAutoLockTimer();
+  await resetAutoLockTimer();
   return { success: true, data: { reset: true } };
 }
 

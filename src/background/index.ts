@@ -513,7 +513,7 @@ async function initializeBackground(): Promise<void> {
     const existingAlarm = await alarms.get(AUTO_LOCK_ALARM);
     if (!existingAlarm && cachedAutoLockMinutes && cachedAutoLockMinutes > 0) {
       console.log('[AutoLock] No existing alarm found after restore, creating new one');
-      resetAutoLockTimer();
+      await resetAutoLockTimer();
     } else if (existingAlarm) {
       console.log('[AutoLock] Existing alarm found, scheduled for:', new Date(existingAlarm.scheduledTime));
     }

@@ -98,9 +98,8 @@ function setupMessageRelay() {
       });
 
       // Send response back to injected script.
-      // Uses '*' targetOrigin because the extension runs on any website —
-      // window.location.origin could be used as future hardening if it
-      // doesn't break cross-origin iframe scenarios.
+      // Use window.location.origin to prevent leaking data to cross-origin iframes.
+      const targetOrigin = window.location.origin;
       if (response?.success) {
         window.postMessage(
           {
@@ -108,7 +107,7 @@ function setupMessageRelay() {
             id,
             payload: response.data,
           },
-          '*'
+          targetOrigin
         );
       } else {
         window.postMessage(
@@ -117,7 +116,7 @@ function setupMessageRelay() {
             id,
             error: response?.error || 'Unknown error',
           },
-          '*'
+          targetOrigin
         );
       }
     } catch (err) {
@@ -128,7 +127,7 @@ function setupMessageRelay() {
           id,
           error: err instanceof Error ? err.message : 'Unknown error',
         },
-        '*'
+        window.location.origin
       );
     }
   });
@@ -164,10 +163,15 @@ interface ClaimPageData {
   fragmentKey?: string;
 }
 
+/** Only detect claim URLs on our own domain */
+const CLAIM_DOMAINS = ['smirk.cash', 'www.smirk.cash'];
+
 /**
  * Extracts claim data from the current URL.
+ * Only matches on smirk.cash to avoid injecting claim UI on unrelated sites.
  */
 function extractClaimData(): ClaimPageData | null {
+  if (!CLAIM_DOMAINS.includes(window.location.hostname)) return null;
   const match = window.location.pathname.match(CLAIM_URL_PATTERN);
   if (!match) return null;
 

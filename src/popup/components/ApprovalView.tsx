@@ -99,25 +99,13 @@ export function ApprovalView({ requestId, onComplete }: ApprovalViewProps) {
 
   return (
     <div class="approval-container">
-      {/* Site Info */}
+      {/* Site Info — origin is primary (trustworthy), siteName is secondary (spoofable) */}
       <div class="approval-site">
-        {approval.favicon ? (
-          <img
-            src={approval.favicon}
-            alt=""
-            class="approval-favicon"
-            onError={(e) => {
-              (e.target as HTMLImageElement).style.display = 'none';
-            }}
-          />
-        ) : (
-          <div class="approval-favicon-placeholder">
-            {approval.origin.charAt(8).toUpperCase()}
-          </div>
-        )}
         <div class="approval-site-info">
-          <div class="approval-site-name">{approval.siteName}</div>
-          <div class="approval-site-origin">{approval.origin}</div>
+          <div class="approval-site-origin">{new URL(approval.origin).hostname}</div>
+          {approval.siteName && approval.siteName !== new URL(approval.origin).hostname && (
+            <div class="approval-site-name">{approval.siteName}</div>
+          )}
         </div>
       </div>
 

@@ -896,16 +896,17 @@ input[type="checkbox"] {
 }
 
 .approval-site-name {
-  font-weight: 600;
-  font-size: 14px;
+  font-size: 12px;
+  color: var(--color-text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .approval-site-origin {
-  font-size: 12px;
-  color: var(--color-text-muted);
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--color-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

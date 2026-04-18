@@ -828,10 +828,18 @@ async function handleSmirkRequestPayment(
     return { success: false, error: `Invalid asset: ${asset}` };
   }
 
-  // Validate amount
+  // Validate amount — reject non-numeric, negative, zero, Infinity, NaN, scientific notation
+  if (typeof amount !== 'string' || !/^\d+(\.\d+)?$/.test(amount)) {
+    return { success: false, error: 'Amount must be a valid decimal number' };
+  }
   const numAmount = Number(amount);
-  if (isNaN(numAmount) || numAmount <= 0) {
-    return { success: false, error: 'Amount must be a positive number' };
+  if (!Number.isFinite(numAmount) || numAmount <= 0) {
+    return { success: false, error: 'Amount must be a positive finite number' };
+  }
+  // Check atomic unit precision won't overflow safe integer range
+  const maxAtomicMultiplier = (asset === 'btc' || asset === 'ltc') ? 1e8 : 1e12;
+  if (numAmount * maxAtomicMultiplier > Number.MAX_SAFE_INTEGER) {
+    return { success: false, error: 'Amount too large' };
   }
 
   // Open approval popup with payment details
@@ -862,8 +870,9 @@ async function executePayment(
     // Convert human amount to satoshis
     const satoshis = Math.round(Number(amount) * 1e8);
 
-    // Use a reasonable default fee rate (will be refined in future)
-    const feeRate = asset === 'btc' ? 2 : 1; // sat/vB
+    // Get fee estimate from backend
+    const feeResult = await api.estimateFee(asset);
+    const feeRate = feeResult.data?.normal ?? (asset === 'btc' ? 2 : 1); // fallback if estimation fails
 
     const result = await handleSendTx(asset, address, satoshis, feeRate);
     if (!result.success) {

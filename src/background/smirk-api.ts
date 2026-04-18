@@ -40,6 +40,7 @@ import { handleClaimPublicTip } from './social';
 // Static imports — import() is blocked in Chrome MV3 service workers
 import { handleGetAddresses, getAddressForAsset } from './wallet';
 import { handleSendTx } from './send';
+import { api } from '@/lib/api';
 import { sendTransaction as sendXmrTransaction, type XmrAsset } from '@/lib/xmr-tx';
 import { bytesToHex } from '@/lib/crypto';
 

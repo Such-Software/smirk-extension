@@ -423,24 +423,9 @@ class Seed {
 											// Securely clear raw key
 											rawKey.fill(0);
 											
-											// Initialize path
-											var path = new Uint32Array([
-											
-												// Purpose
-												Seed.BIP44_PURPOSE | Identifier.PATH_HARDENED_MASK,
-												
-												// Coin type
-												Consensus.BIP44_COIN_TYPE | Identifier.PATH_HARDENED_MASK,
-												
-												// Account
-												Seed.BIP44_ACCOUNT | Identifier.PATH_HARDENED_MASK,
-												
-												// Change
-												0,
-												
-												// Address index
-												0
-											]);
+											// Initialize path — matches grin-wallet standard: m/0/0/0/0/0
+											// (non-hardened, compatible with grin-wallet and Grim)
+											var path = new Uint32Array([0, 0, 0, 0, 0]);
 											
 											// Return deriving child key at the path from the extended private key
 											return Crypto.deriveChildKey(extendedPrivateKey, path, true).then(function(childKey) {

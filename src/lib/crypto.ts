@@ -265,10 +265,11 @@ function bitcoinMessageHash(message: string): Uint8Array {
 }
 
 /**
- * Sign a message using Bitcoin message signing format.
+ * Sign a message using BIP-137 Bitcoin message signing format.
  *
- * Returns compact signature (r || s) as hex string (128 chars).
- * This format is compatible with the backend's verify_bitcoin_signature.
+ * Returns Base64-encoded signature: byte(header) || r (32 bytes) || s (32 bytes)
+ * Header byte = 27 + recovery + 4 (compressed key flag)
+ * This is the standard format used by Bitcoin Core, Electrum, and other wallets.
  *
  * @param message - The message to sign
  * @param privateKey - 32-byte secp256k1 private key
@@ -279,18 +280,23 @@ export function signBitcoinMessage(
 ): string {
   const msgHash = bitcoinMessageHash(message);
 
-  // Sign the hash using secp256k1
-  // @noble/curves returns a Signature object with r and s
   const signature = secp256k1.sign(msgHash, privateKey, {
-    lowS: true, // Ensure low-S for malleability protection
+    lowS: true,
   });
 
-  // Get raw r and s values as 32-byte arrays
-  const r = signature.r.toString(16).padStart(64, '0');
-  const s = signature.s.toString(16).padStart(64, '0');
+  // BIP-137 header: 27 + recovery + 4 (compressed pubkey)
+  const headerByte = 27 + signature.recovery + 4;
 
-  // Return compact format (r || s) as hex
-  return r + s;
+  // Build 65-byte compact signature: header || r || s
+  const compactSig = new Uint8Array(65);
+  compactSig[0] = headerByte;
+  const rBytes = hexToBytes(signature.r.toString(16).padStart(64, '0'));
+  const sBytes = hexToBytes(signature.s.toString(16).padStart(64, '0'));
+  compactSig.set(rBytes, 1);
+  compactSig.set(sBytes, 33);
+
+  // Return standard Base64 encoding
+  return btoa(String.fromCharCode(...compactSig));
 }
 
 // ============================================================================

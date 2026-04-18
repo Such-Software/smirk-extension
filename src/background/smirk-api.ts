@@ -607,7 +607,7 @@ async function signMessageWithAllKeys(message: string): Promise<Array<{
    * @returns The signature (64 bytes: R || s)
    */
   function ed25519SignWithScalar(
-    msgHash: Uint8Array,
+    message: Uint8Array,
     privateScalar: Uint8Array,
     publicKeyBytes: Uint8Array
   ): Uint8Array {
@@ -617,9 +617,9 @@ async function signMessageWithAllKeys(message: string): Promise<Array<{
     // Generate deterministic nonce: r = SHA512(SHA512(a) || message) mod L
     // Using double-hash of scalar as prefix for nonce generation
     const scalarHash = sha512(privateScalar);
-    const nonceInput = new Uint8Array(scalarHash.length + msgHash.length);
+    const nonceInput = new Uint8Array(scalarHash.length + message.length);
     nonceInput.set(scalarHash);
-    nonceInput.set(msgHash, scalarHash.length);
+    nonceInput.set(message, scalarHash.length);
     const rHash = sha512(nonceInput);
     const r = mod(bytesToBigInt(rHash), ED25519_ORDER);
 
@@ -627,11 +627,11 @@ async function signMessageWithAllKeys(message: string): Promise<Array<{
     const R = ed25519.ExtendedPoint.BASE.multiply(r);
     const RBytes = R.toRawBytes();
 
-    // k = SHA512(R || A || message) mod L
-    const kInput = new Uint8Array(RBytes.length + publicKeyBytes.length + msgHash.length);
+    // k = SHA512(R || A || message) mod L  (RFC 8032 standard)
+    const kInput = new Uint8Array(RBytes.length + publicKeyBytes.length + message.length);
     kInput.set(RBytes);
     kInput.set(publicKeyBytes, RBytes.length);
-    kInput.set(msgHash, RBytes.length + publicKeyBytes.length);
+    kInput.set(message, RBytes.length + publicKeyBytes.length);
     const kHash = sha512(kInput);
     const k = mod(bytesToBigInt(kHash), ED25519_ORDER);
 
@@ -673,37 +673,32 @@ async function signMessageWithAllKeys(message: string): Promise<Array<{
   }
 
   /**
-   * Create Ed25519 message hash (SHA256 of the message).
+   * Encode message string to bytes for Ed25519 signing.
+   * Uses raw UTF-8 bytes (standard RFC 8032 — no pre-hashing).
    */
-  function ed25519MessageHash(msg: string): Uint8Array {
-    const encoder = new TextEncoder();
-    return sha256(encoder.encode(msg));
+  function ed25519MessageBytes(msg: string): Uint8Array {
+    return new TextEncoder().encode(msg);
   }
 
-  // Sign with BTC key (ECDSA secp256k1)
+  // BIP-137 Bitcoin message signature: Base64(header || r || s)
+  // header = 27 + recovery + 4 (compressed key)
+  function signBip137(msg: string, privateKey: Uint8Array): string {
+    const msgHash = bitcoinMessageHash(msg);
+    const sig = secp256k1.sign(msgHash, privateKey, { lowS: true });
+    const headerByte = 27 + sig.recovery + 4;
+    const compact = new Uint8Array(65);
+    compact[0] = headerByte;
+    compact.set(sig.toCompactRawBytes(), 1);
+    return btoa(String.fromCharCode(...compact));
+  }
+
+  // Sign with BTC key (ECDSA secp256k1, BIP-137 format)
   if (unlockedKeys.has('btc') && state.keys.btc) {
     try {
       const privateKey = unlockedKeys.get('btc')!;
-      // Verify public key matches private key
-      const derivedPubKey = secp256k1.getPublicKey(privateKey, true); // compressed
-      const derivedPubKeyHex = toHex(derivedPubKey);
-      console.log('[SignMessage] BTC stored pubkey:', state.keys.btc.publicKey);
-      console.log('[SignMessage] BTC derived pubkey:', derivedPubKeyHex);
-      console.log('[SignMessage] BTC pubkeys match:', state.keys.btc.publicKey === derivedPubKeyHex);
-
-      const msgHash = bitcoinMessageHash(message);
-      console.log('[SignMessage] BTC message hash:', toHex(msgHash));
-      console.log('[SignMessage] BTC message length:', message.length);
-      const sig = secp256k1.sign(msgHash, privateKey);
-      console.log('[SignMessage] BTC signature:', sig.toCompactHex());
-
-      // Also verify signature locally (use raw bytes for verify)
-      const isValidLocally = secp256k1.verify(sig.toCompactRawBytes(), msgHash, derivedPubKey);
-      console.log('[SignMessage] BTC local verify:', isValidLocally);
-
       signatures.push({
         asset: 'btc',
-        signature: sig.toCompactHex(),
+        signature: signBip137(message, privateKey),
         publicKey: state.keys.btc.publicKey,
       });
     } catch (err) {
@@ -712,15 +707,13 @@ async function signMessageWithAllKeys(message: string): Promise<Array<{
     }
   }
 
-  // Sign with LTC key (ECDSA secp256k1, same format as BTC)
+  // Sign with LTC key (ECDSA secp256k1, BIP-137 format)
   if (unlockedKeys.has('ltc') && state.keys.ltc) {
     try {
       const privateKey = unlockedKeys.get('ltc')!;
-      const msgHash = bitcoinMessageHash(message);
-      const sig = secp256k1.sign(msgHash, privateKey);
       signatures.push({
         asset: 'ltc',
-        signature: sig.toCompactHex(),
+        signature: signBip137(message, privateKey),
         publicKey: state.keys.ltc.publicKey,
       });
     } catch (err) {
@@ -736,8 +729,8 @@ async function signMessageWithAllKeys(message: string): Promise<Array<{
       const privateKey = unlockedKeys.get('xmr')!;
       const publicKeyHex = state.keys.xmr.publicSpendKey || state.keys.xmr.publicKey;
       const publicKeyBytes = fromHex(publicKeyHex);
-      const msgHash = ed25519MessageHash(message);
-      const sig = ed25519SignWithScalar(msgHash, privateKey, publicKeyBytes);
+      const msgBytes = ed25519MessageBytes(message);
+      const sig = ed25519SignWithScalar(msgBytes, privateKey, publicKeyBytes);
       signatures.push({
         asset: 'xmr',
         signature: toHex(sig),
@@ -759,8 +752,8 @@ async function signMessageWithAllKeys(message: string): Promise<Array<{
       const privateKey = unlockedKeys.get('wow')!;
       const publicKeyHex = state.keys.wow.publicSpendKey || state.keys.wow.publicKey;
       const publicKeyBytes = fromHex(publicKeyHex);
-      const msgHash = ed25519MessageHash(message);
-      const sig = ed25519SignWithScalar(msgHash, privateKey, publicKeyBytes);
+      const msgBytes = ed25519MessageBytes(message);
+      const sig = ed25519SignWithScalar(msgBytes, privateKey, publicKeyBytes);
       signatures.push({
         asset: 'wow',
         signature: toHex(sig),
@@ -782,8 +775,8 @@ async function signMessageWithAllKeys(message: string): Promise<Array<{
       const privateKey = unlockedKeys.get('grin')!;
       const publicKeyHex = state.keys.grin.publicKey;
       const publicKeyBytes = fromHex(publicKeyHex);
-      const msgHash = ed25519MessageHash(message);
-      const sig = ed25519SignWithScalar(msgHash, privateKey, publicKeyBytes);
+      const msgBytes = ed25519MessageBytes(message);
+      const sig = ed25519SignWithScalar(msgBytes, privateKey, publicKeyBytes);
       signatures.push({
         asset: 'grin',
         signature: toHex(sig),

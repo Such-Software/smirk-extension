@@ -212,6 +212,23 @@ export class SmirkApi extends ApiClient implements
   }>> {
     return this.request(`/prices/sparkline/${asset}`, { method: 'GET' });
   }
+
+  /**
+   * Migrate public keys to new derivation (BIP44/SLIP-10).
+   * Updates user_keys and wallets tables on the backend.
+   */
+  async migrateKeys(keys: Array<{
+    asset: string;
+    public_key: string;
+    public_spend_key?: string;
+    address?: string;
+    view_key?: string;
+  }>): Promise<ApiResponse<{ migrated: boolean }>> {
+    return this.request('/auth/migrate-keys', {
+      method: 'POST',
+      body: JSON.stringify({ keys }),
+    });
+  }
 }
 
 // Default API instance

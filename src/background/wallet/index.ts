@@ -10,6 +10,7 @@ export {
   handleGetOnboardingState,
   handleSaveOnboardingState,
   handleClearOnboardingState,
+  handleGetPendingMnemonic,
 } from './state';
 
 // Wallet creation

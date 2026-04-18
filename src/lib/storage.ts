@@ -117,10 +117,10 @@ export async function clearAllStorage(): Promise<void> {
 
 /**
  * Onboarding state - persists wallet creation progress across popup closes.
+ * NOTE: Plaintext words are NEVER stored here — they stay in service worker memory only.
  */
 export interface OnboardingState {
   step: 'choice' | 'generate' | 'verify' | 'password' | 'restore' | 'creating';
-  words?: string[];
   verifyIndices?: number[];
   createdAt: number;
 }
@@ -263,6 +263,7 @@ export interface ConnectedSite {
   favicon?: string; // Favicon URL
   connectedAt: number; // Unix timestamp
   lastUsed: number; // Unix timestamp of last API call
+  approvedAssets?: string[]; // e.g., ['xmr', 'wow'] — if absent, all assets (legacy compat)
 }
 
 /**

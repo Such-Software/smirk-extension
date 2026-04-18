@@ -24,7 +24,7 @@
  */
 
 import type { MessageResponse, AssetType } from '@/types';
-import { getWalletState, isOriginConnected, addConnectedSite, touchConnectedSite, removeConnectedSite, getConnectedSites, type ConnectedSite } from '@/lib/storage';
+import { getWalletState, isOriginConnected, addConnectedSite, touchConnectedSite, removeConnectedSite, getConnectedSites, getConnectedSite, type ConnectedSite } from '@/lib/storage';
 import { runtime, windows } from '@/lib/browser';
 import {
   isUnlocked,
@@ -74,8 +74,10 @@ export async function handleSmirkApi(
   console.log(`[SmirkAPI] ${method} from ${origin}`);
 
   switch (method) {
-    case 'connect':
-      return handleSmirkConnect(origin, siteName, favicon);
+    case 'connect': {
+      const assets = (params as { assets?: string[] })?.assets;
+      return handleSmirkConnect(origin, siteName, favicon, assets);
+    }
 
     case 'isConnected':
       return handleSmirkIsConnected(origin);
@@ -127,22 +129,26 @@ export async function handleSmirkApi(
 async function handleSmirkConnect(
   origin: string,
   siteName: string,
-  favicon?: string
+  favicon?: string,
+  assets?: string[]
 ): Promise<MessageResponse> {
+  const requestedAssets = assets || ['btc', 'ltc', 'xmr', 'wow', 'grin'];
+
   // Check if already connected (works even when locked)
   const connected = await isOriginConnected(origin);
   if (connected) {
     // If locked, still need to open popup for unlock
     if (!isUnlocked) {
-      return openApprovalPopup('connect', origin, siteName, favicon);
+      return openApprovalPopup('connect', origin, siteName, favicon, undefined, undefined, requestedAssets);
     }
-    // Already connected and unlocked, just return public keys
+    // Already connected and unlocked, just return public keys (filtered to approved assets)
     await touchConnectedSite(origin);
-    return await getPublicKeysResponse();
+    const site = await getConnectedSite(origin);
+    return await getPublicKeysResponse(site?.approvedAssets);
   }
 
   // Not connected - need user approval (popup will show unlock screen if locked)
-  return openApprovalPopup('connect', origin, siteName, favicon);
+  return openApprovalPopup('connect', origin, siteName, favicon, undefined, undefined, requestedAssets);
 }
 
 /**
@@ -188,13 +194,14 @@ async function handleSmirkGetPublicKeys(origin: string): Promise<MessageResponse
   }
 
   await touchConnectedSite(origin);
-  return await getPublicKeysResponse();
+  const site = await getConnectedSite(origin);
+  return await getPublicKeysResponse(site?.approvedAssets);
 }
 
 /**
  * Handle getAddresses request.
  *
- * Returns wallet addresses if the origin is connected and wallet is unlocked.
+ * Returns wallet addresses for approved assets only.
  *
  * @param origin - Website origin
  * @returns Addresses if connected, null otherwise
@@ -210,7 +217,8 @@ async function handleSmirkGetAddresses(origin: string): Promise<MessageResponse>
   }
 
   await touchConnectedSite(origin);
-  return await getAddressesResponse();
+  const site = await getConnectedSite(origin);
+  return await getAddressesResponse(site?.approvedAssets);
 }
 
 // =============================================================================
@@ -270,7 +278,8 @@ function openApprovalPopup(
   siteName: string,
   favicon?: string,
   message?: string,
-  payment?: PendingPaymentDetails
+  payment?: PendingPaymentDetails,
+  requestedAssets?: string[]
 ): Promise<MessageResponse> {
   return new Promise((resolve, reject) => {
     const id = `${incrementApprovalRequestId()}`;
@@ -285,6 +294,7 @@ function openApprovalPopup(
       favicon,
       message,
       payment,
+      requestedAssets,
       resolve: resolve as (value: unknown) => void,
       reject,
     });
@@ -359,17 +369,18 @@ export async function handleApprovalResponse(
 
   // User approved
   if (pending.type === 'connect') {
-    // Add to connected sites
+    // Add to connected sites with approved asset scope
     await addConnectedSite({
       origin: pending.origin,
       name: pending.siteName,
       favicon: pending.favicon,
       connectedAt: Date.now(),
       lastUsed: Date.now(),
+      approvedAssets: pending.requestedAssets,
     });
 
-    // Return public keys
-    pending.resolve(await getPublicKeysResponse());
+    // Return public keys (filtered to approved assets only)
+    pending.resolve(await getPublicKeysResponse(pending.requestedAssets));
   } else if (pending.type === 'sign') {
     // Sign the message with all keys
     try {
@@ -462,14 +473,15 @@ export async function handleDisconnectSite(origin: string): Promise<MessageRespo
 // =============================================================================
 
 /**
- * Get public keys response for all assets.
+ * Get public keys response, filtered to approved assets only.
  *
- * @returns Public keys for BTC, LTC, XMR, WOW, Grin
+ * @param approvedAssets - List of approved asset names (if absent, returns all for legacy compat)
+ * @returns Public keys for approved assets
  */
-async function getPublicKeysResponse(): Promise<MessageResponse> {
+async function getPublicKeysResponse(approvedAssets?: string[]): Promise<MessageResponse> {
   const state = await getWalletState();
 
-  const publicKeys: Record<string, string> = {
+  const allKeys: Record<string, string> = {
     btc: state.keys.btc?.publicKey || '',
     ltc: state.keys.ltc?.publicKey || '',
     xmr: state.keys.xmr?.publicSpendKey || state.keys.xmr?.publicKey || '',
@@ -477,35 +489,36 @@ async function getPublicKeysResponse(): Promise<MessageResponse> {
     grin: state.keys.grin?.publicKey || '',
   };
 
-  return {
-    success: true,
-    data: publicKeys,
-  };
+  // Filter to approved assets only
+  const allowed = approvedAssets || ['btc', 'ltc', 'xmr', 'wow', 'grin'];
+  const publicKeys: Record<string, string> = {};
+  for (const asset of allowed) {
+    if (allKeys[asset]) publicKeys[asset] = allKeys[asset];
+  }
+
+  return { success: true, data: publicKeys };
 }
 
 /**
- * Get addresses response for all assets.
+ * Get addresses response, filtered to approved assets only.
  *
- * @returns Addresses for BTC, LTC, XMR, WOW, Grin
+ * @param approvedAssets - List of approved asset names (if absent, returns all for legacy compat)
+ * @returns Addresses for approved assets
  */
-async function getAddressesResponse(): Promise<MessageResponse> {
+async function getAddressesResponse(approvedAssets?: string[]): Promise<MessageResponse> {
   const result = await handleGetAddresses();
 
   if (!result.success || !result.data) {
     return result;
   }
 
-  // Transform array format to flat object format
-  const addresses: Record<string, string> = {
-    btc: '',
-    ltc: '',
-    xmr: '',
-    wow: '',
-    grin: '',
-  };
+  const allowed = approvedAssets || ['btc', 'ltc', 'xmr', 'wow', 'grin'];
+  const addresses: Record<string, string> = {};
 
   for (const item of result.data.addresses) {
-    addresses[item.asset] = item.address;
+    if (allowed.includes(item.asset)) {
+      addresses[item.asset] = item.address;
+    }
   }
 
   return { success: true, data: addresses };

@@ -11,7 +11,7 @@ import {
   saveOnboardingState,
   clearOnboardingState,
 } from '@/lib/storage';
-import { isUnlocked } from '../state';
+import { isUnlocked, pendingMnemonic } from '../state';
 
 // =============================================================================
 // Wallet State
@@ -92,4 +92,16 @@ export async function handleSaveOnboardingState(
 export async function handleClearOnboardingState(): Promise<MessageResponse<{ cleared: boolean }>> {
   await clearOnboardingState();
   return { success: true, data: { cleared: true } };
+}
+
+/**
+ * Get pending mnemonic from service worker memory.
+ *
+ * Returns the mnemonic words currently held in memory during onboarding.
+ * Returns null if service worker restarted (mnemonic lost — user must restart onboarding).
+ * This avoids storing plaintext seed phrases in persistent storage.
+ */
+export function handleGetPendingMnemonic(): MessageResponse<{ words: string[] | null }> {
+  const words = pendingMnemonic ? pendingMnemonic.split(' ') : null;
+  return { success: true, data: { words } };
 }

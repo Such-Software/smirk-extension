@@ -7,21 +7,11 @@
  * Similar to MetaMask's window.ethereum pattern.
  */
 
-export interface SmirkPublicKeys {
-  btc: string; // Compressed public key (hex)
-  ltc: string; // Compressed public key (hex)
-  xmr: string; // Public spend key (hex)
-  wow: string; // Public spend key (hex)
-  grin: string; // Public key (hex)
-}
+type AssetName = 'btc' | 'ltc' | 'xmr' | 'wow' | 'grin';
 
-export interface SmirkAddresses {
-  btc: string; // bc1q... (bech32 P2WPKH)
-  ltc: string; // ltc1q... (bech32 P2WPKH)
-  xmr: string; // 4... (95 chars, CryptoNote standard address)
-  wow: string; // Wo... (97 chars, CryptoNote standard address)
-  grin: string; // grin1... (bech32 slatepack address)
-}
+export type SmirkPublicKeys = Partial<Record<AssetName, string>>;
+
+export type SmirkAddresses = Partial<Record<AssetName, string>>;
 
 export interface SmirkSignature {
   asset: 'btc' | 'ltc' | 'xmr' | 'wow' | 'grin';
@@ -121,10 +111,20 @@ const smirk = {
 
   /**
    * Connect to Smirk wallet - requests user approval to share public keys.
-   * Returns public keys for all 5 supported assets.
+   * @param assets - Optional array of assets to request (e.g. ['xmr', 'wow']).
+   *                 If omitted, requests all assets.
+   * Returns public keys only for the approved assets.
    */
-  async connect(): Promise<SmirkPublicKeys> {
-    return sendRequest<SmirkPublicKeys>('connect');
+  async connect(assets?: AssetName[]): Promise<SmirkPublicKeys> {
+    const validAssets: AssetName[] = ['btc', 'ltc', 'xmr', 'wow', 'grin'];
+    if (assets) {
+      for (const a of assets) {
+        if (!validAssets.includes(a)) {
+          throw new Error(`Invalid asset: ${a}. Must be one of: ${validAssets.join(', ')}`);
+        }
+      }
+    }
+    return sendRequest<SmirkPublicKeys>('connect', { assets: assets || validAssets });
   },
 
   /**

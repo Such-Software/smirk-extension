@@ -85,6 +85,8 @@ export interface PendingApprovalRequest {
   message?: string;
   /** Payment details (for payment requests) */
   payment?: PendingPaymentDetails;
+  /** Requested asset scope for connect requests */
+  requestedAssets?: string[];
   /** Promise resolver */
   resolve: (value: unknown) => void;
   /** Promise rejecter */

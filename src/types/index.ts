@@ -78,10 +78,10 @@ export interface TipInfo {
   recipientHint?: string;
 }
 
-// Onboarding state for persisting wallet creation progress
+// Onboarding state for persisting wallet creation progress.
+// NOTE: Plaintext words are NEVER stored here — they stay in service worker memory only.
 export interface OnboardingState {
   step: 'choice' | 'generate' | 'verify' | 'password' | 'restore' | 'creating';
-  words?: string[];
   verifyIndices?: number[];
   createdAt: number;
 }
@@ -166,6 +166,7 @@ export type MessageType =
   | { type: 'GET_ONBOARDING_STATE' }
   | { type: 'SAVE_ONBOARDING_STATE'; state: OnboardingState }
   | { type: 'CLEAR_ONBOARDING_STATE' }
+  | { type: 'GET_PENDING_MNEMONIC' }
   | { type: 'GET_SETTINGS' }
   | { type: 'UPDATE_SETTINGS'; settings: Partial<UserSettings> }
   | { type: 'RESET_AUTO_LOCK_TIMER' }

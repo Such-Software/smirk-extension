@@ -79,6 +79,7 @@ import {
   handleGetOnboardingState,
   handleSaveOnboardingState,
   handleClearOnboardingState,
+  handleGetPendingMnemonic,
   handleGetAddresses,
 } from './wallet';
 
@@ -239,6 +240,9 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
 
     case 'CLEAR_ONBOARDING_STATE':
       return handleClearOnboardingState();
+
+    case 'GET_PENDING_MNEMONIC':
+      return handleGetPendingMnemonic();
 
     // =========================================================================
     // Settings

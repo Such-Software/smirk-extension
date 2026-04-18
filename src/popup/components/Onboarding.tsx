@@ -31,14 +31,29 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
       });
 
       if (result.state) {
-        // Restore previous state
         if (result.state.step === 'restore') {
-          setStep('choice'); // Show restore option from choice screen
+          setStep('choice');
+        } else if (['generate', 'verify', 'password'].includes(result.state.step)) {
+          // Words are in service worker memory, not persistent storage.
+          // If SW restarted, words are gone — restart onboarding.
+          try {
+            const mnemonicResult = await sendMessage<{ words: string[] | null }>({
+              type: 'GET_PENDING_MNEMONIC',
+            });
+            if (mnemonicResult.words) {
+              setWords(mnemonicResult.words);
+              setStep(result.state.step);
+              if (result.state.verifyIndices) setVerifyIndices(result.state.verifyIndices);
+            } else {
+              // SW restarted, mnemonic lost — restart onboarding (secure behavior)
+              await clearState();
+            }
+          } catch {
+            await clearState();
+          }
         } else {
           setStep(result.state.step);
         }
-        if (result.state.words) setWords(result.state.words);
-        if (result.state.verifyIndices) setVerifyIndices(result.state.verifyIndices);
       }
     } catch (err) {
       console.error('Failed to load onboarding state:', err);
@@ -47,10 +62,11 @@ export function Onboarding({ onComplete }: { onComplete: () => void }) {
     }
   };
 
-  const saveState = async (newStep: OnboardingStep, newWords?: string[], newIndices?: number[]) => {
+  const saveState = async (newStep: OnboardingStep, _newWords?: string[], newIndices?: number[]) => {
+    // Never persist plaintext words to disk — only save step and indices.
+    // Words are kept in service worker memory (pendingMnemonic) and retrieved via GET_PENDING_MNEMONIC.
     const state: OnboardingState = {
       step: newStep,
-      words: newWords ?? words,
       verifyIndices: newIndices ?? verifyIndices,
       createdAt: Date.now(),
     };

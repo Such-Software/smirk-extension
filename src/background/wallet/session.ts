@@ -9,8 +9,11 @@ import {
   getPublicKey,
   decryptPrivateKey,
   deriveKeyFromPassword,
+  PBKDF2_ITERATIONS,
+  PBKDF2_ITERATIONS_LEGACY,
   bytesToHex,
   encrypt,
+  randomBytes,
 } from '@/lib/crypto';
 import { hexToBytes } from '@/lib/address';
 import {
@@ -30,6 +33,7 @@ import {
   unlockedKeys,
   unlockedViewKeys,
   setUnlockedSeed,
+  unlockedSeed,
   unlockedMnemonic,
   setUnlockedMnemonic,
   persistSessionKeys,
@@ -77,12 +81,16 @@ export async function handleUnlockWallet(password: string): Promise<MessageRespo
     return { success: false, error: 'No keys found' };
   }
 
+  // Use stored iterations or default to legacy 100K for old wallets
+  const iterations = state.pbkdf2Iterations || PBKDF2_ITERATIONS_LEGACY;
+
   try {
     const key = state.keys[firstAsset]!;
     const decrypted = await decryptPrivateKey(
       key.privateKey,
       key.privateKeySalt,
-      password
+      password,
+      iterations
     );
 
     // Password correct - decrypt all keys
@@ -95,7 +103,8 @@ export async function handleUnlockWallet(password: string): Promise<MessageRespo
         const privateKey = await decryptPrivateKey(
           assetKey.privateKey,
           assetKey.privateKeySalt,
-          password
+          password,
+          iterations
         );
         unlockedKeys.set(asset, privateKey);
 
@@ -104,7 +113,8 @@ export async function handleUnlockWallet(password: string): Promise<MessageRespo
           const viewKey = await decryptPrivateKey(
             assetKey.privateViewKey,
             assetKey.privateViewKeySalt,
-            password
+            password,
+            iterations
           );
           unlockedViewKeys.set(asset, viewKey);
         }
@@ -114,7 +124,7 @@ export async function handleUnlockWallet(password: string): Promise<MessageRespo
     // Decrypt mnemonic for Grin WASM operations (MWC Seed class needs the mnemonic, not BIP39 seed)
     if (state.encryptedSeed && state.seedSalt) {
       try {
-        const mnemonicBytes = await decryptPrivateKey(state.encryptedSeed, state.seedSalt, password);
+        const mnemonicBytes = await decryptPrivateKey(state.encryptedSeed, state.seedSalt, password, iterations);
         setUnlockedMnemonic(new TextDecoder().decode(mnemonicBytes));
       } catch (err) {
         console.warn('Failed to decrypt mnemonic:', err);
@@ -124,9 +134,51 @@ export async function handleUnlockWallet(password: string): Promise<MessageRespo
     // Decrypt BIP39 seed (kept for backwards compatibility with other operations)
     if (state.encryptedBip39Seed && state.seedSalt) {
       try {
-        setUnlockedSeed(await decryptPrivateKey(state.encryptedBip39Seed, state.seedSalt, password));
+        setUnlockedSeed(await decryptPrivateKey(state.encryptedBip39Seed, state.seedSalt, password, iterations));
       } catch (err) {
         console.warn('Failed to decrypt BIP39 seed:', err);
+      }
+    }
+
+    // Auto-upgrade PBKDF2 iterations from legacy 100K to 600K
+    if (!state.pbkdf2Iterations || state.pbkdf2Iterations < PBKDF2_ITERATIONS) {
+      try {
+        console.log(`[PBKDF2] Upgrading iterations from ${iterations} to ${PBKDF2_ITERATIONS}`);
+        const newSalt = randomBytes(16);
+        const newKey = await deriveKeyFromPassword(password, newSalt, PBKDF2_ITERATIONS);
+        const newSaltHex = bytesToHex(newSalt);
+        const reencrypt = (data: Uint8Array) => bytesToHex(encrypt(data, newKey));
+
+        // Re-encrypt mnemonic
+        if (unlockedMnemonic) {
+          state.encryptedSeed = reencrypt(new TextEncoder().encode(unlockedMnemonic));
+        }
+
+        // Re-encrypt BIP39 seed
+        if (unlockedSeed) {
+          state.encryptedBip39Seed = reencrypt(unlockedSeed);
+        }
+
+        // Re-encrypt all asset keys
+        for (const asset of Object.keys(state.keys) as AssetType[]) {
+          const pk = unlockedKeys.get(asset);
+          if (pk && state.keys[asset]) {
+            state.keys[asset]!.privateKey = reencrypt(pk);
+            state.keys[asset]!.privateKeySalt = newSaltHex;
+          }
+          const vk = unlockedViewKeys.get(asset as 'xmr' | 'wow');
+          if (vk && state.keys[asset]) {
+            state.keys[asset]!.privateViewKey = reencrypt(vk);
+            state.keys[asset]!.privateViewKeySalt = newSaltHex;
+          }
+        }
+
+        state.seedSalt = newSaltHex;
+        state.pbkdf2Iterations = PBKDF2_ITERATIONS;
+        await saveWalletState(state);
+        console.log('[PBKDF2] Upgrade complete');
+      } catch (err) {
+        console.warn('[PBKDF2] Upgrade failed, will retry on next unlock:', err);
       }
     }
 
@@ -135,7 +187,8 @@ export async function handleUnlockWallet(password: string): Promise<MessageRespo
       try {
         // Derive encryption key from password
         const saltBytes = hexToBytes(state.seedSalt!);
-        const encKey = await deriveKeyFromPassword(password, saltBytes);
+        const currentIterations = state.pbkdf2Iterations || PBKDF2_ITERATIONS;
+        const encKey = await deriveKeyFromPassword(password, saltBytes, currentIterations);
         const encryptWithKey = (data: Uint8Array) => bytesToHex(encrypt(data, encKey));
 
         // Migrate: encrypt and store BIP39 seed if missing

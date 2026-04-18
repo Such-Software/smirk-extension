@@ -70,12 +70,20 @@ export function decrypt(encryptedData: Uint8Array, key: Uint8Array): Uint8Array 
   return cipher.decrypt(ciphertext);
 }
 
+/** Default PBKDF2 iterations for new wallets (OWASP 2023 recommendation for SHA-256) */
+export const PBKDF2_ITERATIONS = 600000;
+
+/** Legacy iteration count for wallets created before the upgrade */
+export const PBKDF2_ITERATIONS_LEGACY = 100000;
+
 /**
  * Derives an encryption key from a password using PBKDF2.
+ * @param iterations - Number of PBKDF2 iterations (default: 600000)
  */
 export async function deriveKeyFromPassword(
   password: string,
-  salt: Uint8Array
+  salt: Uint8Array,
+  iterations: number = PBKDF2_ITERATIONS
 ): Promise<Uint8Array> {
   const encoder = new TextEncoder();
   const passwordKey = await crypto.subtle.importKey(
@@ -90,7 +98,7 @@ export async function deriveKeyFromPassword(
     {
       name: 'PBKDF2',
       salt: salt as BufferSource,
-      iterations: 100000,
+      iterations,
       hash: 'SHA-256',
     },
     passwordKey,
@@ -105,10 +113,11 @@ export async function deriveKeyFromPassword(
  */
 export async function encryptPrivateKey(
   privateKey: Uint8Array,
-  password: string
+  password: string,
+  iterations: number = PBKDF2_ITERATIONS
 ): Promise<{ encrypted: string; salt: string }> {
   const salt = randomBytes(16);
-  const key = await deriveKeyFromPassword(password, salt);
+  const key = await deriveKeyFromPassword(password, salt, iterations);
   const encrypted = encrypt(privateKey, key);
 
   return {
@@ -123,11 +132,12 @@ export async function encryptPrivateKey(
 export async function decryptPrivateKey(
   encryptedHex: string,
   saltHex: string,
-  password: string
+  password: string,
+  iterations: number = PBKDF2_ITERATIONS
 ): Promise<Uint8Array> {
   const encrypted = hexToBytes(encryptedHex);
   const salt = hexToBytes(saltHex);
-  const key = await deriveKeyFromPassword(password, salt);
+  const key = await deriveKeyFromPassword(password, salt, iterations);
 
   return decrypt(encrypted, key);
 }

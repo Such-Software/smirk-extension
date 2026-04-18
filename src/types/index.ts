@@ -52,6 +52,8 @@ export interface WalletState {
   seedSalt?: string;
   // Encrypted BIP39 seed (64 bytes) for Grin WASM operations
   encryptedBip39Seed?: string;
+  // PBKDF2 iteration count (undefined = legacy 100K, new wallets use 600K)
+  pbkdf2Iterations?: number;
   // Whether user has confirmed backup
   backupConfirmed?: boolean;
   // Wallet creation info (timestamp + block heights for efficient sync)

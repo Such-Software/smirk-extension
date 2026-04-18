@@ -11,6 +11,8 @@ import type { MessageResponse, AssetType } from '@/types';
 import {
   decryptPrivateKey,
   deriveKeyFromPassword,
+  PBKDF2_ITERATIONS,
+  PBKDF2_ITERATIONS_LEGACY,
   bytesToHex,
   encrypt,
   randomBytes,
@@ -46,7 +48,8 @@ export async function handleRevealSeed(password: string): Promise<MessageRespons
 
   try {
     // Decrypt the mnemonic using provided password
-    const mnemonicBytes = await decryptPrivateKey(state.encryptedSeed, state.seedSalt, password);
+    const iterations = state.pbkdf2Iterations || PBKDF2_ITERATIONS_LEGACY;
+    const mnemonicBytes = await decryptPrivateKey(state.encryptedSeed, state.seedSalt, password, iterations);
     const mnemonic = new TextDecoder().decode(mnemonicBytes);
 
     // Split into words
@@ -82,7 +85,8 @@ export async function handleGetFingerprint(password: string): Promise<MessageRes
   }
 
   try {
-    const mnemonicBytes = await decryptPrivateKey(state.encryptedSeed, state.seedSalt, password);
+    const iterations = state.pbkdf2Iterations || PBKDF2_ITERATIONS_LEGACY;
+    const mnemonicBytes = await decryptPrivateKey(state.encryptedSeed, state.seedSalt, password, iterations);
     const mnemonic = new TextDecoder().decode(mnemonicBytes);
     const fingerprint = computeSeedFingerprint(mnemonic);
     return { success: true, data: { fingerprint } };
@@ -120,7 +124,8 @@ export async function handleChangePassword(
 
   try {
     // Decrypt mnemonic with old password to verify it's correct
-    const mnemonicBytes = await decryptPrivateKey(state.encryptedSeed, state.seedSalt, oldPassword);
+    const oldIterations = state.pbkdf2Iterations || PBKDF2_ITERATIONS_LEGACY;
+    const mnemonicBytes = await decryptPrivateKey(state.encryptedSeed, state.seedSalt, oldPassword, oldIterations);
     const mnemonic = new TextDecoder().decode(mnemonicBytes);
 
     // Verify it's a valid mnemonic
@@ -128,10 +133,10 @@ export async function handleChangePassword(
       return { success: false, error: 'Invalid password' };
     }
 
-    // Generate new salt and derive new encryption key
+    // Generate new salt and derive new encryption key (always use latest iterations)
     const newSalt = randomBytes(16);
     const newSaltHex = bytesToHex(newSalt);
-    const newEncryptionKey = await deriveKeyFromPassword(newPassword, newSalt);
+    const newEncryptionKey = await deriveKeyFromPassword(newPassword, newSalt, PBKDF2_ITERATIONS);
     const encryptWithNewKey = (data: Uint8Array): string => bytesToHex(encrypt(data, newEncryptionKey));
 
     // Re-encrypt mnemonic
@@ -171,6 +176,9 @@ export async function handleChangePassword(
         key.privateKeySalt = newSaltHex;
       }
     }
+
+    // Update PBKDF2 iterations to latest
+    state.pbkdf2Iterations = PBKDF2_ITERATIONS;
 
     // Save the updated state
     await saveWalletState(state);

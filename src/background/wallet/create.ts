@@ -11,6 +11,7 @@ import type { MessageResponse, WalletState, AssetType } from '@/types';
 import {
   getPublicKey,
   deriveKeyFromPassword,
+  PBKDF2_ITERATIONS,
   bytesToHex,
   encrypt,
   randomBytes,
@@ -199,7 +200,7 @@ export async function createWalletFromMnemonic(
   const derivedKeys = deriveAllKeys(mnemonic) as DerivedKeys;
 
   // Derive encryption key ONCE and reuse for all keys
-  // This is 8x faster than calling encryptPrivateKey for each key (100k PBKDF2 iterations each)
+  // Uses 600K PBKDF2 iterations (OWASP recommendation)
   const masterSalt = randomBytes(16);
   const encryptionKey = await deriveKeyFromPassword(password, masterSalt);
   const saltHex = bytesToHex(masterSalt);
@@ -261,6 +262,7 @@ export async function createWalletFromMnemonic(
     encryptedSeed: encryptedMnemonic,
     seedSalt: saltHex,
     encryptedBip39Seed,
+    pbkdf2Iterations: PBKDF2_ITERATIONS,
     backupConfirmed,
     walletBirthday,
   };

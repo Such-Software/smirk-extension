@@ -130,6 +130,15 @@ interface SignResult {
 }
 ```
 
+**Signature format details (important for verification):**
+
+| Asset | Algorithm | Pre-hash | Format | Standard |
+|-------|-----------|----------|--------|----------|
+| BTC/LTC | ECDSA (secp256k1) | Double SHA256 with Bitcoin magic prefix | Compact r\|\|s hex (128 chars) | Non-standard (no recovery byte, not Base64/BIP-137) |
+| XMR/WOW/Grin | Ed25519 | SHA-256(message) | Ed25519 signature hex (128 chars) | Non-standard (message is pre-hashed, not RFC 8032) |
+
+The Smirk backend's `/auth/verify` endpoint handles these formats. If verifying independently, you must pre-hash the message with SHA-256 before Ed25519 verification, and use Bitcoin message signing format (with magic prefix) for BTC/LTC ECDSA.
+
 By default, signs with BTC key only. The message is prefixed with Bitcoin's standard message prefix for verification.
 
 ### `window.smirk.disconnect()`

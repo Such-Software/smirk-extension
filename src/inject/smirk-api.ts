@@ -142,9 +142,19 @@ const smirk = {
   },
 
   /**
-   * Sign a message with all 5 wallet keys.
+   * Sign a message with wallet keys for connected assets.
    * Requires prior connection (connect() must have been called).
    * User will see the message and must approve signing.
+   *
+   * Signature formats (non-standard, designed for Smirk backend verification):
+   * - BTC/LTC: Bitcoin message signing (double SHA256 with magic prefix), compact r||s hex.
+   *   NOTE: Does not include recovery byte or Base64 encoding (not BIP-137 compatible).
+   * - XMR/WOW/Grin: Ed25519 signature over SHA256(message), not raw message.
+   *   NOTE: This is NOT standard RFC 8032. The message is pre-hashed with SHA-256
+   *   before signing. Verifiers must pre-hash the message the same way.
+   *
+   * For website authentication (challenge-response), use the Smirk backend's
+   * /auth/verify endpoint which understands these formats.
    */
   async signMessage(message: string): Promise<SmirkSignResult> {
     if (typeof message !== 'string' || message.length === 0) {

@@ -186,7 +186,7 @@ class Seed {
 		}
 		
 		// Get extended private key
-		getExtendedPrivateKey(key, useBip39 = false, bip39Salt = Seed.DEFAULT_BIP39_SALT) {
+		getExtendedPrivateKey(key, useBip39 = false, bip39Salt = Seed.DEFAULT_BIP39_SALT, pathOverride = null) {
 		
 			// Set self
 			var self = this;
@@ -423,9 +423,8 @@ class Seed {
 											// Securely clear raw key
 											rawKey.fill(0);
 											
-											// Initialize path — matches grin-wallet standard: m/0/0/0/0/0
-											// (non-hardened, compatible with grin-wallet and Grim)
-											var path = new Uint32Array([0, 0, 0, 0, 0]);
+											// Use path override if provided, otherwise grin-wallet standard: m/0/0/0/0/0
+											var path = pathOverride || new Uint32Array([0, 0, 0, 0, 0]);
 											
 											// Return deriving child key at the path from the extended private key
 											return Crypto.deriveChildKey(extendedPrivateKey, path, true).then(function(childKey) {

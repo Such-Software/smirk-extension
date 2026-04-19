@@ -244,12 +244,15 @@ export async function createSendTransaction(
     const changeAmountBN = new BigNumber(changeAmount.toString());
 
     // Create commitment for change output
+    console.log('[createSendTransaction] Change output using extKey prefix:', Common.toHexString(new Uint8Array(keys.extendedPrivateKey.subarray(0, 16))));
+    console.log('[createSendTransaction] Change identifier:', Common.toHexString(changeIdentifier.getValue()));
     const changeCommit = await Crypto.commit(
       keys.extendedPrivateKey,
       changeAmountBN,
       changeIdentifier,
       Crypto.SWITCH_TYPE_REGULAR
     );
+    console.log('[createSendTransaction] Change commitment:', Common.toHexString(changeCommit));
 
     // Create bulletproof range proof using ProofBuilder
     const proofBuilder = new ProofBuilder();
@@ -324,6 +327,7 @@ export async function createSendTransaction(
   }
 
   // Subtract input blinding factors
+  console.log('[createSendTransaction] Deriving input blinds with extKey prefix:', Common.toHexString(new Uint8Array(keys.extendedPrivateKey.subarray(0, 16))));
   for (const input of inputsForSum) {
     const inputSecretKey = await Crypto.deriveSecretKey(
       keys.extendedPrivateKey,
@@ -331,6 +335,7 @@ export async function createSendTransaction(
       input.identifier,
       input.switchType
     );
+    console.log('[createSendTransaction] Input blind:', Common.toHexString(inputSecretKey), 'for id:', Common.toHexString(input.identifier.getValue()));
 
     // Subtract input secret key from sum: sum = sum - inputSecretKey
     // Use blindSum with input as negative blind

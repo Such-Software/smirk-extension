@@ -15,8 +15,10 @@ import { xmrAddress, wowAddress } from '@/lib/address';
 import { sendTransaction, type XmrAsset } from '@/lib/xmr-tx';
 import { handleSendTx } from './send';
 import { handleGetBalance } from './balance';
+import { registerWithLwsFromUnlockedKeys } from './wallet';
 import { api } from '@/lib/api';
-import { getWalletState, saveWalletState } from '@/lib/storage';
+import { getWalletState, saveWalletState, getAuthState } from '@/lib/storage';
+import { setGrinWasmKeys } from './state';
 import { bytesToHex } from '@/lib/crypto';
 import { getPublicKey } from '@/lib/crypto';
 import {
@@ -84,7 +86,7 @@ export async function handleStartMigration(): Promise<MessageResponse> {
     steps: [
       { asset: 'xmr', status: 'pending', oldAddress: oldXmrAddr, newAddress: newXmrAddr },
       { asset: 'wow', status: 'pending', oldAddress: oldWowAddr, newAddress: newWowAddr },
-      { asset: 'grin', status: 'pending' },
+      { asset: 'grin', status: 'pending', oldAddress: 'old grin address', newAddress: 'new grin address' },
     ],
   };
 
@@ -95,18 +97,35 @@ export async function handleStartMigration(): Promise<MessageResponse> {
       try {
         const balResult = await handleGetBalance(step.asset as AssetType);
         if (balResult.success && balResult.data) {
-          const bal = (balResult.data as { confirmed?: number; total?: number }).total ||
-                      (balResult.data as { confirmed?: number }).confirmed || 0;
+          const data = balResult.data as Record<string, unknown>;
+
+          // XMR/WOW returns LWS format: { total_received, locked_balance, ... }
+          // BTC/LTC/Grin returns: { confirmed, unconfirmed, total }
+          // For XMR/WOW, use total_received as indicator (actual balance needs key image verification)
+          let bal = 0;
+          if ('total_received' in data) {
+            // XMR/WOW: total_received > 0 means funds may exist, attempt sweep
+            bal = (data.total_received as number) || 0;
+          } else if ('total' in data) {
+            bal = (data.total as number) || 0;
+          } else if ('confirmed' in data) {
+            bal = (data.confirmed as number) || 0;
+          }
+
           step.balance = bal;
           if (bal <= 0) {
             step.status = 'skipped';
           }
-          // Grin with balance can't be auto-swept — block migration
-          if (step.asset === 'grin' && bal > 0) {
+
+          // Grin cross-path self-sweep is mathematically impossible
+          // (blinding factors from different derivation paths don't balance
+          // in the kernel equation — the Grin node rejects the tx).
+          // User must send Grin before migrating.
+          if (step.asset === 'grin' && step.balance > 0) {
             step.status = 'error';
-            step.error = 'Send your GRIN first, then retry';
+            step.error = 'Send GRIN first, then upgrade';
             migrationStatus.phase = 'error';
-            migrationStatus.error = 'Please send your GRIN balance to another wallet before upgrading. The Grin address will change and auto-sweep is not yet supported for Grin.';
+            migrationStatus.error = 'You have GRIN balance. Use the Send button to send your GRIN to a friend or another wallet first, then tap Upgrade again. Your GRIN address is changing and auto-transfer is not possible for Grin.';
             return { success: false, error: migrationStatus.error };
           }
         } else {
@@ -126,38 +145,39 @@ export async function handleStartMigration(): Promise<MessageResponse> {
       if (step.status !== 'pending' || !step.balance || step.balance <= 0) continue;
 
       step.status = 'sweeping';
-      const asset = step.asset as XmrAsset;
 
       try {
-        // Get old keys for this asset
-        const oldViewKey = unlockedViewKeys.get(asset);
-        const oldSpendKey = unlockedKeys.get(asset);
+        if (step.asset === 'xmr' || step.asset === 'wow') {
+          // XMR/WOW: sweep using sendTransaction with sweep=true
+          const asset = step.asset as XmrAsset;
+          const oldViewKey = unlockedViewKeys.get(asset);
+          const oldSpendKey = unlockedKeys.get(asset);
 
-        if (!oldViewKey || !oldSpendKey || !step.oldAddress || !step.newAddress) {
+          if (!oldViewKey || !oldSpendKey || !step.oldAddress || !step.newAddress) {
+            step.status = 'error';
+            step.error = 'Missing keys for sweep';
+            continue;
+          }
+
+          const result = await sendTransaction(
+            asset, step.oldAddress, bytesToHex(oldViewKey), bytesToHex(oldSpendKey),
+            step.newAddress, 0, 'mainnet', true // sweep
+          );
+
+          step.txHash = result.txHash;
+          step.status = 'swept';
+          console.log(`[Migration] ${step.asset} swept: ${result.txHash}, fee: ${result.fee}`);
+
+        } else if (step.asset === 'grin') {
+          // Grin auto-sweep blocked above — should never reach here
           step.status = 'error';
-          step.error = 'Missing keys for sweep';
-          continue;
+          step.error = 'Grin auto-sweep not supported';
+          console.log(`[Migration] Grin sweep initiated: ${sendResult.data.slateId}`);
         }
-
-        // Sweep all funds from old address → new address
-        const result = await sendTransaction(
-          asset,
-          step.oldAddress,
-          bytesToHex(oldViewKey),
-          bytesToHex(oldSpendKey),
-          step.newAddress,
-          0, // amount 0 = sweep mode decides
-          'mainnet',
-          true // sweep = true (send everything)
-        );
-
-        step.txHash = result.txHash;
-        step.status = 'swept';
-        console.log(`[Migration] ${asset} swept: ${result.txHash}, fee: ${result.fee}`);
       } catch (err) {
         step.status = 'error';
         step.error = err instanceof Error ? err.message : 'Sweep failed';
-        console.error(`[Migration] ${asset} sweep failed:`, err);
+        console.error(`[Migration] ${step.asset} sweep failed:`, err);
       }
     }
 
@@ -202,21 +222,36 @@ export async function handleStartMigration(): Promise<MessageResponse> {
     // Phase 4: Update local wallet state
     state.derivationVersion = 2;
 
-    // Update stored keys to v2 (they'll be re-encrypted on next unlock cycle)
-    // For now just update the public keys and addresses in the state
+    // Update ALL public keys to v2 — including publicViewKey!
+    // (Missing publicViewKey caused address/viewkey mismatch with LWS)
     if (state.keys.xmr) {
       state.keys.xmr.publicKey = bytesToHex(v2Keys.xmr.publicSpendKey);
       state.keys.xmr.publicSpendKey = bytesToHex(v2Keys.xmr.publicSpendKey);
+      state.keys.xmr.publicViewKey = bytesToHex(v2Keys.xmr.publicViewKey);
     }
     if (state.keys.wow) {
       state.keys.wow.publicKey = bytesToHex(v2Keys.wow.publicSpendKey);
       state.keys.wow.publicSpendKey = bytesToHex(v2Keys.wow.publicSpendKey);
+      state.keys.wow.publicViewKey = bytesToHex(v2Keys.wow.publicViewKey);
     }
     if (state.keys.grin) {
       state.keys.grin.publicKey = bytesToHex(v2Keys.grin.publicKey);
     }
 
     await saveWalletState(state);
+
+    // Re-register new XMR/WOW addresses with LWS
+    // This is critical — without it, balance queries return 403
+    try {
+      const authState = await getAuthState();
+      if (authState?.userId) {
+        const updatedState = await getWalletState();
+        await registerWithLwsFromUnlockedKeys(authState.userId, updatedState);
+        console.log('[Migration] LWS re-registration triggered for new addresses');
+      }
+    } catch (lwsErr) {
+      console.warn('[Migration] LWS re-registration failed (will retry on next unlock):', lwsErr);
+    }
 
     migrationStatus.phase = 'complete';
     console.log('[Migration] Complete — wallet upgraded to v2 derivation');

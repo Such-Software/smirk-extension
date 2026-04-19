@@ -221,8 +221,8 @@ export function MigrationBanner({ onComplete }: { onComplete: () => void }) {
   return (
     <div class="migration-banner" onClick={startMigration}>
       <div class="migration-banner-text">
-        <strong>Wallet Upgrade Available</strong>
-        <span>Tap to improve wallet compatibility</span>
+        <strong>Security Upgrade Required</strong>
+        <span>Tap to upgrade key derivation</span>
       </div>
       <button
         class="migration-banner-dismiss"
@@ -232,14 +232,20 @@ export function MigrationBanner({ onComplete }: { onComplete: () => void }) {
       </button>
 
       <style>{`
+        @keyframes pulse-border {
+          0%, 100% { border-color: #ef4444; box-shadow: 0 0 8px rgba(239, 68, 68, 0.3); }
+          50% { border-color: #f87171; box-shadow: 0 0 16px rgba(239, 68, 68, 0.5); }
+        }
+
         .migration-banner {
           display: flex;
           align-items: center;
           gap: 12px;
-          padding: 10px 14px;
-          background: linear-gradient(135deg, #2d2a1e, #1e1e2d);
-          border: 1px solid var(--color-yellow);
+          padding: 12px 14px;
+          background: linear-gradient(135deg, #2d1e1e, #1e1e2d);
+          border: 2px solid #ef4444;
           border-radius: 10px;
+          animation: pulse-border 2s ease-in-out infinite;
           cursor: pointer;
           transition: opacity 0.2s;
         }
@@ -255,7 +261,7 @@ export function MigrationBanner({ onComplete }: { onComplete: () => void }) {
 
         .migration-banner-text strong {
           font-size: 13px;
-          color: var(--color-yellow);
+          color: #f87171;
         }
 
         .migration-banner-text span {

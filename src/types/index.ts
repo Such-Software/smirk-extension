@@ -236,6 +236,7 @@ export type MessageType =
   // Key derivation migration
   | { type: 'START_MIGRATION' }
   | { type: 'GET_MIGRATION_STATUS' }
+  | { type: 'RECOVER_V1_FUNDS' }
   // Tips received (history view)
   | { type: 'GET_RECEIVED_TIPS' };
 

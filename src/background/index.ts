@@ -153,6 +153,9 @@ import {
   handleGetMigrationStatus,
 } from './migration';
 
+// Recovery
+import { handleRecoverV1Funds } from './recovery';
+
 // =============================================================================
 // Prices Handler
 // =============================================================================
@@ -437,6 +440,9 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
 
     case 'GET_MIGRATION_STATUS':
       return handleGetMigrationStatus();
+
+    case 'RECOVER_V1_FUNDS':
+      return handleRecoverV1Funds();
 
     // =========================================================================
     // Unknown

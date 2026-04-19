@@ -140,6 +140,41 @@ export async function handleUnlockWallet(password: string): Promise<MessageRespo
       }
     }
 
+    // If wallet is v2 but encrypted keys are still v1 (migration updated public keys
+    // but not encrypted private keys), re-derive v2 keys from mnemonic and replace in-memory.
+    if (state.derivationVersion === 2 && unlockedMnemonic) {
+      try {
+        const v2Keys = deriveAllKeys(unlockedMnemonic, '', 2);
+        // Replace XMR/WOW private keys with v2 derivation
+        unlockedKeys.set('xmr', v2Keys.xmr.privateSpendKey);
+        unlockedKeys.set('wow', v2Keys.wow.privateSpendKey);
+        unlockedKeys.set('grin', v2Keys.grin.privateKey);
+        unlockedViewKeys.set('xmr', v2Keys.xmr.privateViewKey);
+        unlockedViewKeys.set('wow', v2Keys.wow.privateViewKey);
+
+        // Always ensure ALL public keys match v2 derivation (including publicViewKey)
+        if (state.keys.xmr) {
+          state.keys.xmr.publicKey = bytesToHex(v2Keys.xmr.publicSpendKey);
+          state.keys.xmr.publicSpendKey = bytesToHex(v2Keys.xmr.publicSpendKey);
+          state.keys.xmr.publicViewKey = bytesToHex(v2Keys.xmr.publicViewKey);
+        }
+        if (state.keys.wow) {
+          state.keys.wow.publicKey = bytesToHex(v2Keys.wow.publicSpendKey);
+          state.keys.wow.publicSpendKey = bytesToHex(v2Keys.wow.publicSpendKey);
+          state.keys.wow.publicViewKey = bytesToHex(v2Keys.wow.publicViewKey);
+        }
+        if (state.keys.grin) {
+          state.keys.grin.publicKey = bytesToHex(v2Keys.grin.publicKey);
+        }
+        await saveWalletState(state);
+        console.log('[Unlock] v2 public keys set in wallet state (spend + view)');
+
+        console.log('[Unlock] Re-derived v2 keys from mnemonic for v2 wallet');
+      } catch (err) {
+        console.warn('[Unlock] Failed to re-derive v2 keys:', err);
+      }
+    }
+
     // Auto-upgrade PBKDF2 iterations from legacy 100K to 600K
     if (!state.pbkdf2Iterations || state.pbkdf2Iterations < PBKDF2_ITERATIONS) {
       try {

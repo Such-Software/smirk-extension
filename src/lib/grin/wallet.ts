@@ -82,6 +82,56 @@ export async function initGrinWallet(mnemonic: string): Promise<GrinKeys> {
   };
 }
 
+/** Legacy MWC path for migration sweeps */
+export const LEGACY_MWC_PATH = new Uint32Array([
+  44 | 0x80000000,  // 44' (BIP44 purpose, hardened)
+  593 | 0x80000000, // 593' (MWC coin type, hardened)
+  0 | 0x80000000,   // 0' (account, hardened)
+  0,                 // 0 (change)
+  0,                 // 0 (address index)
+]);
+
+/**
+ * Initialize Grin wallet at a specific derivation path.
+ * Used for migration sweeps (old path) while default uses new standard path.
+ */
+export async function initGrinWalletAtPath(mnemonic: string, path: Uint32Array): Promise<GrinKeys> {
+  await initializeGrinWasm();
+
+  const Crypto = getCrypto();
+  const Seed = getSeed();
+  const Ed25519 = getEd25519();
+  const Secp256k1Zkp = getSecp256k1Zkp();
+  const bech32 = getBech32();
+
+  const seedInstance = new Seed();
+  await seedInstance.initialize(mnemonic);
+
+  const extendedPrivateKey = await seedInstance.getExtendedPrivateKey(
+    globalThis.Wallet.SEED_KEY,
+    true,
+    undefined, // default salt
+    path
+  );
+
+  const secretKey = new Uint8Array(extendedPrivateKey.subarray(0, 32));
+  const publicKey = Secp256k1Zkp.publicKeyFromSecretKey(secretKey);
+  if (publicKey === Secp256k1Zkp.OPERATION_FAILED) {
+    throw new Error('Failed to derive public key');
+  }
+
+  const addressKey = await Crypto.addressKey(extendedPrivateKey, 0);
+  const ed25519PublicKey = Ed25519.publicKeyFromSecretKey(addressKey);
+  if (ed25519PublicKey === Ed25519.OPERATION_FAILED) {
+    throw new Error('Failed to derive Ed25519 public key');
+  }
+
+  const words = bech32.toWords(ed25519PublicKey);
+  const slatepackAddress = bech32.encode('grin', words, 1023);
+
+  return { secretKey, publicKey, slatepackAddress, extendedPrivateKey, addressKey };
+}
+
 /**
  * Reconstruct Grin wallet keys from a stored extended private key.
  * This allows restoring the wallet after service worker restart without the mnemonic.

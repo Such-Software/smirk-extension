@@ -77,12 +77,14 @@ export async function handleStartMigration(): Promise<MessageResponse> {
   const oldXmrAddr = xmrAddress(v1Keys.xmr.publicSpendKey, v1Keys.xmr.publicViewKey);
   const oldWowAddr = wowAddress(v1Keys.wow.publicSpendKey, v1Keys.wow.publicViewKey);
 
-  // Initialize status — only XMR and WOW need sweeping (BTC/LTC derivation unchanged)
+  // Initialize status — XMR, WOW auto-sweep; Grin balance check only
+  // (Grin can't auto-sweep because WASM wallet path already changed)
   migrationStatus = {
     phase: 'checking',
     steps: [
       { asset: 'xmr', status: 'pending', oldAddress: oldXmrAddr, newAddress: newXmrAddr },
       { asset: 'wow', status: 'pending', oldAddress: oldWowAddr, newAddress: newWowAddr },
+      { asset: 'grin', status: 'pending' },
     ],
   };
 
@@ -98,6 +100,14 @@ export async function handleStartMigration(): Promise<MessageResponse> {
           step.balance = bal;
           if (bal <= 0) {
             step.status = 'skipped';
+          }
+          // Grin with balance can't be auto-swept — block migration
+          if (step.asset === 'grin' && bal > 0) {
+            step.status = 'error';
+            step.error = 'Send your GRIN first, then retry';
+            migrationStatus.phase = 'error';
+            migrationStatus.error = 'Please send your GRIN balance to another wallet before upgrading. The Grin address will change and auto-sweep is not yet supported for Grin.';
+            return { success: false, error: migrationStatus.error };
           }
         } else {
           step.balance = 0;

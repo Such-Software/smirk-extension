@@ -276,35 +276,38 @@ function injectClaimUI(claimData: ClaimPageData) {
 // Initialization
 // ============================================================================
 
-function init() {
-  // Always inject the smirk API
-  injectSmirkAPI();
-  setupMessageRelay();
-
-  // Check for claim page
-  const claimData = extractClaimData();
-  if (claimData) {
-    console.log('Smirk: Detected claim page', claimData);
-    injectClaimUI(claimData);
+/**
+ * Check if web API injection is disabled via settings.
+ * Reads a dedicated storage key for fast access (avoids parsing full wallet state).
+ */
+async function isWebApiDisabled(): Promise<boolean> {
+  try {
+    const result = await browserAPI.storage.local.get('smirkDisableWebApi');
+    return result.smirkDisableWebApi === true;
+  } catch {
+    return false;
   }
 }
 
-// Run when DOM is ready - but inject API as early as possible
-if (document.readyState === 'loading') {
-  // Inject API immediately, don't wait for DOMContentLoaded
-  injectSmirkAPI();
-  setupMessageRelay();
+async function init() {
+  // Check if user disabled window.smirk injection (privacy/fingerprinting protection)
+  const disabled = await isWebApiDisabled();
 
-  // Wait for body to inject claim UI
-  document.addEventListener('DOMContentLoaded', () => {
-    const claimData = extractClaimData();
-    if (claimData) {
-      console.log('Smirk: Detected claim page', claimData);
+  if (!disabled) {
+    injectSmirkAPI();
+    setupMessageRelay();
+  }
+
+  // Check for claim page (always, even if API disabled — this is our own domain only)
+  const claimData = extractClaimData();
+  if (claimData) {
+    console.log('Smirk: Detected claim page', claimData);
+    if (document.body) {
       injectClaimUI(claimData);
+    } else {
+      document.addEventListener('DOMContentLoaded', () => injectClaimUI(claimData));
     }
-  });
-} else {
-  init();
+  }
 }
 
-console.log('Smirk Wallet content script loaded');
+init();

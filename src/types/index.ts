@@ -31,6 +31,8 @@ export interface UserSettings {
   autoLockMinutes: number;
   // UI theme
   theme: Theme;
+  // Disable window.smirk API injection on all sites (prevents fingerprinting)
+  disableWebApi: boolean;
 }
 
 // Block heights at wallet creation (for efficient LWS sync)

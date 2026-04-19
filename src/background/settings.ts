@@ -14,6 +14,7 @@ import {
   removeConnectedSite,
   type ConnectedSite,
 } from '@/lib/storage';
+import { storage } from '@/lib/browser';
 import { alarms } from '@/lib/browser';
 import {
   AUTO_LOCK_ALARM,
@@ -65,6 +66,11 @@ export async function handleUpdateSettings(
     if (isUnlocked) {
       await resetAutoLockTimer();
     }
+  }
+
+  // Sync web API flag to dedicated key for fast content script access
+  if (settings.disableWebApi !== undefined) {
+    await storage.local.set({ smirkDisableWebApi: settings.disableWebApi });
   }
 
   return { success: true, data: { settings: updatedSettings } };

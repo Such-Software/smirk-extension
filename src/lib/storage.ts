@@ -35,6 +35,7 @@ export const DEFAULT_WALLET_STATE: WalletState = {
     defaultAsset: 'btc',
     autoLockMinutes: 15, // Default: 15 minutes
     theme: 'dark',
+    disableWebApi: false,
   },
 };
 

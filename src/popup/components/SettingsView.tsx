@@ -347,6 +347,21 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
                 </div>
               </div>
 
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={settings.disableWebApi}
+                    onChange={(e) => updateSetting('disableWebApi', (e.target as HTMLInputElement).checked)}
+                    disabled={saving}
+                  />
+                  Disable window.smirk on websites
+                </label>
+                <div class="settings-hint">
+                  Prevents websites from detecting Smirk is installed. Disables dApp integration.
+                </div>
+              </div>
+
               {/* Show Recovery Phrase */}
               <div class="settings-card-divider">
                 <button

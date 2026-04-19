@@ -398,8 +398,8 @@ export function WalletView({ onLock }: { onLock: () => void }) {
         {needsMigration && (
           <MigrationBanner onComplete={() => {
             setNeedsMigration(false);
-            // Refresh balances after migration
-            fetchBalance(activeAsset);
+            // Lock wallet so user re-unlocks into clean LWS state
+            onLock();
           }} />
         )}
 

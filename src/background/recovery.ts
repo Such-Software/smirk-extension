@@ -9,7 +9,6 @@ import type { MessageResponse } from '@/types';
 import { deriveAllKeys } from '@/lib/hd';
 import { xmrAddress, wowAddress } from '@/lib/address';
 import { sendTransaction, type XmrAsset } from '@/lib/xmr-tx';
-import { initGrinWalletAtPath, LEGACY_MWC_PATH } from './grin/helpers';
 import { initGrinWallet } from '@/lib/grin';
 import { bytesToHex } from '@/lib/crypto';
 import { api } from '@/lib/api';
@@ -152,13 +151,12 @@ export async function handleRecoverV1Funds(): Promise<MessageResponse<RecoverySt
           status.grin.status = 'error';
           status.grin.error = 'Balance too small (less than fee)';
         } else {
-          // STEP 1: Init at OLD path and create S1
-          // Must FULLY reinit WASM for each step — the Seed internal state
-          // determines blinding factors, not just the keys object
-          const oldGrinKeys = await initGrinWalletAtPath(unlockedMnemonic!, LEGACY_MWC_PATH);
-          setGrinWasmKeys(oldGrinKeys);
-          const oldKeyHex = bytesToHex(new Uint8Array(oldGrinKeys.extendedPrivateKey.subarray(0, 16)));
-          console.log('[Recovery] Grin S1: OLD path, extKey prefix:', oldKeyHex, 'addr:', oldGrinKeys.slatepackAddress);
+          // Use the NORMAL initGrinWallet (through wallet.ts) — NOT initGrinWalletAtPath!
+          // initGrinWalletAtPath produces a different key despite same path prefix.
+          // The normal initGrinWallet goes through the correct MWC code path.
+          const grinKeys = await initGrinWallet(unlockedMnemonic!);
+          setGrinWasmKeys(grinKeys);
+          console.log('[Recovery] Grin S1: using initGrinWallet, addr:', grinKeys.slatepackAddress);
 
           const sendResult = await handleGrinCreateSend(sendAmount, feeBuffer, undefined);
           if (!sendResult.success || !sendResult.data) {
@@ -166,12 +164,8 @@ export async function handleRecoverV1Funds(): Promise<MessageResponse<RecoverySt
           }
           console.log('[Recovery] Grin S1 created:', sendResult.data.slateId);
 
-          // STEP 2: FULLY reinit at NEW path and sign S2
-          const newGrinKeys = await initGrinWallet(unlockedMnemonic!);
-          setGrinWasmKeys(newGrinKeys);
-          const newKeyHex = bytesToHex(new Uint8Array(newGrinKeys.extendedPrivateKey.subarray(0, 16)));
-          console.log('[Recovery] Grin S2: NEW path, extKey prefix:', newKeyHex, 'addr:', newGrinKeys.slatepackAddress);
-          console.log('[Recovery] Keys different?', oldKeyHex !== newKeyHex);
+          // S2: use same keys (same wallet, self-send)
+          // No need to reinit — keys are already correct
 
           const signResult = await handleGrinSignSlatepack(sendResult.data.slatepack);
           if (!signResult.success || !signResult.data) {
@@ -179,10 +173,8 @@ export async function handleRecoverV1Funds(): Promise<MessageResponse<RecoverySt
           }
           console.log('[Recovery] Grin S2 signed');
 
-          // STEP 3: FULLY reinit at OLD path and finalize S3
-          const oldGrinKeys2 = await initGrinWalletAtPath(unlockedMnemonic!, LEGACY_MWC_PATH);
-          setGrinWasmKeys(oldGrinKeys2);
-          console.log('[Recovery] Grin S3: WASM reinit at OLD path for finalize');
+          // S3: same keys, just finalize
+          console.log('[Recovery] Grin S3: finalizing with same keys');
 
           const finalizeResult = await handleGrinFinalizeAndBroadcast(
             signResult.data.signedSlatepack,

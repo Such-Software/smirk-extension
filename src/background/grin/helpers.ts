@@ -65,10 +65,12 @@ export async function initGrinWalletAtPath(mnemonic: string, path: Uint32Array):
 
   const seedInstance = new Seed();
   await seedInstance.initialize(mnemonic);
+  // CRITICAL: pass empty Uint8Array as bip39Salt (Seed.DEFAULT_BIP39_SALT),
+  // NOT undefined — undefined corrupts the salt computation and changes all derived keys
   const extendedPrivateKey = await seedInstance.getExtendedPrivateKey(
     (globalThis as Record<string, unknown>).Wallet ? ((globalThis as Record<string, unknown>).Wallet as Record<string, string>).SEED_KEY : 'IamVoldemort',
     true,
-    undefined,
+    new Uint8Array([]), // DEFAULT_BIP39_SALT
     path
   );
 

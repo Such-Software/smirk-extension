@@ -10,17 +10,17 @@
  */
 
 import type { MessageResponse, AssetType } from '@/types';
-import { deriveAllKeys, type DerivedKeys } from '@/lib/hd';
+import { deriveAllKeys } from '@/lib/hd';
 import { xmrAddress, wowAddress } from '@/lib/address';
 import { sendTransaction, type XmrAsset } from '@/lib/xmr-tx';
-import { handleSendTx } from './send';
+import { initGrinWallet } from '@/lib/grin';
 import { handleGetBalance } from './balance';
 import { registerWithLwsFromUnlockedKeys } from './wallet';
+import { handleGrinCreateSend, handleGrinFinalizeAndBroadcast, handleGrinSignSlatepack } from './grin';
 import { api } from '@/lib/api';
 import { getWalletState, saveWalletState, getAuthState } from '@/lib/storage';
 import { setGrinWasmKeys } from './state';
 import { bytesToHex } from '@/lib/crypto';
-import { getPublicKey } from '@/lib/crypto';
 import {
   unlockedKeys,
   unlockedViewKeys,
@@ -79,8 +79,7 @@ export async function handleStartMigration(): Promise<MessageResponse> {
   const oldXmrAddr = xmrAddress(v1Keys.xmr.publicSpendKey, v1Keys.xmr.publicViewKey);
   const oldWowAddr = wowAddress(v1Keys.wow.publicSpendKey, v1Keys.wow.publicViewKey);
 
-  // Initialize status — XMR, WOW auto-sweep; Grin balance check only
-  // (Grin can't auto-sweep because WASM wallet path already changed)
+  // Initialize status — auto-sweep for XMR, WOW, and Grin
   migrationStatus = {
     phase: 'checking',
     steps: [
@@ -117,17 +116,9 @@ export async function handleStartMigration(): Promise<MessageResponse> {
             step.status = 'skipped';
           }
 
-          // Grin cross-path self-sweep is mathematically impossible
-          // (blinding factors from different derivation paths don't balance
-          // in the kernel equation — the Grin node rejects the tx).
-          // User must send Grin before migrating.
-          if (step.asset === 'grin' && step.balance > 0) {
-            step.status = 'error';
-            step.error = 'Send GRIN first, then upgrade';
-            migrationStatus.phase = 'error';
-            migrationStatus.error = 'You have GRIN balance. Use the Send button to send your GRIN to a friend or another wallet first, then tap Upgrade again. Your GRIN address is changing and auto-transfer is not possible for Grin.';
-            return { success: false, error: migrationStatus.error };
-          }
+          // Grin uses same-wallet SRS self-transaction for sweep.
+          // initGrinWallet() produces correct keys — do NOT use initGrinWalletAtPath().
+          // See TECHNICAL_DEBT.md item #9 for details.
         } else {
           step.balance = 0;
           step.status = 'skipped';
@@ -169,10 +160,51 @@ export async function handleStartMigration(): Promise<MessageResponse> {
           console.log(`[Migration] ${step.asset} swept: ${result.txHash}, fee: ${result.fee}`);
 
         } else if (step.asset === 'grin') {
-          // Grin auto-sweep blocked above — should never reach here
-          step.status = 'error';
-          step.error = 'Grin auto-sweep not supported';
-          console.log(`[Migration] Grin sweep initiated: ${sendResult.data.slateId}`);
+          // Grin self-sweep: SRS transaction using same wallet keys
+          // Uses initGrinWallet() which produces correct key material
+          const grinKeys = await initGrinWallet(unlockedMnemonic!);
+          setGrinWasmKeys(grinKeys);
+          console.log('[Migration] Grin sweep: using initGrinWallet, addr:', grinKeys.slatepackAddress);
+
+          const feeBuffer = 30000000; // 0.03 GRIN
+          const sendAmount = step.balance - feeBuffer;
+
+          if (sendAmount <= 0) {
+            step.status = 'error';
+            step.error = 'Grin balance too small (less than fee)';
+          } else {
+            // S1: create send slate
+            const sendResult = await handleGrinCreateSend(sendAmount, feeBuffer, undefined);
+            if (!sendResult.success || !sendResult.data) {
+              throw new Error('Grin S1 create failed');
+            }
+            console.log('[Migration] Grin S1 created:', sendResult.data.slateId);
+
+            // S2: sign (same wallet = self-send)
+            const signResult = await handleGrinSignSlatepack(sendResult.data.slatepack);
+            if (!signResult.success || !signResult.data) {
+              throw new Error('Grin S2 sign failed');
+            }
+            console.log('[Migration] Grin S2 signed');
+
+            // S3: finalize and broadcast
+            const finalizeResult = await handleGrinFinalizeAndBroadcast(
+              signResult.data.signedSlatepack,
+              sendResult.data.sendContext
+            );
+
+            if (finalizeResult.success) {
+              step.txHash = sendResult.data.slateId;
+              step.status = 'swept';
+              console.log('[Migration] Grin swept:', sendResult.data.slateId);
+            } else {
+              throw new Error('Grin finalize/broadcast failed');
+            }
+          }
+
+          // Restore keys for normal wallet operations
+          const freshKeys = await initGrinWallet(unlockedMnemonic!);
+          setGrinWasmKeys(freshKeys);
         }
       } catch (err) {
         step.status = 'error';

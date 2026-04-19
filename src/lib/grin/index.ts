@@ -180,11 +180,7 @@ export async function createSendTransaction(
   hasChange = changeAmount > BigInt(0);
   const numberOfChangeOutputs = hasChange ? 1 : 0;
 
-  console.log('[createSendTransaction] UTXO selection complete:');
-  console.log('  - Inputs:', selectedOutputs.length);
-  console.log('  - Outputs:', actualOutputs, '(1 send +', numberOfChangeOutputs, 'change)');
-  console.log('  - Fee:', fee.toString(), 'nanogrin (', Number(fee) / 1e9, 'GRIN)');
-  console.log('  - Change:', changeAmount.toString(), 'nanogrin');
+  console.log(`[createSendTransaction] ${selectedOutputs.length} inputs, ${actualOutputs} outputs, fee ${Number(fee) / 1e9} GRIN, change ${Number(changeAmount) / 1e9} GRIN`);
 
   // Create the slate
   const amountBN = new BigNumber(amount.toString());
@@ -210,10 +206,8 @@ export async function createSendTransaction(
     return new SlateInput(features, commitBytes);
   });
 
-  // Add inputs to slate - use sync method which modifies in place
-  console.log('[createSendTransaction] Adding', slateInputs.length, 'inputs to slate');
+  // Add inputs to slate
   slate.addInputs(slateInputs, true, numberOfChangeOutputs + 1);
-  console.log('[createSendTransaction] After addInputs, slate inputs:', slate.getInputs?.()?.length ?? 'getInputs not available');
 
   // Build change output if needed
   let changeOutputInfo: SendTransactionResult['changeOutput'] = undefined;
@@ -224,6 +218,7 @@ export async function createSendTransaction(
   }> = [];
 
   // Track input identifiers for sum calculation
+  // Also verify input commitments match what we'd derive (detects key mismatch)
   for (const output of selectedOutputs) {
     const identifier = new Identifier(output.keyId);
     inputsForSum.push({
@@ -231,6 +226,18 @@ export async function createSendTransaction(
       identifier,
       switchType: Crypto.SWITCH_TYPE_REGULAR,
     });
+
+    // Verify commitment matches — detects key derivation mismatches early
+    const rederived = await Crypto.commit(
+      keys.extendedPrivateKey,
+      new BigNumber(output.amount.toString()),
+      identifier,
+      Crypto.SWITCH_TYPE_REGULAR
+    );
+    const rederivedHex = Common.toHexString(rederived);
+    if (rederivedHex !== output.commitment) {
+      throw new Error(`Commitment mismatch for n_child=${output.nChild}: key does not match stored commitment`);
+    }
   }
 
   let outputForSum: { amount: any; identifier: any; switchType: number } | null = null;
@@ -244,16 +251,12 @@ export async function createSendTransaction(
     const changeAmountBN = new BigNumber(changeAmount.toString());
 
     // Create commitment for change output
-    console.log('[createSendTransaction] Change output using extKey prefix:', Common.toHexString(new Uint8Array(keys.extendedPrivateKey.subarray(0, 16))));
-    console.log('[createSendTransaction] Change identifier:', Common.toHexString(changeIdentifier.getValue()));
     const changeCommit = await Crypto.commit(
       keys.extendedPrivateKey,
       changeAmountBN,
       changeIdentifier,
       Crypto.SWITCH_TYPE_REGULAR
     );
-    console.log('[createSendTransaction] Change commitment:', Common.toHexString(changeCommit));
-
     // Create bulletproof range proof using ProofBuilder
     const proofBuilder = new ProofBuilder();
     await proofBuilder.initialize(keys.extendedPrivateKey);
@@ -327,7 +330,6 @@ export async function createSendTransaction(
   }
 
   // Subtract input blinding factors
-  console.log('[createSendTransaction] Deriving input blinds with extKey prefix:', Common.toHexString(new Uint8Array(keys.extendedPrivateKey.subarray(0, 16))));
   for (const input of inputsForSum) {
     const inputSecretKey = await Crypto.deriveSecretKey(
       keys.extendedPrivateKey,
@@ -335,8 +337,6 @@ export async function createSendTransaction(
       input.identifier,
       input.switchType
     );
-    console.log('[createSendTransaction] Input blind:', Common.toHexString(inputSecretKey), 'for id:', Common.toHexString(input.identifier.getValue()));
-
     // Subtract input secret key from sum: sum = sum - inputSecretKey
     // Use blindSum with input as negative blind
     const newSum = Secp256k1Zkp.blindSum([sum], [inputSecretKey]);
@@ -395,9 +395,8 @@ export async function createSendTransaction(
 
   // Verify inputs are still in the slate before returning
   const finalInputCount = slate.getInputs?.()?.length ?? 0;
-  console.log('[createSendTransaction] Final slate input count before return:', finalInputCount);
   if (finalInputCount === 0) {
-    console.error('[createSendTransaction] CRITICAL: Slate has no inputs at return time!');
+    throw new Error('Slate has no inputs after construction');
   }
 
   return {

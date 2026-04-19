@@ -423,8 +423,14 @@ class Seed {
 											// Securely clear raw key
 											rawKey.fill(0);
 											
-											// Use path override if provided, otherwise grin-wallet standard: m/0/0/0/0/0
-											var path = pathOverride || new Uint32Array([0, 0, 0, 0, 0]);
+											// Use path override if provided, otherwise MWC standard
+											var path = pathOverride || new Uint32Array([
+												Seed.BIP44_PURPOSE | Identifier.PATH_HARDENED_MASK,
+												Consensus.BIP44_COIN_TYPE | Identifier.PATH_HARDENED_MASK,
+												Seed.BIP44_ACCOUNT | Identifier.PATH_HARDENED_MASK,
+												0,
+												0
+											]);
 											
 											// Return deriving child key at the path from the extended private key
 											return Crypto.deriveChildKey(extendedPrivateKey, path, true).then(function(childKey) {

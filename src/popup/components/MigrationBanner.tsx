@@ -111,7 +111,7 @@ export function MigrationBanner({ onComplete }: { onComplete: () => void }) {
               {status.steps.some(s => s.status === 'swept') ? (
                 <p>Funds have been sent to your new addresses. They will appear as "locked" after 1-2 block confirmations (usually under 10 minutes).</p>
               ) : (
-                <p>Your wallet now uses standard key derivation compatible with Cake Wallet, Exodus, and other wallets.</p>
+                <p>Your wallet now uses standard key derivation. Your recovery phrase is now portable to other wallets like Cake Wallet.</p>
               )}
               <button class="btn btn-primary" onClick={onComplete}>Done</button>
             </div>

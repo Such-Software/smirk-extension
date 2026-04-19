@@ -133,7 +133,7 @@ export async function handleStartMigration(): Promise<MessageResponse> {
     migrationStatus.phase = 'sweeping';
 
     for (const step of migrationStatus.steps) {
-      if (step.status !== 'pending' || !step.balance || step.balance <= 0) continue;
+      if (step.status !== 'checking' || !step.balance || step.balance <= 0) continue;
 
       step.status = 'sweeping';
 

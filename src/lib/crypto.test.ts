@@ -400,15 +400,23 @@ describe('URL Fragment Key Generation', () => {
 });
 
 describe('Bitcoin Message Signing', () => {
-  it('signBitcoinMessage returns 128-char hex (64 bytes)', () => {
+  it('signBitcoinMessage returns Base64 BIP-137 signature (88 chars)', () => {
     const privateKey = generatePrivateKey();
     const message = 'Test message';
 
     const signature = signBitcoinMessage(message, privateKey);
 
     expect(typeof signature).toBe('string');
-    expect(signature.length).toBe(128);
-    expect(signature).toMatch(/^[0-9a-f]+$/);
+    // BIP-137: Base64(65 bytes) = 88 chars
+    expect(signature.length).toBe(88);
+    // Verify it's valid Base64
+    expect(() => atob(signature)).not.toThrow();
+    // Decoded should be 65 bytes (header + r + s)
+    const decoded = Uint8Array.from(atob(signature), c => c.charCodeAt(0));
+    expect(decoded.length).toBe(65);
+    // Header byte should be 31 or 32 (27 + recovery + 4)
+    expect(decoded[0]).toBeGreaterThanOrEqual(31);
+    expect(decoded[0]).toBeLessThanOrEqual(32);
   });
 
   it('signBitcoinMessage is deterministic', () => {
@@ -445,34 +453,36 @@ describe('Bitcoin Message Signing', () => {
     const privateKey = generatePrivateKey();
     const signature = signBitcoinMessage('', privateKey);
 
-    expect(signature.length).toBe(128);
+    expect(signature.length).toBe(88); // Base64(65 bytes)
   });
 
   it('handles unicode message', () => {
     const privateKey = generatePrivateKey();
     const signature = signBitcoinMessage('Hello 🌍 World! Привет!', privateKey);
 
-    expect(signature.length).toBe(128);
+    expect(signature.length).toBe(88);
   });
 
-  it('signature matches known test vector', () => {
-    // Private key = 1, message = "Hello World"
-    // This is a regression test - if the signing format changes, this will fail
+  it('BIP-137 signature has correct structure', () => {
     const privateKey = hexToBytes('0000000000000000000000000000000000000000000000000000000000000001');
     const message = 'Hello World';
 
     const signature = signBitcoinMessage(message, privateKey);
 
-    // Verify signature format (r and s are both 32 bytes)
-    const r = signature.slice(0, 64);
-    const s = signature.slice(64, 128);
+    // Decode Base64
+    const decoded = Uint8Array.from(atob(signature), c => c.charCodeAt(0));
+    expect(decoded.length).toBe(65);
 
-    expect(r.length).toBe(64);
-    expect(s.length).toBe(64);
+    // First byte: header (27 + recovery + 4 for compressed)
+    const header = decoded[0];
+    expect(header).toBeGreaterThanOrEqual(31); // 27 + 0 + 4
+    expect(header).toBeLessThanOrEqual(32);    // 27 + 1 + 4
 
-    // r and s should be valid hex
-    expect(r).toMatch(/^[0-9a-f]+$/);
-    expect(s).toMatch(/^[0-9a-f]+$/);
+    // Remaining 64 bytes: r (32) + s (32)
+    const r = decoded.slice(1, 33);
+    const s = decoded.slice(33, 65);
+    expect(r.length).toBe(32);
+    expect(s.length).toBe(32);
   });
 });
 

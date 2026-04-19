@@ -33,6 +33,7 @@ export async function handleGetWalletState(): Promise<MessageResponse<{
   hasWallet: boolean;
   assets: AssetType[];
   needsBackup: boolean;
+  derivationVersion?: number;
 }>> {
   const state = await getWalletState();
   const hasWallet = !!state.encryptedSeed;
@@ -47,6 +48,7 @@ export async function handleGetWalletState(): Promise<MessageResponse<{
       hasWallet,
       assets,
       needsBackup: hasWallet && !state.backupConfirmed,
+      derivationVersion: state.derivationVersion,
     },
   };
 }

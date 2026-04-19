@@ -233,6 +233,9 @@ export type MessageType =
   // Prices
   | { type: 'GET_PRICES' }
   | { type: 'GET_SPARKLINE'; asset: string }
+  // Key derivation migration
+  | { type: 'START_MIGRATION' }
+  | { type: 'GET_MIGRATION_STATUS' }
   // Tips received (history view)
   | { type: 'GET_RECEIVED_TIPS' };
 

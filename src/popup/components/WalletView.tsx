@@ -28,6 +28,7 @@ import { useToast } from './Toast';
 import { getGrinPendingReceive, type GrinPendingReceive } from '@/lib/storage';
 import { BalanceCard, GrinPendingBanner } from './wallet';
 import { InfoPanel } from './InfoPanel';
+import { MigrationBanner } from './MigrationBanner';
 
 // Check if we're already in a popped out window
 const isPopup = window.location.search.includes('popup=true');
@@ -61,6 +62,8 @@ export function WalletView({ onLock }: { onLock: () => void }) {
   const [claimableTipsCount, setClaimableTipsCount] = useState(0);
   // Count of sent public tips ready to share (confirmed, link available)
   const [readyToShareCount, setReadyToShareCount] = useState(0);
+  // Whether wallet needs migration (v1 → v2 derivation)
+  const [needsMigration, setNeedsMigration] = useState(false);
 
   // =========================================================================
   // Effects
@@ -82,6 +85,14 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     };
     restore();
     getGrinPendingReceive().then(setGrinPendingReceive);
+    // Check if wallet needs migration
+    sendMessage<{ derivationVersion?: number }>({ type: 'GET_WALLET_STATE' })
+      .then((state) => {
+        if (!state.derivationVersion || state.derivationVersion < 2) {
+          setNeedsMigration(true);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // Save screen state whenever screen or asset changes
@@ -383,6 +394,15 @@ export function WalletView({ onLock }: { onLock: () => void }) {
       </header>
 
       <div class="content">
+        {/* Migration Banner (v1 → v2 derivation upgrade) */}
+        {needsMigration && (
+          <MigrationBanner onComplete={() => {
+            setNeedsMigration(false);
+            // Refresh balances after migration
+            fetchBalance(activeAsset);
+          }} />
+        )}
+
         {/* Pending Grin Receive Banner */}
         {grinPendingReceive && activeAsset === 'grin' && (
           <GrinPendingBanner

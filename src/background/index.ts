@@ -147,6 +147,12 @@ import {
   handleGetPublicTipShareUrl,
 } from './social';
 
+// Migration
+import {
+  handleStartMigration,
+  handleGetMigrationStatus,
+} from './migration';
+
 // =============================================================================
 // Prices Handler
 // =============================================================================
@@ -422,6 +428,15 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
 
     case 'GET_SPARKLINE':
       return handleGetSparkline(message.asset);
+
+    // =========================================================================
+    // Key Derivation Migration
+    // =========================================================================
+    case 'START_MIGRATION':
+      return handleStartMigration();
+
+    case 'GET_MIGRATION_STATUS':
+      return handleGetMigrationStatus();
 
     // =========================================================================
     // Unknown

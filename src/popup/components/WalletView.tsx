@@ -88,7 +88,7 @@ export function WalletView({ onLock }: { onLock: () => void }) {
     // Check if wallet needs migration
     sendMessage<{ derivationVersion?: number }>({ type: 'GET_WALLET_STATE' })
       .then((state) => {
-        if (!state.derivationVersion || state.derivationVersion < 2) {
+        if (!state.derivationVersion || state.derivationVersion < 3) {
           setNeedsMigration(true);
         }
       })

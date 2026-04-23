@@ -195,7 +195,7 @@ export async function createWalletFromMnemonic(
   backupConfirmed: boolean,
   isRestore: boolean = false,
   restoreHeights?: RestoreHeights,
-  derivationVersion: 1 | 2 = 2
+  derivationVersion: 1 | 2 | 3 = 3
 ): Promise<MessageResponse<{ created: boolean; assets: AssetType[] }>> {
   // Derive all keys from mnemonic using specified version
   // New wallets use v2 (BIP44/SLIP-10 standard)

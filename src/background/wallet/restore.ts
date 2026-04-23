@@ -47,10 +47,10 @@ export async function handleRestoreWallet(
   }
 
   // Check if this wallet was previously created in Smirk
-  // Try v2 keys first (BIP44/SLIP-10), fall back to v1 (legacy custom)
+  // Try v3 first (correct SLIP-10), then v2 (buggy), then v1 (legacy custom)
   const fingerprint = computeSeedFingerprint(mnemonic);
 
-  function buildKeysToCheck(version: 1 | 2) {
+  function buildKeysToCheck(version: 1 | 2 | 3) {
     const dk = deriveAllKeys(mnemonic, '', version);
     return [
       { asset: 'btc', publicKey: bytesToHex(getPublicKey(dk.btc.privateKey)) },
@@ -61,12 +61,19 @@ export async function handleRestoreWallet(
     ];
   }
 
-  // Try v2 first
-  let checkResult = await api.checkRestore({ fingerprint, keys: buildKeysToCheck(2) });
-  let restoredVersion: 1 | 2 = 2;
+  // Try v3 first (correct 5-level SLIP-10)
+  let checkResult = await api.checkRestore({ fingerprint, keys: buildKeysToCheck(3) });
+  let restoredVersion: 1 | 2 | 3 = 3;
 
-  // If v2 keys don't match, try v1 (wallet was created before migration)
-  if (checkResult.data && checkResult.data.exists && checkResult.data.keysValid === false) {
+  // If v3 keys don't match, try v2 (buggy 3-level SLIP-10)
+  if (checkResult.data?.exists && checkResult.data.keysValid === false) {
+    console.log('v3 keys did not match, trying v2 derivation...');
+    checkResult = await api.checkRestore({ fingerprint, keys: buildKeysToCheck(2) });
+    restoredVersion = 2;
+  }
+
+  // If v2 keys don't match, try v1 (legacy custom)
+  if (checkResult.data?.exists && checkResult.data.keysValid === false) {
     console.log('v2 keys did not match, trying v1 legacy derivation...');
     checkResult = await api.checkRestore({ fingerprint, keys: buildKeysToCheck(1) });
     restoredVersion = 1;

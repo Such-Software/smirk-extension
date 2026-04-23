@@ -1,22 +1,19 @@
 /**
- * V1 Fund Recovery
+ * Legacy Fund Recovery
  *
- * Sweeps funds from old v1 addresses to new v2 addresses.
+ * Sweeps funds from old v1/v2 addresses to new v3 addresses.
  * Used after migration when the auto-sweep failed or was skipped.
  */
 
 import type { MessageResponse } from '@/types';
 import { deriveAllKeys } from '@/lib/hd';
 import { xmrAddress, wowAddress } from '@/lib/address';
-import { sendTransaction, type XmrAsset } from '@/lib/xmr-tx';
+import { sendTransaction } from '@/lib/xmr-tx';
 import { initGrinWallet } from '@/lib/grin';
 import { bytesToHex } from '@/lib/crypto';
 import { api } from '@/lib/api';
 import {
   unlockedMnemonic,
-  unlockedKeys,
-  unlockedViewKeys,
-  grinWasmKeys,
   setGrinWasmKeys,
 } from './state';
 import { handleGrinCreateSend, handleGrinFinalizeAndBroadcast, handleGrinSignSlatepack } from './grin';
@@ -29,10 +26,10 @@ interface RecoveryStatus {
 }
 
 /**
- * Recover funds from old v1 addresses to new v2 addresses.
+ * Recover funds from old v1/v2 addresses to new v3 addresses.
  *
- * Derives v1 keys from mnemonic, checks balances at old addresses,
- * and sweeps any remaining funds to the current v2 addresses.
+ * Tries sweeping from both v1 and v2 addresses to v3 destination.
+ * Handles all migration paths: v1→v3 and v2→v3.
  */
 export async function handleRecoverV1Funds(): Promise<MessageResponse<RecoveryStatus>> {
   if (!unlockedMnemonic) {
@@ -41,16 +38,19 @@ export async function handleRecoverV1Funds(): Promise<MessageResponse<RecoverySt
 
   const v1Keys = deriveAllKeys(unlockedMnemonic, '', 1);
   const v2Keys = deriveAllKeys(unlockedMnemonic, '', 2);
+  const v3Keys = deriveAllKeys(unlockedMnemonic, '', 3);
 
-  const oldXmrAddr = xmrAddress(v1Keys.xmr.publicSpendKey, v1Keys.xmr.publicViewKey);
-  const oldWowAddr = wowAddress(v1Keys.wow.publicSpendKey, v1Keys.wow.publicViewKey);
-  const newXmrAddr = xmrAddress(v2Keys.xmr.publicSpendKey, v2Keys.xmr.publicViewKey);
-  const newWowAddr = wowAddress(v2Keys.wow.publicSpendKey, v2Keys.wow.publicViewKey);
+  const newXmrAddr = xmrAddress(v3Keys.xmr.publicSpendKey, v3Keys.xmr.publicViewKey);
+  const newWowAddr = wowAddress(v3Keys.wow.publicSpendKey, v3Keys.wow.publicViewKey);
 
-  console.log('[Recovery] Old XMR:', oldXmrAddr);
-  console.log('[Recovery] New XMR:', newXmrAddr);
-  console.log('[Recovery] Old WOW:', oldWowAddr);
-  console.log('[Recovery] New WOW:', newWowAddr);
+  // Build list of old address sources to try (v1 and v2)
+  const oldSources = [
+    { version: 1, keys: v1Keys },
+    { version: 2, keys: v2Keys },
+  ];
+
+  console.log('[Recovery] New XMR (v3):', newXmrAddr);
+  console.log('[Recovery] New WOW (v3):', newWowAddr);
 
   const status: RecoveryStatus = {
     xmr: { status: 'checking' },
@@ -58,73 +58,84 @@ export async function handleRecoverV1Funds(): Promise<MessageResponse<RecoverySt
     grin: { status: 'checking' },
   };
 
-  // === XMR SWEEP ===
-  try {
-    // Query old XMR address via LWS directly
-    const xmrBalResult = await api.getLwsBalance('xmr', oldXmrAddr, bytesToHex(v1Keys.xmr.privateViewKey));
-    const totalReceived = xmrBalResult.data?.total_received || 0;
-    status.xmr.balance = totalReceived;
+  // === XMR SWEEP (try v1 and v2 sources) ===
+  for (const source of oldSources) {
+    const oldXmrAddr = xmrAddress(source.keys.xmr.publicSpendKey, source.keys.xmr.publicViewKey);
+    if (oldXmrAddr === newXmrAddr) continue; // Same address, skip
 
-    if (totalReceived > 0) {
-      console.log(`[Recovery] XMR total_received at old address: ${totalReceived}`);
-      status.xmr.status = 'sweeping';
+    try {
+      const xmrBalResult = await api.getLwsBalance('xmr', oldXmrAddr, bytesToHex(source.keys.xmr.privateViewKey));
+      const totalReceived = xmrBalResult.data?.total_received || 0;
 
-      try {
-        const result = await sendTransaction(
-          'xmr', oldXmrAddr,
-          bytesToHex(v1Keys.xmr.privateViewKey),
-          bytesToHex(v1Keys.xmr.privateSpendKey),
-          newXmrAddr, 0, 'mainnet', true
-        );
-        status.xmr.txHash = result.txHash;
-        status.xmr.status = 'swept';
-        console.log(`[Recovery] XMR swept: ${result.txHash}`);
-      } catch (err) {
-        status.xmr.status = 'error';
-        status.xmr.error = err instanceof Error ? err.message : 'Sweep failed';
-        console.error('[Recovery] XMR sweep failed:', err);
+      if (totalReceived > 0) {
+        console.log(`[Recovery] XMR v${source.version} total_received at old address: ${totalReceived}`);
+        status.xmr.balance = (status.xmr.balance || 0) + totalReceived;
+        status.xmr.status = 'sweeping';
+
+        try {
+          const result = await sendTransaction(
+            'xmr', oldXmrAddr,
+            bytesToHex(source.keys.xmr.privateViewKey),
+            bytesToHex(source.keys.xmr.privateSpendKey),
+            newXmrAddr, 0, 'mainnet', true
+          );
+          status.xmr.txHash = result.txHash;
+          status.xmr.status = 'swept';
+          console.log(`[Recovery] XMR v${source.version} swept: ${result.txHash}`);
+        } catch (err) {
+          status.xmr.status = 'error';
+          status.xmr.error = err instanceof Error ? err.message : 'Sweep failed';
+          console.error(`[Recovery] XMR v${source.version} sweep failed:`, err);
+        }
+      } else if (status.xmr.status === 'checking') {
+        status.xmr.status = 'no_balance';
       }
-    } else {
-      status.xmr.status = 'no_balance';
-      console.log('[Recovery] No XMR at old address');
+    } catch (err) {
+      if (status.xmr.status === 'checking') {
+        status.xmr.status = 'error';
+        status.xmr.error = err instanceof Error ? err.message : 'Balance check failed';
+      }
     }
-  } catch (err) {
-    status.xmr.status = 'error';
-    status.xmr.error = err instanceof Error ? err.message : 'Balance check failed';
   }
 
-  // === WOW SWEEP ===
-  try {
-    const wowBalResult = await api.getLwsBalance('wow', oldWowAddr, bytesToHex(v1Keys.wow.privateViewKey));
-    const totalReceived = wowBalResult.data?.total_received || 0;
-    status.wow.balance = totalReceived;
+  // === WOW SWEEP (try v1 and v2 sources) ===
+  for (const source of oldSources) {
+    const oldWowAddr = wowAddress(source.keys.wow.publicSpendKey, source.keys.wow.publicViewKey);
+    if (oldWowAddr === newWowAddr) continue; // Same address, skip
 
-    if (totalReceived > 0) {
-      console.log(`[Recovery] WOW total_received at old address: ${totalReceived}`);
-      status.wow.status = 'sweeping';
+    try {
+      const wowBalResult = await api.getLwsBalance('wow', oldWowAddr, bytesToHex(source.keys.wow.privateViewKey));
+      const totalReceived = wowBalResult.data?.total_received || 0;
 
-      try {
-        const result = await sendTransaction(
-          'wow', oldWowAddr,
-          bytesToHex(v1Keys.wow.privateViewKey),
-          bytesToHex(v1Keys.wow.privateSpendKey),
-          newWowAddr, 0, 'mainnet', true
-        );
-        status.wow.txHash = result.txHash;
-        status.wow.status = 'swept';
-        console.log(`[Recovery] WOW swept: ${result.txHash}`);
-      } catch (err) {
-        status.wow.status = 'error';
-        status.wow.error = err instanceof Error ? err.message : 'Sweep failed';
-        console.error('[Recovery] WOW sweep failed:', err);
+      if (totalReceived > 0) {
+        console.log(`[Recovery] WOW v${source.version} total_received at old address: ${totalReceived}`);
+        status.wow.balance = (status.wow.balance || 0) + totalReceived;
+        status.wow.status = 'sweeping';
+
+        try {
+          const result = await sendTransaction(
+            'wow', oldWowAddr,
+            bytesToHex(source.keys.wow.privateViewKey),
+            bytesToHex(source.keys.wow.privateSpendKey),
+            newWowAddr, 0, 'mainnet', true
+          );
+          status.wow.txHash = result.txHash;
+          status.wow.status = 'swept';
+          console.log(`[Recovery] WOW v${source.version} swept: ${result.txHash}`);
+        } catch (err) {
+          status.wow.status = 'error';
+          status.wow.error = err instanceof Error ? err.message : 'Sweep failed';
+          console.error(`[Recovery] WOW v${source.version} sweep failed:`, err);
+        }
+      } else if (status.wow.status === 'checking') {
+        status.wow.status = 'no_balance';
       }
-    } else {
-      status.wow.status = 'no_balance';
-      console.log('[Recovery] No WOW at old address');
+    } catch (err) {
+      if (status.wow.status === 'checking') {
+        status.wow.status = 'error';
+        status.wow.error = err instanceof Error ? err.message : 'Balance check failed';
+      }
     }
-  } catch (err) {
-    status.wow.status = 'error';
-    status.wow.error = err instanceof Error ? err.message : 'Balance check failed';
   }
 
   // === GRIN SWEEP ===

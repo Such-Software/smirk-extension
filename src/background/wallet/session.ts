@@ -140,38 +140,37 @@ export async function handleUnlockWallet(password: string): Promise<MessageRespo
       }
     }
 
-    // If wallet is v2 but encrypted keys are still v1 (migration updated public keys
-    // but not encrypted private keys), re-derive v2 keys from mnemonic and replace in-memory.
-    if (state.derivationVersion === 2 && unlockedMnemonic) {
+    // If wallet is v2+ but encrypted keys are still v1 (migration updated public keys
+    // but not encrypted private keys), re-derive correct keys from mnemonic and replace in-memory.
+    if (state.derivationVersion && state.derivationVersion >= 2 && unlockedMnemonic) {
       try {
-        const v2Keys = deriveAllKeys(unlockedMnemonic, '', 2);
-        // Replace XMR/WOW private keys with v2 derivation
-        unlockedKeys.set('xmr', v2Keys.xmr.privateSpendKey);
-        unlockedKeys.set('wow', v2Keys.wow.privateSpendKey);
-        unlockedKeys.set('grin', v2Keys.grin.privateKey);
-        unlockedViewKeys.set('xmr', v2Keys.xmr.privateViewKey);
-        unlockedViewKeys.set('wow', v2Keys.wow.privateViewKey);
+        const vKeys = deriveAllKeys(unlockedMnemonic, '', state.derivationVersion);
+        // Replace XMR/WOW private keys with correct version derivation
+        unlockedKeys.set('xmr', vKeys.xmr.privateSpendKey);
+        unlockedKeys.set('wow', vKeys.wow.privateSpendKey);
+        unlockedKeys.set('grin', vKeys.grin.privateKey);
+        unlockedViewKeys.set('xmr', vKeys.xmr.privateViewKey);
+        unlockedViewKeys.set('wow', vKeys.wow.privateViewKey);
 
-        // Always ensure ALL public keys match v2 derivation (including publicViewKey)
+        // Always ensure ALL public keys match current version derivation
         if (state.keys.xmr) {
-          state.keys.xmr.publicKey = bytesToHex(v2Keys.xmr.publicSpendKey);
-          state.keys.xmr.publicSpendKey = bytesToHex(v2Keys.xmr.publicSpendKey);
-          state.keys.xmr.publicViewKey = bytesToHex(v2Keys.xmr.publicViewKey);
+          state.keys.xmr.publicKey = bytesToHex(vKeys.xmr.publicSpendKey);
+          state.keys.xmr.publicSpendKey = bytesToHex(vKeys.xmr.publicSpendKey);
+          state.keys.xmr.publicViewKey = bytesToHex(vKeys.xmr.publicViewKey);
         }
         if (state.keys.wow) {
-          state.keys.wow.publicKey = bytesToHex(v2Keys.wow.publicSpendKey);
-          state.keys.wow.publicSpendKey = bytesToHex(v2Keys.wow.publicSpendKey);
-          state.keys.wow.publicViewKey = bytesToHex(v2Keys.wow.publicViewKey);
+          state.keys.wow.publicKey = bytesToHex(vKeys.wow.publicSpendKey);
+          state.keys.wow.publicSpendKey = bytesToHex(vKeys.wow.publicSpendKey);
+          state.keys.wow.publicViewKey = bytesToHex(vKeys.wow.publicViewKey);
         }
         if (state.keys.grin) {
-          state.keys.grin.publicKey = bytesToHex(v2Keys.grin.publicKey);
+          state.keys.grin.publicKey = bytesToHex(vKeys.grin.publicKey);
         }
         await saveWalletState(state);
-        console.log('[Unlock] v2 public keys set in wallet state (spend + view)');
 
-        console.log('[Unlock] Re-derived v2 keys from mnemonic for v2 wallet');
+        console.log(`[Unlock] Re-derived v${state.derivationVersion} keys from mnemonic`);
       } catch (err) {
-        console.warn('[Unlock] Failed to re-derive v2 keys:', err);
+        console.warn('[Unlock] Failed to re-derive versioned keys:', err);
       }
     }
 

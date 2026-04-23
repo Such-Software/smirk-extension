@@ -1,8 +1,12 @@
 /**
  * Key Derivation Migration Handler
  *
- * Orchestrates the migration from v1 (custom) to v2 (BIP44/SLIP-10) derivation:
- * 1. Derive v2 keys from mnemonic
+ * Orchestrates migration to v3 (correct SLIP-10) derivation:
+ * - v1 (custom SHA256) → v3 (5-level SLIP-10)
+ * - v2 (buggy 3-level SLIP-10) → v3 (5-level SLIP-10)
+ *
+ * Steps:
+ * 1. Derive old keys (v1 or v2) and new v3 keys from mnemonic
  * 2. Check balances for XMR/WOW (BTC/LTC don't change)
  * 3. Auto-sweep assets with balance from old → new address
  * 4. Update backend with new keys
@@ -64,20 +68,21 @@ export async function handleStartMigration(): Promise<MessageResponse> {
   }
 
   const state = await getWalletState();
-  if (state.derivationVersion === 2) {
-    return { success: false, error: 'Already on v2 derivation' };
+  if (state.derivationVersion === 3) {
+    return { success: false, error: 'Already on v3 derivation' };
   }
 
-  // Derive v2 keys
-  const v2Keys = deriveAllKeys(unlockedMnemonic, '', 2);
-  const v1Keys = deriveAllKeys(unlockedMnemonic, '', 1);
+  // Derive keys based on current version and target v3
+  const currentVersion = (state.derivationVersion || 1) as 1 | 2 | 3;
+  const oldKeys = deriveAllKeys(unlockedMnemonic, '', currentVersion);
+  const newKeys = deriveAllKeys(unlockedMnemonic, '', 3);
 
   // Build new addresses
-  const newXmrAddr = xmrAddress(v2Keys.xmr.publicSpendKey, v2Keys.xmr.publicViewKey);
-  const newWowAddr = wowAddress(v2Keys.wow.publicSpendKey, v2Keys.wow.publicViewKey);
+  const newXmrAddr = xmrAddress(newKeys.xmr.publicSpendKey, newKeys.xmr.publicViewKey);
+  const newWowAddr = wowAddress(newKeys.wow.publicSpendKey, newKeys.wow.publicViewKey);
 
-  const oldXmrAddr = xmrAddress(v1Keys.xmr.publicSpendKey, v1Keys.xmr.publicViewKey);
-  const oldWowAddr = wowAddress(v1Keys.wow.publicSpendKey, v1Keys.wow.publicViewKey);
+  const oldXmrAddr = xmrAddress(oldKeys.xmr.publicSpendKey, oldKeys.xmr.publicViewKey);
+  const oldWowAddr = wowAddress(oldKeys.wow.publicSpendKey, oldKeys.wow.publicViewKey);
 
   // Initialize status — auto-sweep for XMR, WOW, and Grin
   migrationStatus = {
@@ -227,21 +232,21 @@ export async function handleStartMigration(): Promise<MessageResponse> {
     const migrateResult = await api.migrateKeys([
       {
         asset: 'xmr',
-        public_key: bytesToHex(v2Keys.xmr.publicSpendKey),
-        public_spend_key: bytesToHex(v2Keys.xmr.publicSpendKey),
+        public_key: bytesToHex(newKeys.xmr.publicSpendKey),
+        public_spend_key: bytesToHex(newKeys.xmr.publicSpendKey),
         address: newXmrAddr,
-        view_key: bytesToHex(v2Keys.xmr.privateViewKey),
+        view_key: bytesToHex(newKeys.xmr.privateViewKey),
       },
       {
         asset: 'wow',
-        public_key: bytesToHex(v2Keys.wow.publicSpendKey),
-        public_spend_key: bytesToHex(v2Keys.wow.publicSpendKey),
+        public_key: bytesToHex(newKeys.wow.publicSpendKey),
+        public_spend_key: bytesToHex(newKeys.wow.publicSpendKey),
         address: newWowAddr,
-        view_key: bytesToHex(v2Keys.wow.privateViewKey),
+        view_key: bytesToHex(newKeys.wow.privateViewKey),
       },
       {
         asset: 'grin',
-        public_key: bytesToHex(v2Keys.grin.publicKey),
+        public_key: bytesToHex(newKeys.grin.publicKey),
       },
     ]);
 
@@ -252,22 +257,21 @@ export async function handleStartMigration(): Promise<MessageResponse> {
     }
 
     // Phase 4: Update local wallet state
-    state.derivationVersion = 2;
+    state.derivationVersion = 3;
 
-    // Update ALL public keys to v2 — including publicViewKey!
-    // (Missing publicViewKey caused address/viewkey mismatch with LWS)
+    // Update ALL public keys to v3 — including publicViewKey!
     if (state.keys.xmr) {
-      state.keys.xmr.publicKey = bytesToHex(v2Keys.xmr.publicSpendKey);
-      state.keys.xmr.publicSpendKey = bytesToHex(v2Keys.xmr.publicSpendKey);
-      state.keys.xmr.publicViewKey = bytesToHex(v2Keys.xmr.publicViewKey);
+      state.keys.xmr.publicKey = bytesToHex(newKeys.xmr.publicSpendKey);
+      state.keys.xmr.publicSpendKey = bytesToHex(newKeys.xmr.publicSpendKey);
+      state.keys.xmr.publicViewKey = bytesToHex(newKeys.xmr.publicViewKey);
     }
     if (state.keys.wow) {
-      state.keys.wow.publicKey = bytesToHex(v2Keys.wow.publicSpendKey);
-      state.keys.wow.publicSpendKey = bytesToHex(v2Keys.wow.publicSpendKey);
-      state.keys.wow.publicViewKey = bytesToHex(v2Keys.wow.publicViewKey);
+      state.keys.wow.publicKey = bytesToHex(newKeys.wow.publicSpendKey);
+      state.keys.wow.publicSpendKey = bytesToHex(newKeys.wow.publicSpendKey);
+      state.keys.wow.publicViewKey = bytesToHex(newKeys.wow.publicViewKey);
     }
     if (state.keys.grin) {
-      state.keys.grin.publicKey = bytesToHex(v2Keys.grin.publicKey);
+      state.keys.grin.publicKey = bytesToHex(newKeys.grin.publicKey);
     }
 
     await saveWalletState(state);
@@ -286,7 +290,7 @@ export async function handleStartMigration(): Promise<MessageResponse> {
     }
 
     migrationStatus.phase = 'complete';
-    console.log('[Migration] Complete — wallet upgraded to v2 derivation');
+    console.log(`[Migration] Complete — wallet upgraded from v${currentVersion} to v3 derivation`);
 
     return { success: true, data: { migrated: true } };
   } catch (err) {

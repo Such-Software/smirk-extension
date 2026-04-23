@@ -150,7 +150,7 @@ export async function handleChangePassword(
     }
 
     // Re-encrypt all keys (use the wallet's derivation version)
-    const walletVersion = state.derivationVersion || 1;
+    const walletVersion = (state.derivationVersion || 1) as 1 | 2 | 3;
     const derivedKeys = deriveAllKeys(mnemonic, '', walletVersion);
 
     for (const asset of Object.keys(state.keys) as AssetType[]) {

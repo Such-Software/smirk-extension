@@ -20,7 +20,7 @@ export type { GrinKeys, GrinSlate, GrinOutput, SendTransactionResult } from './t
 export { calculateGrinFee, GRIN_BASE_FEE } from './constants';
 
 // Re-export wallet initialization
-export { initGrinWallet, initGrinWalletFromExtendedKey } from './wallet';
+export { initGrinWallet, initGrinWalletFromExtendedKey, initGrinWalletAtPath } from './wallet';
 
 // Re-export slate functions
 export { createSendSlate, addInputsToSlate, addOutputsToSlate } from './slate-build';

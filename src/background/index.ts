@@ -103,6 +103,7 @@ import {
 // Grin operations
 import {
   handleInitGrinWallet,
+  handleGrinTestPaths,
   handleGetGrinPendingSlatepacks,
   handleGrinSignSlate,
   handleGrinFinalizeSlate,
@@ -443,6 +444,9 @@ async function handleMessage(message: MessageType): Promise<MessageResponse> {
 
     case 'RECOVER_V1_FUNDS':
       return handleRecoverV1Funds();
+
+    case 'GRIN_TEST_PATHS':
+      return handleGrinTestPaths();
 
     // =========================================================================
     // Unknown

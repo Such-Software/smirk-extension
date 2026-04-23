@@ -239,6 +239,7 @@ export type MessageType =
   | { type: 'START_MIGRATION' }
   | { type: 'GET_MIGRATION_STATUS' }
   | { type: 'RECOVER_V1_FUNDS' }
+  | { type: 'GRIN_TEST_PATHS' }
   // Tips received (history view)
   | { type: 'GET_RECEIVED_TIPS' };
 

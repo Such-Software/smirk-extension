@@ -25,7 +25,7 @@
  */
 
 // Wallet initialization
-export { handleInitGrinWallet } from './init';
+export { handleInitGrinWallet, handleGrinTestPaths } from './init';
 
 // Relay polling
 export { handleGetGrinPendingSlatepacks } from './relay';

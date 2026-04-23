@@ -14,6 +14,76 @@ import {
 } from '../state';
 import { getGrinModule } from './helpers';
 
+interface GrinPathResult {
+  path: string;
+  slatepackAddress: string;
+}
+
+/**
+ * Test multiple Grin derivation paths and return the slatepack addresses.
+ * Used to find which path matches grin-wallet/Grim.
+ */
+export async function handleGrinTestPaths(): Promise<MessageResponse<{
+  results: GrinPathResult[];
+}>> {
+  if (!isUnlocked || !unlockedMnemonic) {
+    return { success: false, error: 'Wallet must be unlocked' };
+  }
+
+  const grinModule = await getGrinModule();
+  const results: GrinPathResult[] = [];
+
+  // 1. Default path (no explicit path = MWC default for GRIN_WALLET_TYPE = m/44'/592'/0'/0/0)
+  try {
+    const defaultKeys = await grinModule.initGrinWallet(unlockedMnemonic);
+    results.push({ path: 'default (m/44\'/592\'/0\'/0/0)', slatepackAddress: defaultKeys.slatepackAddress });
+  } catch (err) {
+    results.push({ path: 'default', slatepackAddress: `ERROR: ${err}` });
+  }
+
+  // 2. grin-wallet standard path: m/0/0/0/0/0 (non-hardened)
+  try {
+    const grinWalletPath = new Uint32Array([0, 0, 0, 0, 0]);
+    const grinKeys = await grinModule.initGrinWalletAtPath(unlockedMnemonic, grinWalletPath);
+    results.push({ path: 'm/0/0/0/0/0 (grin-wallet standard)', slatepackAddress: grinKeys.slatepackAddress });
+  } catch (err) {
+    results.push({ path: 'm/0/0/0/0/0', slatepackAddress: `ERROR: ${err}` });
+  }
+
+  // 3. BIP44 Grin path with all hardened: m/44'/592'/0'/0'/0'
+  try {
+    const H = 0x80000000;
+    const bip44AllHardened = new Uint32Array([44 | H, 592 | H, 0 | H, 0 | H, 0 | H]);
+    const bip44Keys = await grinModule.initGrinWalletAtPath(unlockedMnemonic, bip44AllHardened);
+    results.push({ path: 'm/44\'/592\'/0\'/0\'/0\' (BIP44 all hardened)', slatepackAddress: bip44Keys.slatepackAddress });
+  } catch (err) {
+    results.push({ path: 'm/44\'/592\'/0\'/0\'/0\'', slatepackAddress: `ERROR: ${err}` });
+  }
+
+  // 4. Legacy MWC path: m/44'/593'/0'/0/0
+  try {
+    const H = 0x80000000;
+    const LEGACY_MWC_PATH = new Uint32Array([44 | H, 593 | H, 0 | H, 0, 0]);
+    const mwcKeys = await grinModule.initGrinWalletAtPath(unlockedMnemonic, LEGACY_MWC_PATH);
+    results.push({ path: 'm/44\'/593\'/0\'/0/0 (legacy MWC)', slatepackAddress: mwcKeys.slatepackAddress });
+  } catch (err) {
+    results.push({ path: 'm/44\'/593\'/0\'/0/0', slatepackAddress: `ERROR: ${err}` });
+  }
+
+  // Restore the default keys after testing
+  try {
+    const freshKeys = await grinModule.initGrinWallet(unlockedMnemonic);
+    setGrinWasmKeys(freshKeys);
+  } catch { /* ignore */ }
+
+  console.log('[GrinTestPaths] Results:');
+  for (const r of results) {
+    console.log(`  ${r.path}: ${r.slatepackAddress}`);
+  }
+
+  return { success: true, data: { results } };
+}
+
 // =============================================================================
 // Wallet Initialization
 // =============================================================================

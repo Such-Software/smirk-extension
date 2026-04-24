@@ -149,16 +149,22 @@ export async function registerWithLwsFromUnlockedKeys(
   userId: string,
   state: WalletState
 ): Promise<void> {
+  // Use wallet birthday heights so LWS scans from creation, not just current block.
+  // Critical after migration: sweep tx would be missed without scanning back far enough.
+  const xmrStartHeight = state.walletBirthday?.heights?.xmr;
+  const wowStartHeight = state.walletBirthday?.heights?.wow;
+
   // Register XMR with LWS
   if (state.keys.xmr?.publicSpendKey && state.keys.xmr?.publicViewKey) {
     const xmrViewKey = unlockedViewKeys.get('xmr');
     if (xmrViewKey) {
       const xmrAddress = getAddressForAsset('xmr', state.keys.xmr);
-      const xmrResult = await api.registerLws(userId, 'xmr', xmrAddress, bytesToHex(xmrViewKey));
+      const xmrResult = await api.registerLws(userId, 'xmr', xmrAddress, bytesToHex(xmrViewKey), xmrStartHeight);
       if (xmrResult.error) {
         console.warn('Failed to register XMR with LWS:', xmrResult.error);
       } else {
-        console.log('XMR registered with LWS:', xmrResult.data?.message);
+        console.log('XMR registered with LWS:', xmrResult.data?.message,
+          xmrStartHeight ? `(start_height: ${xmrStartHeight})` : '(from current)');
       }
     } else {
       console.warn('XMR view key not available for LWS registration');
@@ -170,11 +176,12 @@ export async function registerWithLwsFromUnlockedKeys(
     const wowViewKey = unlockedViewKeys.get('wow');
     if (wowViewKey) {
       const wowAddress = getAddressForAsset('wow', state.keys.wow);
-      const wowResult = await api.registerLws(userId, 'wow', wowAddress, bytesToHex(wowViewKey));
+      const wowResult = await api.registerLws(userId, 'wow', wowAddress, bytesToHex(wowViewKey), wowStartHeight);
       if (wowResult.error) {
         console.warn('Failed to register WOW with LWS:', wowResult.error);
       } else {
-        console.log('WOW registered with LWS:', wowResult.data?.message);
+        console.log('WOW registered with LWS:', wowResult.data?.message,
+          wowStartHeight ? `(start_height: ${wowStartHeight})` : '(from current)');
       }
     } else {
       console.warn('WOW view key not available for LWS registration');

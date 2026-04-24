@@ -25,9 +25,11 @@ import type { GrinKeys } from './types';
  * It does NOT accept a 64-byte BIP39 derived seed. We must pass the mnemonic.
  *
  * @param mnemonic - The BIP39 mnemonic phrase (12 or 24 words)
+ * @param useBip39 - false (default) = HMAC-SHA512("IamVoldemort", raw_entropy) — matches grin-wallet/Grim.
+ *                   true = PBKDF2 first then HMAC — MWC-style, used by pre-v3 Smirk wallets.
  * @returns Grin wallet keys
  */
-export async function initGrinWallet(mnemonic: string): Promise<GrinKeys> {
+export async function initGrinWallet(mnemonic: string, useBip39 = false): Promise<GrinKeys> {
   await initializeGrinWasm();
 
   const Crypto = getCrypto();
@@ -41,13 +43,14 @@ export async function initGrinWallet(mnemonic: string): Promise<GrinKeys> {
   // Initialize with the mnemonic string - the MWC Seed class will parse it internally
   await seedInstance.initialize(mnemonic);
 
-  // Derive extended private key using BIP39 derivation
-  // Parameters: key (string), useBip39 (boolean), bip39Salt (optional)
-  // The key parameter is the HMAC key used for derivation - MWC uses "IamVoldemort"
-  // This is accessed via globalThis.Wallet.SEED_KEY (set up by stubs.ts)
+  // Derive extended private key
+  // Parameters: key (string), useBip39 (boolean)
+  // The key parameter is the HMAC key - both MWC and grin-wallet use "IamVoldemort"
+  // useBip39=false: HMAC-SHA512(key, raw_entropy) — matches grin-wallet/Grim
+  // useBip39=true: PBKDF2(mnemonic) → HMAC-SHA512(key, pbkdf2_seed) — MWC-style (legacy)
   const extendedPrivateKey = await seedInstance.getExtendedPrivateKey(
     globalThis.Wallet.SEED_KEY,
-    true
+    useBip39
   );
 
   // Get the root secret key (first 32 bytes of extended private key)
@@ -93,9 +96,11 @@ export const LEGACY_MWC_PATH = new Uint32Array([
 
 /**
  * Initialize Grin wallet at a specific derivation path.
- * Used for migration sweeps (old path) while default uses new standard path.
+ * Used for migration sweeps and path testing.
+ *
+ * @param useBip39 - false (default) = raw entropy HMAC (grin-wallet compat), true = PBKDF2 first (MWC/legacy)
  */
-export async function initGrinWalletAtPath(mnemonic: string, path: Uint32Array): Promise<GrinKeys> {
+export async function initGrinWalletAtPath(mnemonic: string, path: Uint32Array, useBip39 = false): Promise<GrinKeys> {
   await initializeGrinWasm();
 
   const Crypto = getCrypto();
@@ -109,7 +114,7 @@ export async function initGrinWalletAtPath(mnemonic: string, path: Uint32Array):
 
   const extendedPrivateKey = await seedInstance.getExtendedPrivateKey(
     globalThis.Wallet.SEED_KEY,
-    true,
+    useBip39,
     undefined, // default salt
     path
   );

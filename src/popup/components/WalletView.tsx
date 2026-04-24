@@ -62,8 +62,10 @@ export function WalletView({ onLock }: { onLock: () => void }) {
   const [claimableTipsCount, setClaimableTipsCount] = useState(0);
   // Count of sent public tips ready to share (confirmed, link available)
   const [readyToShareCount, setReadyToShareCount] = useState(0);
-  // Whether wallet needs migration (v1 → v2 derivation)
+  // Whether wallet needs migration (derivation version < v3)
   const [needsMigration, setNeedsMigration] = useState(false);
+  // Show sync notice after recent migration
+  const [recentlyMigrated, setRecentlyMigrated] = useState(false);
 
   // =========================================================================
   // Effects
@@ -93,6 +95,10 @@ export function WalletView({ onLock }: { onLock: () => void }) {
         }
       })
       .catch(() => {});
+    // Show sync notice if recently migrated
+    if (localStorage.getItem('smirk_recently_migrated')) {
+      setRecentlyMigrated(true);
+    }
   }, []);
 
   // Save screen state whenever screen or asset changes
@@ -394,13 +400,42 @@ export function WalletView({ onLock }: { onLock: () => void }) {
       </header>
 
       <div class="content">
-        {/* Migration Banner (v1 → v2 derivation upgrade) */}
+        {/* Migration Banner (upgrade to v3 derivation) */}
         {needsMigration && (
           <MigrationBanner onComplete={() => {
             setNeedsMigration(false);
+            localStorage.setItem('smirk_recently_migrated', '1');
             // Lock wallet so user re-unlocks into clean LWS state
             onLock();
           }} />
+        )}
+
+        {/* Post-migration sync notice */}
+        {recentlyMigrated && (
+          <div style={{
+            padding: '10px 14px',
+            background: 'var(--color-bg-input)',
+            border: '1px solid var(--color-border)',
+            borderRadius: '10px',
+            fontSize: '12px',
+            color: 'var(--color-text-muted)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: '8px',
+          }}>
+            <span>Syncing after upgrade. Balances may show zero for 5-10 minutes. Your funds are safe.</span>
+            <button
+              style={{
+                background: 'none', border: 'none', color: 'var(--color-text-faint)',
+                cursor: 'pointer', fontSize: '11px', whiteSpace: 'nowrap',
+              }}
+              onClick={() => {
+                setRecentlyMigrated(false);
+                localStorage.removeItem('smirk_recently_migrated');
+              }}
+            >Dismiss</button>
+          </div>
         )}
 
         {/* Pending Grin Receive Banner */}

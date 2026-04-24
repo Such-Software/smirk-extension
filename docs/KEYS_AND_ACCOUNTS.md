@@ -9,8 +9,8 @@ Smirk uses a single **BIP39 12-word mnemonic** to derive all keys for all suppor
 **Supported currencies:**
 - Bitcoin (BTC) - secp256k1, BIP44
 - Litecoin (LTC) - secp256k1, BIP44
-- Monero (XMR) - ed25519, SLIP-10 (v3: `m/44'/128'/0'/0'/0'`)
-- Wownero (WOW) - ed25519, SLIP-10 (v3: `m/44'/2086'/0'/0'/0'`)
+- Monero (XMR) - BIP32 secp256k1 (v3: `m/44'/128'/0'/0/0`, Cake Wallet compatible)
+- Wownero (WOW) - BIP32 secp256k1 (v3: `m/44'/2086'/0'/0/0`)
 - Grin - ed25519, MWC WASM derivation
 
 ## Key Derivation Details
@@ -48,14 +48,14 @@ Standard BIP44 derivation with coin type 2 (SLIP-44). Compatible with LTC wallet
 
 ### Monero (XMR)
 
-**Derivation path (v3, current):** `m/44'/128'/0'/0'/0'` (SLIP-10 ed25519, Cake Wallet compatible)
+**Derivation path (v3, current):** `m/44'/128'/0'/0/0` (BIP32 secp256k1, Cake Wallet compatible)
 
 ```
 BIP39 mnemonic → PBKDF2-HMAC-SHA512 → 64-byte master seed
-  → SLIP-10 ed25519 at m/44'/128'/0'/0'/0'
-  → 32-byte private key = spend key (reduced mod l)
+  → BIP32 secp256k1 at m/44'/128'/0'/0/0
+  → 32-byte private key (read as little-endian, reduced mod l) = spend key
   → Keccak-256(spend_key) mod l = view key (Monero standard Hs())
-  → spend_key * G = public spend key
+  → spend_key * G = public spend key (ed25519 base point)
   → view_key * G = public view key
 ```
 
@@ -63,11 +63,11 @@ Where `l` is the ed25519 curve order: `2^252 + 277423177773723535358519377908836
 
 **Derivation history:**
 - **v1 (legacy):** Custom `SHA256(seed || "smirk:xmr:v1") mod l` — incompatible with all other wallets
-- **v2 (buggy):** SLIP-10 at `m/44'/128'/0'` (3 levels) — missing last 2 path components
-- **v3 (current):** SLIP-10 at `m/44'/128'/0'/0'/0'` (5 levels) — Cake Wallet compatible
+- **v2 (buggy):** SLIP-10 ed25519 at `m/44'/128'/0'` (3 levels) — missing last 2 path components
+- **v3 (current):** BIP32 secp256k1 at `m/44'/128'/0'/0/0` — Cake Wallet compatible
 
 **To recover in another wallet (v3):**
-1. Import your 12-word BIP39 mnemonic into Cake Wallet or any wallet supporting BIP39 + SLIP-10 Monero derivation
+1. Import your 12-word BIP39 mnemonic into Cake Wallet
 2. Your XMR address should match Smirk's address
 3. Or use `monero-wallet-cli --generate-from-spend-key` with the raw private spend key
 
@@ -83,14 +83,14 @@ The backend returns `total_received` plus a list of `spent_outputs` (candidate s
 
 ### Wownero (WOW)
 
-**Derivation path (v3, current):** `m/44'/2086'/0'/0'/0'` (SLIP-10 ed25519)
+**Derivation path (v3, current):** `m/44'/2086'/0'/0/0` (BIP32 secp256k1)
 
 Same derivation as Monero but with SLIP-44 coin type 2086. All steps are identical to XMR.
 
 **Derivation history:**
 - **v1 (legacy):** Custom `SHA256(seed || "smirk:wow:v1") mod l`
-- **v2 (buggy):** SLIP-10 at `m/44'/2086'/0'` (3 levels)
-- **v3 (current):** SLIP-10 at `m/44'/2086'/0'/0'/0'` (5 levels)
+- **v2 (buggy):** SLIP-10 ed25519 at `m/44'/2086'/0'` (3 levels)
+- **v3 (current):** BIP32 secp256k1 at `m/44'/2086'/0'/0/0`
 
 **Transaction Differences from Monero:**
 
@@ -217,11 +217,9 @@ If you've lost both password AND mnemonic, funds are unrecoverable.
 
 **BTC/LTC:** Import mnemonic into any BIP44 wallet (Electrum, Sparrow, etc.)
 
-**XMR/WOW (v3 wallets):** Import your 12-word BIP39 mnemonic into Cake Wallet or any wallet supporting BIP39 + SLIP-10 Monero derivation at path `m/44'/128'/0'/0'/0'`.
+**XMR/WOW (v3 wallets):** Import your 12-word BIP39 mnemonic into Cake Wallet. Your addresses should match.
 
-**Grin:** Cannot directly import into grin-wallet. You must:
-1. Export raw private key from Smirk (future feature)
-2. Use the key material to construct a compatible wallet
+**Grin (v3 wallets):** Import your 12-word BIP39 mnemonic into grin-wallet or Grim. Your slatepack address should match.
 
 ## Security Recommendations
 

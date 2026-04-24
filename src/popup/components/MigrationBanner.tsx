@@ -109,7 +109,7 @@ export function MigrationBanner({ onComplete }: { onComplete: () => void }) {
           {status.phase === 'complete' && (
             <div class="migration-success">
               {status.steps.some(s => s.status === 'swept') ? (
-                <p>Funds have been sent to your new addresses. They will appear as "locked" after 1-2 block confirmations (usually under 10 minutes).</p>
+                <p>Funds have been sent to your new addresses. Balances may show zero for 5-10 minutes while syncing. Your funds are safe.</p>
               ) : (
                 <p>Your wallet now uses standard key derivation. Your recovery phrase is now portable to other wallets like Cake Wallet.</p>
               )}

@@ -198,8 +198,8 @@ export async function createWalletFromMnemonic(
   derivationVersion: 1 | 2 | 3 = 3
 ): Promise<MessageResponse<{ created: boolean; assets: AssetType[] }>> {
   // Derive all keys from mnemonic using specified version
-  // New wallets use v2 (BIP44/SLIP-10 standard)
-  // Restore may use v1 if wallet was created before migration
+  // New wallets use v3 (5-level SLIP-10, grin-wallet compat)
+  // Restore may use v1 or v2 if wallet was created before migration
   const derivedKeys = deriveAllKeys(mnemonic, '', derivationVersion) as DerivedKeys;
 
   // Derive encryption key ONCE and reuse for all keys

@@ -153,6 +153,13 @@ export async function createSendTransaction(
     }
 
     if (totalSelected < requiredAmount) {
+      // All outputs selected but not enough for 2-output fee estimate.
+      // Check if it works with 1 output (no change) — this is the sweep case.
+      const feeNoChange = calculateGrinFee(selectedOutputs.length, 1, 1);
+      if (totalSelected >= amount + feeNoChange) {
+        fee = feeNoChange;
+        break; // Proceed with no change output
+      }
       const haveGrin = Number(totalSelected) / 1_000_000_000;
       const needGrin = Number(requiredAmount) / 1_000_000_000;
       const feeGrin = Number(fee) / 1_000_000_000;

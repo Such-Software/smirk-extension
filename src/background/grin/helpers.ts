@@ -12,7 +12,7 @@
 // The Grin WASM modules use fetch()+initSync(), not DOM APIs, so static import is safe.
 import * as grinModule from '@/lib/grin';
 import type { GrinKeys, GrinOutput } from '@/lib/grin';
-import { getAuthState } from '@/lib/storage';
+import { getAuthState, getWalletState } from '@/lib/storage';
 import { api } from '@/lib/api';
 import {
   isUnlocked,
@@ -35,8 +35,10 @@ export const LEGACY_MWC_PATH = new Uint32Array([
  * Init Grin wallet at a specific derivation path.
  * Calls initGrinWallet which initializes WASM, then reinits at specified path
  * using the Seed class's pathOverride parameter.
+ *
+ * @param useBip39 - false = raw entropy HMAC (grin-wallet compat), true = PBKDF2 first (MWC/legacy)
  */
-export async function initGrinWalletAtPath(mnemonic: string, path: Uint32Array): Promise<GrinKeys> {
+export async function initGrinWalletAtPath(mnemonic: string, path: Uint32Array, useBip39 = false): Promise<GrinKeys> {
   // Just initialize WASM modules — do NOT create a Seed at the default path
   // (calling initGrinWallet would create a Seed at the new path, potentially
   // corrupting global Seed state that affects subsequent derivations)
@@ -69,7 +71,7 @@ export async function initGrinWalletAtPath(mnemonic: string, path: Uint32Array):
   // NOT undefined — undefined corrupts the salt computation and changes all derived keys
   const extendedPrivateKey = await seedInstance.getExtendedPrivateKey(
     (globalThis as Record<string, unknown>).Wallet ? ((globalThis as Record<string, unknown>).Wallet as Record<string, string>).SEED_KEY : 'IamVoldemort',
-    true,
+    useBip39,
     new Uint8Array([]), // DEFAULT_BIP39_SALT
     path
   );
@@ -96,7 +98,8 @@ export async function initGrinWalletAtPath(mnemonic: string, path: Uint32Array):
  * Ensure Grin WASM keys are initialized.
  *
  * Returns cached keys if available, otherwise initializes from mnemonic.
- * Always uses the new grin-wallet standard path m/0/0/0/0/0.
+ * For v3+ wallets, uses useBip39=false (grin-wallet/Grim compatible).
+ * For pre-v3 wallets, uses useBip39=true (MWC-style legacy).
  *
  * @returns Initialized GrinKeys
  * @throws Error if wallet is locked or mnemonic unavailable
@@ -106,7 +109,7 @@ export async function ensureGrinKeysInitialized(): Promise<GrinKeys> {
     throw new Error('Wallet is locked');
   }
 
-  // Return cached keys if available
+  // Return cached keys if available (already has correct derivation from unlock/restore)
   if (grinWasmKeys) {
     return grinWasmKeys;
   }
@@ -116,7 +119,13 @@ export async function ensureGrinKeysInitialized(): Promise<GrinKeys> {
     throw new Error('Mnemonic not available - please re-unlock wallet');
   }
 
-  const keys = await grinModule.initGrinWallet(unlockedMnemonic);
+  // Check wallet version to determine derivation mode
+  // v3+: useBip39=false (raw entropy HMAC, grin-wallet compatible)
+  // v1/v2: useBip39=true (PBKDF2 then HMAC, MWC-style legacy)
+  const state = await getWalletState();
+  const useBip39 = !state.derivationVersion || state.derivationVersion < 3;
+
+  const keys = await grinModule.initGrinWallet(unlockedMnemonic, useBip39);
   setGrinWasmKeys(keys);
   return keys;
 }

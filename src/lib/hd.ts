@@ -4,14 +4,14 @@
  * Uses BIP39 for mnemonic generation and BIP32/44 for key derivation.
  * - BTC: m/44'/0'/0'/0/0 (secp256k1)
  * - LTC: m/44'/2'/0'/0/0 (secp256k1)
- * - XMR: m/44'/128'/0'/0'/0' (SLIP-10 ed25519, v3)
- * - WOW: m/44'/2086'/0'/0'/0' (SLIP-10 ed25519, v3)
+ * - XMR: m/44'/128'/0'/0/0 (BIP32 secp256k1, Cake Wallet compatible, v3)
+ * - WOW: m/44'/2086'/0'/0/0 (BIP32 secp256k1, v3)
  * - Grin: MWC WASM wallet derivation
  *
  * Derivation versions:
  *   v1: Legacy custom SHA256 derivation (XMR/WOW)
  *   v2: Buggy 3-level SLIP-10 path m/44'/coin'/0' (XMR/WOW)
- *   v3: Correct 5-level SLIP-10 path m/44'/coin'/0'/0'/0' (XMR/WOW)
+ *   v3: BIP32 secp256k1 at m/44'/coin'/0'/0/0 (Cake Wallet compatible)
  *
  * @scure/bip39 and @scure/bip32 are from Paul Miller (same author as @noble/*)
  */
@@ -295,26 +295,26 @@ function deriveBip44MoneroKeys(
 }
 
 /**
- * Derives Monero/Wownero keys using correct full BIP44/SLIP-10 derivation.
+ * Derives Monero/Wownero keys using BIP32 secp256k1 (Cake Wallet compatible).
  *
- * Full 5-level path: m/44'/coinType'/0'/0'/0' (all hardened per SLIP-10 ed25519)
- * This matches Cake Wallet and other standard wallets.
+ * Path: m/44'/coinType'/0'/0/0 (BIP32 secp256k1, last two non-hardened)
+ * - Spend key: BIP32 private key bytes read as little-endian, reduced mod l
+ * - View key: Keccak-256(spend_key) mod l (Monero standard Hs() function)
  *
- * Note: deriveBip44MoneroKeys (3-level) is kept for v2 backward compatibility
- * to derive buggy v2 addresses for sweep operations.
+ * This matches Cake Wallet's exact derivation from cw_monero/lib/bip39_seed.dart.
  *
  * @param masterSeed - BIP39 seed (64 bytes)
  * @param coinType - SLIP-44 coin type (128 for XMR, 2086 for WOW)
  */
-function deriveBip44MoneroKeysFull(
+function deriveBip32MoneroKeys(
   masterSeed: Uint8Array,
   coinType: number
 ): CryptonoteKeys {
-  // Full SLIP-10 ed25519 derivation: m/44'/coinType'/0'/0'/0'
-  const rawKey = slip10DeriveEd25519(masterSeed, [44, coinType, 0, 0, 0]);
+  // BIP32 secp256k1 derivation: m/44'/coinType'/0'/0/0
+  const bip32Key = deriveBip44Key(masterSeed, coinType);
 
-  // Reduce to valid ed25519 scalar
-  const spendKeyScalar = bytesToScalar(rawKey);
+  // Read BIP32 private key bytes as little-endian, reduce mod l
+  const spendKeyScalar = bytesToScalar(bip32Key.privateKey);
   const privateSpendKey = scalarToBytes(spendKeyScalar);
 
   // View key: Keccak-256(spend_key) mod l — Monero standard Hs() function
@@ -369,7 +369,7 @@ function deriveGrinKey(masterSeed: Uint8Array): GrinKeys {
   return { privateKey, publicKey };
 }
 
-/** Derivation version: 1 = legacy custom, 2 = buggy 3-level SLIP-10, 3 = correct 5-level SLIP-10 */
+/** Derivation version: 1 = legacy custom, 2 = buggy 3-level SLIP-10, 3 = BIP32 secp256k1 (Cake Wallet) */
 export type DerivationVersion = 1 | 2 | 3;
 
 /**
@@ -380,7 +380,7 @@ export type DerivationVersion = 1 | 2 | 3;
  * @param version - Derivation version:
  *   1 = legacy custom SHA256 derivation
  *   2 = buggy SLIP-10 (3-level path m/44'/coin'/0')
- *   3 = correct SLIP-10 (5-level path m/44'/coin'/0'/0'/0')
+ *   3 = BIP32 secp256k1 at m/44'/coin'/0'/0/0 (Cake Wallet compatible)
  */
 export function deriveAllKeys(mnemonic: string, passphrase = '', version: DerivationVersion = 1): DerivedKeys {
   if (!isValidMnemonic(mnemonic)) {
@@ -393,8 +393,8 @@ export function deriveAllKeys(mnemonic: string, passphrase = '', version: Deriva
     return {
       btc: deriveBip44Key(masterSeed, COIN_TYPES.btc),
       ltc: deriveBip44Key(masterSeed, COIN_TYPES.ltc),
-      xmr: deriveBip44MoneroKeysFull(masterSeed, COIN_TYPES.xmr),
-      wow: deriveBip44MoneroKeysFull(masterSeed, COIN_TYPES.wow),
+      xmr: deriveBip32MoneroKeys(masterSeed, COIN_TYPES.xmr),
+      wow: deriveBip32MoneroKeys(masterSeed, COIN_TYPES.wow),
       grin: deriveGrinKey(masterSeed), // Grin WASM wallet handles its own derivation
     };
   }
@@ -428,9 +428,9 @@ export function getDerivationInfo(version: DerivationVersion = 3): Record<string
     return {
       btc: "m/44'/0'/0'/0/0 (BIP44 standard)",
       ltc: "m/44'/2'/0'/0/0 (BIP44 standard)",
-      xmr: "m/44'/128'/0'/0'/0' (SLIP-10 ed25519, Cake Wallet compatible)",
-      wow: "m/44'/2086'/0'/0'/0' (SLIP-10 ed25519)",
-      grin: 'MWC WASM wallet derivation',
+      xmr: "m/44'/128'/0'/0/0 (BIP32 secp256k1, Cake Wallet compatible)",
+      wow: "m/44'/2086'/0'/0/0 (BIP32 secp256k1)",
+      grin: 'HMAC-SHA512(IamVoldemort, raw_entropy) → addressKey(0) (grin-wallet/Grim compatible)',
     };
   }
   if (version === 2) {
@@ -439,7 +439,7 @@ export function getDerivationInfo(version: DerivationVersion = 3): Record<string
       ltc: "m/44'/2'/0'/0/0 (BIP44 standard)",
       xmr: "m/44'/128'/0' (SLIP-10 ed25519, buggy 3-level path)",
       wow: "m/44'/2086'/0' (SLIP-10 ed25519, buggy 3-level path)",
-      grin: 'MWC WASM wallet derivation',
+      grin: 'HMAC-SHA512(IamVoldemort, PBKDF2(mnemonic)) → addressKey(0) (MWC-style, legacy)',
     };
   }
   return {

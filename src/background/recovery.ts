@@ -9,7 +9,7 @@ import type { MessageResponse } from '@/types';
 import { deriveAllKeys } from '@/lib/hd';
 import { xmrAddress, wowAddress } from '@/lib/address';
 import { sendTransaction } from '@/lib/xmr-tx';
-import { initGrinWallet } from '@/lib/grin';
+import { initGrinWallet, calculateGrinFee } from '@/lib/grin';
 import { bytesToHex } from '@/lib/crypto';
 import { api } from '@/lib/api';
 import {
@@ -17,7 +17,7 @@ import {
   setGrinWasmKeys,
 } from './state';
 import { handleGrinCreateSend, handleGrinFinalizeAndBroadcast, handleGrinSignSlatepack } from './grin';
-import { handleGetBalance } from './balance';
+import { getAuthenticatedUserId, fetchUnspentOutputs } from './grin/helpers';
 
 interface RecoveryStatus {
   xmr: { status: string; balance?: number; txHash?: string; error?: string };
@@ -138,55 +138,62 @@ export async function handleRecoverV1Funds(): Promise<MessageResponse<RecoverySt
     }
   }
 
-  // === GRIN SWEEP ===
+  // === GRIN SWEEP (old BIP39 keys → new raw-entropy keys) ===
   try {
-    // Check Grin balance from backend (uses DB, not LWS)
-    const grinBal = await handleGetBalance('grin');
-    let grinBalance = 0;
-    if (grinBal.success) {
-      const d = grinBal as { success: true; data: unknown };
-      const obj = d.data as { confirmed?: number; total?: number } | null;
-      grinBalance = obj?.confirmed || obj?.total || 0;
-    }
-    status.grin.balance = grinBalance;
+    // Query unspent outputs from backend
+    const userId = await getAuthenticatedUserId();
+    const { outputs } = await fetchUnspentOutputs(userId);
 
-    if (grinBalance > 0) {
-      console.log(`[Recovery] Grin balance: ${grinBalance} nanogrin`);
+    if (outputs.length === 0) {
+      status.grin.status = 'no_balance';
+      status.grin.balance = 0;
+      console.log('[Recovery] Grin: no unspent outputs');
+    } else {
+      const totalBalance = outputs.reduce((sum, o) => sum + o.amount, BigInt(0));
+      status.grin.balance = Number(totalBalance);
+      console.log(`[Recovery] Grin balance: ${totalBalance} nanogrin (${outputs.length} outputs)`);
       status.grin.status = 'sweeping';
 
       try {
-        const feeBuffer = 30000000;
-        const sendAmount = grinBalance - feeBuffer;
+        // Calculate exact sweep amount (no change output)
+        const fee = calculateGrinFee(outputs.length, 1, 1);
+        const sendAmount = Number(totalBalance - fee);
 
         if (sendAmount <= 0) {
           status.grin.status = 'error';
           status.grin.error = 'Balance too small (less than fee)';
         } else {
-          // Use the NORMAL initGrinWallet (through wallet.ts) — NOT initGrinWalletAtPath!
-          // initGrinWalletAtPath produces a different key despite same path prefix.
-          // The normal initGrinWallet goes through the correct MWC code path.
-          const grinKeys = await initGrinWallet(unlockedMnemonic!);
-          setGrinWasmKeys(grinKeys);
-          console.log('[Recovery] Grin S1: using initGrinWallet, addr:', grinKeys.slatepackAddress);
+          // Cross-wallet sweep: old BIP39 keys (sender) → new raw-entropy keys (receiver)
+          // SRS flow: S1 create (old) → S2 sign (new) → S3 finalize+broadcast (old)
 
-          const sendResult = await handleGrinCreateSend(sendAmount, feeBuffer, undefined);
+          // Step 1: Init OLD keys (useBip39=true) as sender
+          const oldKeys = await initGrinWallet(unlockedMnemonic!, true);
+          setGrinWasmKeys(oldKeys);
+          console.log('[Recovery] Grin sender (old BIP39):', oldKeys.slatepackAddress);
+
+          // Step 2: S1 create with old keys
+          const sendResult = await handleGrinCreateSend(sendAmount, 0);
           if (!sendResult.success || !sendResult.data) {
-            throw new Error('S1 create failed');
+            throw new Error(`S1 create failed: ${sendResult.success === false ? sendResult.error : 'no data'}`);
           }
           console.log('[Recovery] Grin S1 created:', sendResult.data.slateId);
 
-          // S2: use same keys (same wallet, self-send)
-          // No need to reinit — keys are already correct
+          // Step 3: Init NEW keys (useBip39=false) as receiver
+          const newKeys = await initGrinWallet(unlockedMnemonic!, false);
+          setGrinWasmKeys(newKeys);
+          console.log('[Recovery] Grin receiver (grin-wallet compat):', newKeys.slatepackAddress);
 
+          // Step 4: S2 sign with new keys (cross-wallet receive)
           const signResult = await handleGrinSignSlatepack(sendResult.data.slatepack);
           if (!signResult.success || !signResult.data) {
-            throw new Error('S2 sign failed');
+            throw new Error(`S2 sign failed: ${signResult.success === false ? signResult.error : 'no data'}`);
           }
-          console.log('[Recovery] Grin S2 signed');
+          console.log('[Recovery] Grin S2 signed (cross-wallet)');
 
-          // S3: same keys, just finalize
-          console.log('[Recovery] Grin S3: finalizing with same keys');
+          // Step 5: Restore OLD keys for finalization
+          setGrinWasmKeys(oldKeys);
 
+          // Step 6: S3 finalize and broadcast with old keys
           const finalizeResult = await handleGrinFinalizeAndBroadcast(
             signResult.data.signedSlatepack,
             sendResult.data.sendContext
@@ -195,31 +202,26 @@ export async function handleRecoverV1Funds(): Promise<MessageResponse<RecoverySt
           if (finalizeResult.success) {
             status.grin.txHash = sendResult.data.slateId;
             status.grin.status = 'swept';
-            console.log(`[Recovery] Grin swept and broadcast: ${sendResult.data.slateId}`);
+            console.log(`[Recovery] Grin swept: ${sendResult.data.slateId}`);
           } else {
             status.grin.status = 'error';
             status.grin.error = 'Failed to finalize/broadcast';
           }
-        }
 
-        // Restore new path keys
-        const finalKeys = await initGrinWallet(unlockedMnemonic!);
-        setGrinWasmKeys(finalKeys);
-        console.log('[Recovery] Grin WASM restored to new path');
+          // Set NEW keys for ongoing use
+          setGrinWasmKeys(newKeys);
+        }
       } catch (err) {
         status.grin.status = 'error';
         status.grin.error = err instanceof Error ? err.message : 'Grin sweep failed';
         console.error('[Recovery] Grin sweep failed:', err);
 
-        // Try to restore new path keys on error
+        // Try to restore correct keys on error
         try {
-          const newKeys = await initGrinWallet(unlockedMnemonic!);
+          const newKeys = await initGrinWallet(unlockedMnemonic!, false);
           setGrinWasmKeys(newKeys);
         } catch { /* ignore */ }
       }
-    } else {
-      status.grin.status = 'no_balance';
-      console.log('[Recovery] No Grin balance');
     }
   } catch (err) {
     status.grin.status = 'error';

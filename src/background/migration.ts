@@ -1,9 +1,9 @@
 /**
  * Key Derivation Migration Handler
  *
- * Orchestrates migration to v3 (correct SLIP-10) derivation:
- * - v1 (custom SHA256) → v3 (5-level SLIP-10)
- * - v2 (buggy 3-level SLIP-10) → v3 (5-level SLIP-10)
+ * Orchestrates migration to v3 (BIP32 secp256k1, Cake Wallet compatible):
+ * - v1 (custom SHA256) → v3 (BIP32 secp256k1 at m/44'/coin'/0'/0/0)
+ * - v2 (buggy 3-level SLIP-10) → v3 (BIP32 secp256k1 at m/44'/coin'/0'/0/0)
  *
  * Steps:
  * 1. Derive old keys (v1 or v2) and new v3 keys from mnemonic
@@ -17,10 +17,11 @@ import type { MessageResponse, AssetType } from '@/types';
 import { deriveAllKeys } from '@/lib/hd';
 import { xmrAddress, wowAddress } from '@/lib/address';
 import { sendTransaction, type XmrAsset } from '@/lib/xmr-tx';
-import { initGrinWallet } from '@/lib/grin';
+import { initGrinWallet, calculateGrinFee } from '@/lib/grin';
 import { handleGetBalance } from './balance';
 import { registerWithLwsFromUnlockedKeys } from './wallet';
 import { handleGrinCreateSend, handleGrinFinalizeAndBroadcast, handleGrinSignSlatepack } from './grin';
+import { getAuthenticatedUserId, fetchUnspentOutputs } from './grin/helpers';
 import { api } from '@/lib/api';
 import { getWalletState, saveWalletState, getAuthState } from '@/lib/storage';
 import { setGrinWasmKeys } from './state';
@@ -165,60 +166,96 @@ export async function handleStartMigration(): Promise<MessageResponse> {
           console.log(`[Migration] ${step.asset} swept: ${result.txHash}, fee: ${result.fee}`);
 
         } else if (step.asset === 'grin') {
-          // Grin self-sweep: SRS transaction using same wallet keys
-          // Uses initGrinWallet() which produces correct key material
-          const grinKeys = await initGrinWallet(unlockedMnemonic!);
-          setGrinWasmKeys(grinKeys);
-          console.log('[Migration] Grin sweep: using initGrinWallet, addr:', grinKeys.slatepackAddress);
+          // Grin cross-wallet sweep: old BIP39 keys → new raw-entropy keys
+          //
+          // Old keys (useBip39=true): MWC-style PBKDF2 → HMAC. Used by pre-v3 Smirk wallets.
+          // New keys (useBip39=false): raw entropy → HMAC. Matches grin-wallet/Grim.
+          //
+          // SRS flow: S1 create (old) → S2 sign (new) → S3 finalize+broadcast (old)
 
-          const feeBuffer = 30000000; // 0.03 GRIN
-          const sendAmount = step.balance - feeBuffer;
+          // Query outputs to calculate exact sweep amount (avoid change with old keys)
+          const userId = await getAuthenticatedUserId();
+          const { outputs } = await fetchUnspentOutputs(userId);
+
+          if (outputs.length === 0) {
+            step.status = 'skipped';
+            console.log('[Migration] Grin: no unspent outputs, skipping');
+            continue;
+          }
+
+          const totalBalance = outputs.reduce((sum, o) => sum + o.amount, BigInt(0));
+          // Fee for N inputs, 1 output (receiver only, no change), 1 kernel
+          const fee = calculateGrinFee(outputs.length, 1, 1);
+          const sendAmount = Number(totalBalance - fee);
 
           if (sendAmount <= 0) {
             step.status = 'error';
             step.error = 'Grin balance too small (less than fee)';
-          } else {
-            // S1: create send slate
-            const sendResult = await handleGrinCreateSend(sendAmount, feeBuffer, undefined);
-            if (!sendResult.success || !sendResult.data) {
-              throw new Error('Grin S1 create failed');
-            }
-            console.log('[Migration] Grin S1 created:', sendResult.data.slateId);
-
-            // S2: sign (same wallet = self-send)
-            const signResult = await handleGrinSignSlatepack(sendResult.data.slatepack);
-            if (!signResult.success || !signResult.data) {
-              throw new Error('Grin S2 sign failed');
-            }
-            console.log('[Migration] Grin S2 signed');
-
-            // S3: finalize and broadcast
-            const finalizeResult = await handleGrinFinalizeAndBroadcast(
-              signResult.data.signedSlatepack,
-              sendResult.data.sendContext
-            );
-
-            if (finalizeResult.success) {
-              step.txHash = sendResult.data.slateId;
-              step.status = 'swept';
-              console.log('[Migration] Grin swept:', sendResult.data.slateId);
-            } else {
-              throw new Error('Grin finalize/broadcast failed');
-            }
+            continue;
           }
 
-          // Restore keys for normal wallet operations
-          const freshKeys = await initGrinWallet(unlockedMnemonic!);
-          setGrinWasmKeys(freshKeys);
+          // Step 1: Init OLD keys (useBip39=true) as sender
+          const oldKeys = await initGrinWallet(unlockedMnemonic!, true);
+          setGrinWasmKeys(oldKeys);
+          step.oldAddress = oldKeys.slatepackAddress;
+          console.log('[Migration] Grin sender (old BIP39):', oldKeys.slatepackAddress);
+
+          // Step 2: S1 create with old keys
+          const sendResult = await handleGrinCreateSend(sendAmount, 0);
+          if (!sendResult.success || !sendResult.data) {
+            throw new Error(`Grin S1 create failed: ${sendResult.success === false ? sendResult.error : 'no data'}`);
+          }
+          console.log('[Migration] Grin S1 created:', sendResult.data.slateId);
+
+          // Step 3: Init NEW keys (useBip39=false) as receiver
+          const newKeys = await initGrinWallet(unlockedMnemonic!, false);
+          setGrinWasmKeys(newKeys);
+          step.newAddress = newKeys.slatepackAddress;
+          console.log('[Migration] Grin receiver (grin-wallet compat):', newKeys.slatepackAddress);
+
+          // Step 4: S2 sign with new keys (CROSS-WALLET receive)
+          const signResult = await handleGrinSignSlatepack(sendResult.data.slatepack);
+          if (!signResult.success || !signResult.data) {
+            throw new Error(`Grin S2 sign failed: ${signResult.success === false ? signResult.error : 'no data'}`);
+          }
+          console.log('[Migration] Grin S2 signed (cross-wallet)');
+
+          // Step 5: Restore OLD keys for finalization
+          setGrinWasmKeys(oldKeys);
+
+          // Step 6: S3 finalize and broadcast with old keys
+          const finalizeResult = await handleGrinFinalizeAndBroadcast(
+            signResult.data.signedSlatepack,
+            sendResult.data.sendContext
+          );
+
+          if (finalizeResult.success) {
+            step.txHash = sendResult.data.slateId;
+            step.status = 'swept';
+            console.log('[Migration] Grin swept:', sendResult.data.slateId);
+          } else {
+            throw new Error(`Grin finalize/broadcast failed: ${finalizeResult.success === false ? finalizeResult.error : ''}`);
+          }
+
+          // Set NEW keys for ongoing wallet use (grin-wallet/Grim compatible)
+          setGrinWasmKeys(newKeys);
         }
       } catch (err) {
-        step.status = 'error';
-        step.error = err instanceof Error ? err.message : 'Sweep failed';
-        console.error(`[Migration] ${step.asset} sweep failed:`, err);
+        const errMsg = err instanceof Error ? err.message : 'Sweep failed';
+        // "No unspent outputs" / "All outputs have been spent" means the asset was
+        // already swept in a previous migration attempt — treat as done, not error.
+        if (errMsg.includes('No unspent outputs') || errMsg.includes('have been spent')) {
+          step.status = 'skipped';
+          console.log(`[Migration] ${step.asset}: already swept (no unspent outputs remain)`);
+        } else {
+          step.status = 'error';
+          step.error = errMsg;
+          console.error(`[Migration] ${step.asset} sweep failed:`, err);
+        }
       }
     }
 
-    // Check if any sweeps failed
+    // Check if any sweeps failed (skipped = already done, not a failure)
     const failedSteps = migrationStatus.steps.filter(s => s.status === 'error');
     if (failedSteps.length > 0) {
       migrationStatus.phase = 'error';
@@ -275,6 +312,12 @@ export async function handleStartMigration(): Promise<MessageResponse> {
     }
 
     await saveWalletState(state);
+
+    // Update in-memory keys to v3 so LWS re-registration uses correct view keys
+    unlockedKeys.set('xmr', newKeys.xmr.privateSpendKey);
+    unlockedKeys.set('wow', newKeys.wow.privateSpendKey);
+    unlockedViewKeys.set('xmr', newKeys.xmr.privateViewKey);
+    unlockedViewKeys.set('wow', newKeys.wow.privateViewKey);
 
     // Re-register new XMR/WOW addresses with LWS
     // This is critical — without it, balance queries return 403

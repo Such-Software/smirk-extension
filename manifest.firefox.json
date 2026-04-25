@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Smirk Wallet",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Non-custodial multi-currency tip wallet for Telegram, Discord, and more",
   "browser_specific_settings": {
     "gecko": {

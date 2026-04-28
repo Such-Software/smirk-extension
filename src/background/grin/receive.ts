@@ -13,7 +13,7 @@ import {
   getAuthenticatedUserId,
   getNextChildIndex,
 } from './helpers';
-import { recordGrinOutput, recordGrinTransaction } from './backend';
+import { recordGrinOutput, recordGrinTransaction, setGrinKernelExcess } from './backend';
 
 // =============================================================================
 // Receive Flow (Sign Slate)
@@ -113,7 +113,7 @@ export async function handleGrinSignSlatepack(
 
     // Sign the slate (decodes S1, adds our signature, returns S2)
     const grinModule = await getGrinModule();
-    const { slate: signedSlate, outputInfo } = await grinModule.signSlate(keys, slatepackString, nextChildIndex);
+    const { slate: signedSlate, outputInfo, kernelExcess } = await grinModule.signSlate(keys, slatepackString, nextChildIndex);
 
     // Encode the signed slate as a slatepack response
     const signedSlatepack = await grinModule.encodeSlatepack(keys, signedSlate, 'response');
@@ -145,6 +145,19 @@ export async function handleGrinSignSlatepack(
       0, // Receiver doesn't pay fee
       'receive'
     );
+
+    // Stamp the kernel excess on the receive row. The on-chain kernel id
+    // is determined at S2; without this step, receives from non-Smirk
+    // senders (grin-wallet/Grim) end up confirmed but with no kernel id
+    // in our DB — block-explorer links break and history shows the slate
+    // id (which can't be searched on chain).
+    if (kernelExcess) {
+      try {
+        await setGrinKernelExcess(userId, signedSlate.id, kernelExcess);
+      } catch (err) {
+        console.warn('[Grin] Failed to stamp kernel excess (non-fatal):', err);
+      }
+    }
 
     return {
       success: true,

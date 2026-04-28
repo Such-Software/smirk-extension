@@ -140,7 +140,19 @@ export async function signSlate(
   keys: GrinKeys,
   slatepackString: string,
   nextChildIndex: number = 0
-): Promise<{ slate: GrinSlate; outputInfo: { keyId: string; nChild: number; amount: bigint; commitment: string } }> {
+): Promise<{
+  slate: GrinSlate;
+  outputInfo: { keyId: string; nChild: number; amount: bigint; commitment: string };
+  /**
+   * Hex of the kernel excess at S2. Determined by both parties' blinding
+   * factors plus the offset, all of which are fixed once the receiver has
+   * signed; the sender's S3 only adds signature components, doesn't change
+   * the excess. Stored as the on-chain kernel id so receive history can
+   * link out to a block explorer even when the sender is non-Smirk and
+   * never hits our /broadcast endpoint.
+   */
+  kernelExcess: string | null;
+}> {
   console.log('[signSlate] ENTRY - nextChildIndex parameter:', nextChildIndex);
   await initializeGrinWasm();
 
@@ -385,11 +397,14 @@ export async function signSlate(
   const finalOffset = rawSlate.getOffset?.();
   console.log('[signSlate] Final offset (S2):', finalOffset ? Common.toHexString(finalOffset) : 'null');
 
-  // Try to compute and log the kernel excess for verification
+  // Compute the kernel excess. At S2 it is fully determined and identical
+  // to what will land on-chain — the sender's S3 only completes the signature.
+  let kernelExcess: string | null = null;
   try {
     const excess = rawSlate.getExcess?.();
     if (excess) {
-      console.log('[signSlate] Computed kernel excess:', Common.toHexString(excess));
+      kernelExcess = Common.toHexString(excess);
+      console.log('[signSlate] Computed kernel excess:', kernelExcess);
     }
   } catch (e) {
     console.log('[signSlate] Could not compute excess:', e);
@@ -413,6 +428,7 @@ export async function signSlate(
       amount,
       commitment: Common.toHexString(outputCommit),
     },
+    kernelExcess,
   };
 }
 

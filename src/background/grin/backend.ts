@@ -194,3 +194,29 @@ export async function updateGrinTransactionStatus(
     status,
   });
 }
+
+/**
+ * Stamp the kernel excess on an already-recorded grin transaction.
+ *
+ * Receivers compute the kernel excess at S2; it's the same value that will
+ * appear on-chain and the same value `broadcastGrinTransaction` would write
+ * if the sender were a Smirk user. Calling this from the receive flow
+ * means external-sender (grin-wallet/Grim) tips still get a kernel id
+ * recorded so history can link out to a block explorer.
+ *
+ * Status is preserved by passing 'pending' (matches what
+ * `recordGrinTransaction` just inserted; the confirmation poller will
+ * advance it to 'confirmed' later).
+ */
+export async function setGrinKernelExcess(
+  userId: string,
+  slateId: string,
+  kernelExcess: string,
+): Promise<void> {
+  await api.updateGrinTransaction({
+    userId,
+    slateId,
+    status: 'pending',
+    kernelExcess,
+  });
+}

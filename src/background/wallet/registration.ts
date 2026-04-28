@@ -8,10 +8,14 @@
 import type { WalletState } from '@/types';
 import { bytesToHex, signBitcoinMessage } from '@/lib/crypto';
 import { saveAuthState } from '@/lib/storage';
+import { storage } from '@/lib/browser';
 import { api } from '@/lib/api';
 import { unlockedKeys, unlockedViewKeys } from '../state';
 import { getAddressForAsset } from './addresses';
 import type { DerivedKeys } from './types';
+
+const RECONCILE_KEY = 'lastUserKeysReconcile';
+const RECONCILE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Register with backend with retry logic.
@@ -68,18 +72,15 @@ export async function registerWithBackend(state: WalletState, seedFingerprint?: 
     keys.push({ asset: 'ltc', publicKey: state.keys.ltc.publicKey });
   }
   if (state.keys.xmr) {
-    // For XMR: send public spend key (main identity) and public view key
     keys.push({
       asset: 'xmr',
       publicKey: state.keys.xmr.publicSpendKey || state.keys.xmr.publicKey,
-      publicSpendKey: state.keys.xmr.publicViewKey, // Backend uses this for encrypted tips
     });
   }
   if (state.keys.wow) {
     keys.push({
       asset: 'wow',
       publicKey: state.keys.wow.publicSpendKey || state.keys.wow.publicKey,
-      publicSpendKey: state.keys.wow.publicViewKey,
     });
   }
   if (state.keys.grin) {
@@ -238,5 +239,83 @@ export async function registerWithLws(
     } else {
       console.log('WOW registered with LWS:', wowResult.data?.message, wowStartHeight ? `(start_height: ${wowStartHeight})` : '(from current)');
     }
+  }
+}
+
+/**
+ * Reconcile backend `user_keys.public_key` against the locally-derived
+ * public spend key. If they drift (which is possible after past derivation
+ * bugs, or if a future bug ever desyncs them), silently call /auth/migrate-keys
+ * with the current correct values. Throttled to once per 24h to avoid
+ * hammering the endpoint on every unlock.
+ *
+ * Failures are non-fatal — wallet keeps working, we'll just retry next time.
+ */
+export async function reconcileUserKeys(state: WalletState, userId: string): Promise<void> {
+  try {
+    const last = await storage.local.get(RECONCILE_KEY);
+    const lastRun = (last as Record<string, number>)[RECONCILE_KEY] ?? 0;
+    if (Date.now() - lastRun < RECONCILE_INTERVAL_MS) return;
+
+    const result = await api.getUserKeys(userId);
+    if (!result.data) {
+      console.warn('reconcileUserKeys: getUserKeys failed:', result.error);
+      return;
+    }
+    // Backend response is snake_case; the typed interface above is aspirational
+    // (the API client doesn't transform). Cast to the actual wire shape.
+    const stored = ((result.data as unknown) as {
+      keys?: Array<{ asset: string; public_key: string }>;
+    }).keys ?? [];
+    const findStored = (asset: string) => stored.find((k) => k.asset === asset);
+
+    const drifted: Array<{
+      asset: string;
+      public_key: string;
+      address?: string;
+      view_key?: string;
+    }> = [];
+
+    for (const asset of ['xmr', 'wow'] as const) {
+      const localKey = state.keys[asset];
+      if (!localKey) continue;
+      const localPub = localKey.publicSpendKey || localKey.publicKey;
+      const storedKey = findStored(asset);
+      if (!storedKey || storedKey.public_key !== localPub) {
+        const viewKey = unlockedViewKeys.get(asset);
+        drifted.push({
+          asset,
+          public_key: localPub,
+          address: getAddressForAsset(asset, localKey),
+          view_key: viewKey ? bytesToHex(viewKey) : undefined,
+        });
+      }
+    }
+
+    const grinLocal = state.keys.grin?.publicKey;
+    const grinStored = findStored('grin');
+    if (grinLocal && (!grinStored || grinStored.public_key !== grinLocal)) {
+      drifted.push({ asset: 'grin', public_key: grinLocal });
+    }
+
+    if (drifted.length === 0) {
+      // Already in sync — record timestamp so we skip until next interval
+      await storage.local.set({ [RECONCILE_KEY]: Date.now() });
+      return;
+    }
+
+    console.log(
+      'reconcileUserKeys: backend keys drifted, re-uploading:',
+      drifted.map(d => d.asset).join(', '),
+    );
+    const migrateResult = await api.migrateKeys(drifted);
+    if (migrateResult.error) {
+      console.warn('reconcileUserKeys: migrateKeys failed:', migrateResult.error);
+      return;
+    }
+    await storage.local.set({ [RECONCILE_KEY]: Date.now() });
+    console.log('reconcileUserKeys: backend keys reconciled');
+  } catch (err) {
+    console.warn('reconcileUserKeys: unexpected error (non-fatal):', err);
   }
 }

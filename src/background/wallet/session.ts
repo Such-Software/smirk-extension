@@ -41,7 +41,7 @@ import {
   clearInMemoryKeys,
 } from '../state';
 import { startAutoLockTimer, stopAutoLockTimer } from '../settings';
-import { registerWithBackend, registerWithLwsFromUnlockedKeys } from './registration';
+import { registerWithBackend, registerWithLwsFromUnlockedKeys, reconcileUserKeys } from './registration';
 import { getAddressForAsset } from './addresses';
 
 // =============================================================================
@@ -280,6 +280,10 @@ export async function handleUnlockWallet(password: string): Promise<MessageRespo
       registerWithLwsFromUnlockedKeys(authState.userId, state)
         .then(() => console.log('LWS registration verified on unlock'))
         .catch(err => console.warn('LWS registration on unlock failed (non-fatal):', err));
+
+      // Reconcile user_keys with backend if drifted (throttled to 24h).
+      // Self-heals legacy desync from past derivation bugs.
+      reconcileUserKeys(state, authState.userId);
     }
 
     return { success: true, data: { unlocked: true } };

@@ -270,14 +270,12 @@ export async function handleStartMigration(): Promise<MessageResponse> {
       {
         asset: 'xmr',
         public_key: bytesToHex(newKeys.xmr.publicSpendKey),
-        public_spend_key: bytesToHex(newKeys.xmr.publicSpendKey),
         address: newXmrAddr,
         view_key: bytesToHex(newKeys.xmr.privateViewKey),
       },
       {
         asset: 'wow',
         public_key: bytesToHex(newKeys.wow.publicSpendKey),
-        public_spend_key: bytesToHex(newKeys.wow.publicSpendKey),
         address: newWowAddr,
         view_key: bytesToHex(newKeys.wow.privateViewKey),
       },

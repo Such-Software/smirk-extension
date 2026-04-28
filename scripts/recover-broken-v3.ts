@@ -519,6 +519,10 @@ async function main(): Promise<void> {
   console.log('\n=== Correct v3 (BIP32 secp256k1 / Cake Wallet — sweep TO here) ===');
   console.log(`XMR: ${correctXmrAddr}`);
   console.log(`WOW: ${correctWowAddr}`);
+  console.log(`XMR pub spend: ${bytesToHex(correctXmr.publicSpendKey)}`);
+  console.log(`WOW pub spend: ${bytesToHex(correctWow.publicSpendKey)}`);
+  console.log(`XMR pub view:  ${bytesToHex(correctXmr.publicViewKey)}`);
+  console.log(`WOW pub view:  ${bytesToHex(correctWow.publicViewKey)}`);
 
   if (process.argv.includes('--dry-run')) {
     console.log('\n--dry-run: showing keys, not sweeping.');
@@ -601,6 +605,27 @@ async function main(): Promise<void> {
   console.log('\nRegistering correct-v3 addresses with LWS...');
   await registerLws('xmr', correctXmrAddr, bytesToHex(correctXmr.privateViewKey), userId, 0);
   await registerLws('wow', correctWowAddr, bytesToHex(correctWow.privateViewKey), userId, 0);
+
+  // Update user_keys to correct-v3 — without this the user can't restore later
+  // because check_restore compares submitted public_key to stored, and the
+  // stored value would still reflect the broken-v3 derivation otherwise.
+  console.log('\nUpdating backend user_keys to correct-v3...');
+  await apiRequest('/auth/migrate-keys', {
+    keys: [
+      {
+        asset: 'xmr',
+        public_key: bytesToHex(correctXmr.publicSpendKey),
+        address: correctXmrAddr,
+        view_key: bytesToHex(correctXmr.privateViewKey),
+      },
+      {
+        asset: 'wow',
+        public_key: bytesToHex(correctWow.publicSpendKey),
+        address: correctWowAddr,
+        view_key: bytesToHex(correctWow.privateViewKey),
+      },
+    ],
+  });
 
   console.log('\nDone! Update the extension and unlock to see your balance at the correct v3 addresses.');
 }

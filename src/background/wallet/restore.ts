@@ -55,8 +55,8 @@ export async function handleRestoreWallet(
     return [
       { asset: 'btc', publicKey: bytesToHex(getPublicKey(dk.btc.privateKey)) },
       { asset: 'ltc', publicKey: bytesToHex(getPublicKey(dk.ltc.privateKey)) },
-      { asset: 'xmr', publicKey: bytesToHex(dk.xmr.publicSpendKey), publicSpendKey: bytesToHex(dk.xmr.publicViewKey) },
-      { asset: 'wow', publicKey: bytesToHex(dk.wow.publicSpendKey), publicSpendKey: bytesToHex(dk.wow.publicViewKey) },
+      { asset: 'xmr', publicKey: bytesToHex(dk.xmr.publicSpendKey) },
+      { asset: 'wow', publicKey: bytesToHex(dk.wow.publicSpendKey) },
       { asset: 'grin', publicKey: bytesToHex(dk.grin.publicKey) },
     ];
   }

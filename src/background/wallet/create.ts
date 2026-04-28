@@ -354,20 +354,23 @@ export async function createWalletFromMnemonic(
   // Compute seed fingerprint for wallet identification
   const seedFingerprint = computeSeedFingerprint(mnemonic);
 
-  // Register with backend, then register with LWS (LWS requires user_id from backend)
-  // This is non-blocking - wallet works offline too
-  // Includes retry logic in case of temporary network issues
-  registerWithBackendRetry(state, seedFingerprint)
-    .then((userId) => {
-      // Now register XMR/WOW with LWS using the user_id
-      // For new wallets: LWS starts from current block
-      // For restored wallets: use wallet birthday heights to avoid scanning from genesis
-      return registerWithLws(userId, state, derivedKeys, isRestore);
-    })
-    .catch((err) => {
-      console.warn('Failed to register with backend/LWS after retries:', err);
-      // Continue working - ensureValidAuth will retry on next unlock
+  // Register with backend BEFORE returning so the access token is set on the
+  // api client before the popup fires off auth-required queries (e.g. social
+  // tips). Without this, the popup races registration and gets a 401.
+  //
+  // LWS registration is still fire-and-forget — it's slow, doesn't gate UI,
+  // and the popup doesn't depend on it being complete.
+  //
+  // If backend registration fails entirely, we still return success so the
+  // wallet works locally. ensureValidAuth() on next unlock will retry.
+  try {
+    const userId = await registerWithBackendRetry(state, seedFingerprint);
+    registerWithLws(userId, state, derivedKeys, isRestore).catch((err) => {
+      console.warn('LWS registration failed (non-fatal, will retry on unlock):', err);
     });
+  } catch (err) {
+    console.warn('Backend registration failed after retries (will retry on unlock):', err);
+  }
 
   return { success: true, data: { created: true, assets } };
 }

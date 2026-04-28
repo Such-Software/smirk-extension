@@ -71,12 +71,15 @@ This would provide reproducible builds without trusting pre-compiled binaries.
 
 ## Architecture Reference
 
-### Grin Key Derivation
+### Grin Key Derivation (v3+)
 ```
-mnemonic → MWC Seed → Extended Private Key
-Per-output: Identifier(depth=3, paths=[0,0,n_child,0])
+mnemonic → BIP-39 entropy (16 bytes)
+        → HMAC-SHA512("IamVoldemort", entropy) → Extended Private Key
+        → Crypto.addressKey(extKey, 0) → ed25519 keypair → slatepack address
+Per-output blinding: Identifier(depth=3, paths=[0,0,n_child,0])
 Commitment = amount*H + blind*G
 ```
+Pre-v3 wallets used `HMAC-SHA512("IamVoldemort", PBKDF2(mnemonic))` (MWC's BIP-39 mode); migration sweeps from old → new on first unlock after upgrade.
 
 ### n_child Management
 Backend tracks `MAX(n_child)` across ALL outputs.

@@ -28,24 +28,30 @@ npm run typecheck
 
 ```bash
 # 1. Bump version in all files (package.json + both manifests)
-npm run bump 0.1.5
+./scripts/bump-version.sh 0.2.4
 
 # 2. Commit the version bump
-git add -A && git commit -m "chore: bump version to 0.1.5"
+git add package.json manifest.json manifest.firefox.json
+git commit -m "chore: bump version to 0.2.4"
 
-# 3. Build, test, and create release artifacts
-npm run release
+# 3. Build, test, and create release artifacts (also creates the git tag)
+./scripts/release.sh
 
 # 4. Push commits and tag
-git push && git push origin v0.1.5
+git push origin main
+git push origin v0.2.4
 ```
 
-The `npm run release` script:
+The release script (`scripts/release.sh`):
+- Refuses to run with uncommitted changes or an existing tag
 - Runs typecheck and tests
 - Builds Chrome and Firefox zips
-- Creates source archive for Mozilla review
+- Creates source archive for Mozilla review (via `git archive HEAD`, so include the version bump in the same commit before running)
 - Creates annotated git tag
-- Outputs to `releases/` directory
+- Outputs to `releases/`:
+  - `smirk-wallet-chrome-vX.Y.Z.zip`
+  - `smirk-wallet-firefox-vX.Y.Z.zip`
+  - `smirk-wallet-X.Y.Z-src.zip`
 
 ### Manual Testing (Optional)
 
@@ -97,10 +103,12 @@ npm run build:firefox && cd dist && web-ext run
 
 ### Why a Separate Manifest?
 
-Firefox MV3 has key differences:
-- Uses `background.scripts` instead of `background.service_worker`
-- Requires `data_collection_permissions` in `browser_specific_settings`
-- Needs `strict_min_version: "112.0"` for `background.type: "module"`
+Firefox MV3 has key differences from Chrome MV3:
+- Background page is `background.scripts: ["background.js"]` with `type: "module"` (Chrome uses `background.service_worker: "background.js"`)
+- Requires `browser_specific_settings.gecko.data_collection_permissions` declaring data-collection scope (we use `["none"]`)
+- Requires `browser_specific_settings.gecko.id` (we use `wallet@smirk.cash`)
+
+`strict_min_version` is a Gecko-only field and is not currently set on the Firefox manifest — pin it under `browser_specific_settings.gecko.strict_min_version` if you ever need to require a minimum Firefox version.
 
 ### First Submission
 

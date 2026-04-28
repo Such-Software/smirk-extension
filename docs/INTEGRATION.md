@@ -46,15 +46,19 @@ async function connectSmirk() {
     throw new Error('Smirk wallet not installed');
   }
 
-  // This opens the approval popup
-  const publicKeys = await window.smirk.connect();
+  // Pass the assets you actually need. The user is shown which assets you
+  // are requesting and only those keys are returned. Asking for fewer
+  // assets means a clearer approval prompt and less surface area.
+  const publicKeys = await window.smirk.connect(['btc']);
 
-  // Returns: { btc: string, ltc: string, xmr: string, wow: string, grin: string }
+  // Returns: { btc: string } — only requested + approved assets
   console.log('Connected! BTC pubkey:', publicKeys.btc);
 
   return publicKeys;
 }
 ```
+
+You can omit the argument (`window.smirk.connect()`) to request all assets, but most sites only need one or two — be a good citizen and scope your request.
 
 ### 3. Request Signature for Authentication
 
@@ -90,25 +94,32 @@ async function authenticateWithSmirk() {
 
 ## API Reference
 
-### `window.smirk.connect()`
+### `window.smirk.connect(assets?)`
 
 Request connection to the user's Smirk wallet. Opens an approval popup.
+
+**Parameters:**
+- `assets` (optional): array of asset names to request, e.g. `['btc', 'xmr']`. If omitted, all five assets are requested. The user always sees exactly which assets you're asking for.
 
 **Returns:** `Promise<PublicKeys>`
 
 ```typescript
+type AssetName = 'btc' | 'ltc' | 'xmr' | 'wow' | 'grin';
+
 interface PublicKeys {
-  btc: string;   // Compressed secp256k1 public key (hex)
-  ltc: string;   // Compressed secp256k1 public key (hex)
-  xmr: string;   // Ed25519 public spend key (hex)
-  wow: string;   // Ed25519 public spend key (hex)
-  grin: string;  // Ed25519 public key (hex)
+  // Only requested AND approved assets are populated. Others are absent.
+  btc?: string;   // Compressed secp256k1 public key (hex)
+  ltc?: string;   // Compressed secp256k1 public key (hex)
+  xmr?: string;   // Public spend key (32-byte hex). Derived via BIP-32 secp256k1; bytes reduced as ed25519 scalar
+  wow?: string;   // Public spend key (32-byte hex). Same scheme as XMR
+  grin?: string;  // Ed25519 public key for slatepack address (hex)
 }
 ```
 
 **Errors:**
 - User rejected the connection request
 - Extension locked (user needs to unlock with password)
+- `window.smirk` is not present — user has the extension installed but disabled the in-page API in Settings ("Disable web API"). Always feature-detect with `if (window.smirk)`.
 
 ### `window.smirk.signMessage(message: string)`
 
@@ -531,6 +542,7 @@ window.smirk.on('disconnect', () => {
 
 ## Changelog
 
+- **2026-04-19** (v0.2.1): `connect(assets?)` now accepts an asset-list argument. Returned `PublicKeys` only contains the requested+approved assets. New Settings toggle lets users disable the `window.smirk` injection entirely — sites should always feature-detect.
 - **2026-02-19**: Added `requestPayment()` for one-click payments (BTC, LTC, XMR, WOW)
 - **2026-02-02**: Added `getAddresses()` and documented `getPublicKeys()`
 - **2026-01-30**: Initial integration guide

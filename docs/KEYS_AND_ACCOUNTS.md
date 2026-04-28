@@ -130,12 +130,14 @@ For actual Grin transaction operations (slate creation, signing, finalization), 
 const seedInstance = new Seed();
 await seedInstance.initialize(mnemonic);  // 12-word mnemonic string
 
-// Extended private key derivation
+// Extended private key derivation (v3+ wallets)
 // First parameter is the HMAC key - MWC uses "IamVoldemort" (Wallet.SEED_KEY)
-// Second parameter enables BIP39 mode
+// Second parameter (useBip39):
+//   - false (v3+): HMAC-SHA512("IamVoldemort", raw_16_byte_entropy) — grin-wallet/Grim compatible
+//   - true (v2 legacy): adds an extra PBKDF2 round first — MWC-style, NOT grin-wallet compatible
 const extendedPrivateKey = await seedInstance.getExtendedPrivateKey(
   Wallet.SEED_KEY,  // "IamVoldemort"
-  true              // useBip39
+  false             // v3+ uses raw entropy directly to match grin-wallet
 );
 
 // Slatepack address derivation via Crypto.addressKey
@@ -144,13 +146,13 @@ const ed25519PublicKey = Ed25519.publicKeyFromSecretKey(addressKey);
 const slatepackAddress = bech32.encode('grin', bech32.toWords(ed25519PublicKey), 1023);
 ```
 
-The MWC library performs its own internal BIP39 derivation from the mnemonic, producing compatible keys for the Grin/MWC ecosystem.
+**v3 vs v2 Grin derivation:** v0.2.0 shipped with `useBip39=true` (MWC-compatible but produced different keys than grin-wallet/Grim/Cake). v0.2.2 switched v3 wallets to `useBip39=false`, which derives the master key directly from the raw 16-byte BIP-39 entropy and produces slatepack addresses that match grin-wallet and Grim exactly. Migrated wallets carry both code paths so a v2-era wallet can sweep its funds to v3 addresses (`src/background/migration.ts`).
 
 **On-chain vs Off-chain Keys:**
-- **Basic keys** (SHA256 derivation): Used for backend slatepack address registration
-- **WASM keys** (MWC derivation): Used for actual transaction signing
+- **Basic keys** (SHA256 derivation): Used for legacy backend slatepack address registration on pre-v3 wallets
+- **WASM keys** (MWC derivation): Used for actual transaction signing on all wallets, and for slatepack address registration on v3+ wallets
 
-Both derive from the same 12-word mnemonic but via different paths. The slatepack addresses produced may differ.
+Both derive from the same 12-word mnemonic but via different paths. The slatepack addresses produced may differ between v1, v2, and v3.
 
 **Important:** Grin has no on-chain addresses. The derived ed25519 keypair is used for:
 - Slatepack address (bech32-encoded public key, prefix `grin1...`)
@@ -172,21 +174,26 @@ When you set a password in Smirk, your mnemonic is encrypted before storage:
 
 ```
 salt = random(16 bytes)
-key = PBKDF2-SHA256(password, salt, 100000 iterations)
+key = PBKDF2-SHA256(password, salt, 600000 iterations)
 encrypted = XChaCha20-Poly1305(mnemonic, key)
 ```
 
 The encrypted mnemonic and salt are stored in browser extension storage. The password never leaves your device.
+
+**Note on iteration count:** As of v0.2.0 new wallets use 600K PBKDF2 iterations (OWASP 2023 recommendation). Wallets created before v0.2.0 used 100K iterations and are silently upgraded to 600K on the next unlock — no user action required.
 
 ## What the Backend Stores
 
 | Data | Purpose | Security |
 |------|---------|----------|
 | User ID | Account identifier | Public |
-| BTC/LTC public keys | Tip targeting | Public |
-| XMR/WOW public spend keys | Tip targeting | Public |
+| Seed fingerprint (16 hex chars) | Restore identity check | Derived from seed; not the seed itself |
+| BTC/LTC public keys | Tip targeting + restore identity | Public |
+| XMR/WOW public spend keys | Tip targeting + restore identity | Public |
 | XMR/WOW private view keys | LWS balance scanning | View-only (cannot spend) |
-| Grin public key | Slatepack address | Public |
+| Grin public key (slatepack) | Encrypted-tip routing | Public |
+
+**Wallet restore identity:** as of v0.2.3, the backend's `/auth/check-restore` validates a wallet by matching the submitted `seed_fingerprint` AND the submitted XMR/WOW/BTC/LTC/Grin `public_key` values against stored values. A separate `public_spend_key` column previously existed and was compared too, but it had drifted across registration vs. migration code paths and was removed from the comparison — `seed_fingerprint` + `public_key` is sufficient.
 
 **Never stored on backend:**
 - Mnemonic phrase

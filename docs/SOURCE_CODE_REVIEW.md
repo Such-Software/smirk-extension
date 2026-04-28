@@ -81,12 +81,21 @@ Expected warnings during `web-ext lint` that are safe to ignore:
 
 ```
 src/
-  background/   Service worker - message handling, wallet operations
+  background/   Service worker / background page - message handling, wallet operations
   popup/        UI components (Preact framework)
   content/      Content script - injects window.smirk API into web pages
+  inject/       In-page script - window.smirk API surface
   lib/          Crypto libraries, API client, WASM wrappers
   types/        TypeScript type definitions
+scripts/        One-off / dev-only utilities (NOT bundled into the extension):
+                - bump-version.sh, release.sh — release helpers
+                - recover-broken-v3.ts — manual recovery script for users
+                  affected by a derivation-path bug in v0.2.0; not invoked
+                  by the extension at runtime, never loaded from the bundle
+                - derive_keys.{js,py}, zmq_*.py — diagnostic helpers
 ```
+
+The `scripts/` directory is included in the source archive for transparency but its files are never imported by the build (no entry in `vite.config.ts` references them) and do not appear in the produced `.zip`. You can verify by inspecting the built `dist/` after `npm run build:firefox` — `scripts/` is absent.
 
 ## npm Dependencies
 

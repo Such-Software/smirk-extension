@@ -68,6 +68,10 @@ export async function handleStartMigration(): Promise<MessageResponse> {
     return { success: false, error: 'Wallet must be unlocked to migrate' };
   }
 
+  if (migrationStatus && migrationStatus.phase !== 'complete' && migrationStatus.phase !== 'error') {
+    return { success: false, error: 'Migration already in progress' };
+  }
+
   const state = await getWalletState();
   if (state.derivationVersion === 3) {
     return { success: false, error: 'Already on v3 derivation' };
@@ -189,8 +193,10 @@ export async function handleStartMigration(): Promise<MessageResponse> {
           const sendAmount = Number(totalBalance - fee);
 
           if (sendAmount <= 0) {
-            step.status = 'error';
-            step.error = 'Grin balance too small (less than fee)';
+            // Unsweepable Grin dust — same class as the XMR/WOW dust skip below.
+            // Block migration on this would strand v3 upgrade forever.
+            step.status = 'skipped';
+            console.log('[Migration] Grin: balance below fee, treating as nothing to sweep');
             continue;
           }
 
@@ -242,11 +248,18 @@ export async function handleStartMigration(): Promise<MessageResponse> {
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : 'Sweep failed';
-        // "No unspent outputs" / "All outputs have been spent" means the asset was
-        // already swept in a previous migration attempt — treat as done, not error.
-        if (errMsg.includes('No unspent outputs') || errMsg.includes('have been spent')) {
+        // Treat as "skipped" (not error) when there is nothing recoverable in the
+        // old address: already-swept outputs, or remaining outputs whose sum is
+        // below the network fee (dust). Blocking migration on unspendable dust
+        // would strand the user on the old derivation forever.
+        const nothingToSweep =
+          errMsg.includes('No unspent outputs') ||
+          errMsg.includes('have been spent') ||
+          errMsg.includes('Balance too low to cover network fee') ||
+          errMsg.includes('Insufficient funds');
+        if (nothingToSweep) {
           step.status = 'skipped';
-          console.log(`[Migration] ${step.asset}: already swept (no unspent outputs remain)`);
+          console.log(`[Migration] ${step.asset}: nothing sweepable (${errMsg})`);
         } else {
           step.status = 'error';
           step.error = errMsg;
@@ -263,35 +276,20 @@ export async function handleStartMigration(): Promise<MessageResponse> {
       return { success: false, error: migrationStatus.error };
     }
 
-    // Phase 3: Update backend with new keys
+    // Phase 3: Persist v3 locally FIRST, then push to backend.
+    //
+    // Order matters for crash-safety. If we updated the backend first and
+    // the service worker died before saving local state, on the next unlock
+    // session.ts would re-derive v1/v2 keys from `derivationVersion`, then
+    // reconcileUserKeys would see local≠backend and "fix" it by uploading
+    // the v1/v2 keys — un-migrating the wallet while funds sit at v3.
+    //
+    // Saving local first means a crash in this window leaves local on v3
+    // and backend on v1/v2; reconcileUserKeys forward-converges on next
+    // unlock by pushing v3 to the backend. LWS re-registration on unlock
+    // also covers the address re-registration if we crash before line ~340.
     migrationStatus.phase = 'updating';
 
-    const migrateResult = await api.migrateKeys([
-      {
-        asset: 'xmr',
-        public_key: bytesToHex(newKeys.xmr.publicSpendKey),
-        address: newXmrAddr,
-        view_key: bytesToHex(newKeys.xmr.privateViewKey),
-      },
-      {
-        asset: 'wow',
-        public_key: bytesToHex(newKeys.wow.publicSpendKey),
-        address: newWowAddr,
-        view_key: bytesToHex(newKeys.wow.privateViewKey),
-      },
-      {
-        asset: 'grin',
-        public_key: bytesToHex(newKeys.grin.publicKey),
-      },
-    ]);
-
-    if (migrateResult.error) {
-      migrationStatus.phase = 'error';
-      migrationStatus.error = `Backend update failed: ${migrateResult.error}. Your funds are safe.`;
-      return { success: false, error: migrationStatus.error };
-    }
-
-    // Phase 4: Update local wallet state
     state.derivationVersion = 3;
 
     // Update ALL public keys to v3 — including publicViewKey!
@@ -316,6 +314,35 @@ export async function handleStartMigration(): Promise<MessageResponse> {
     unlockedKeys.set('wow', newKeys.wow.privateSpendKey);
     unlockedViewKeys.set('xmr', newKeys.xmr.privateViewKey);
     unlockedViewKeys.set('wow', newKeys.wow.privateViewKey);
+
+    const migrateResult = await api.migrateKeys([
+      {
+        asset: 'xmr',
+        public_key: bytesToHex(newKeys.xmr.publicSpendKey),
+        address: newXmrAddr,
+        view_key: bytesToHex(newKeys.xmr.privateViewKey),
+      },
+      {
+        asset: 'wow',
+        public_key: bytesToHex(newKeys.wow.publicSpendKey),
+        address: newWowAddr,
+        view_key: bytesToHex(newKeys.wow.privateViewKey),
+      },
+      {
+        asset: 'grin',
+        public_key: bytesToHex(newKeys.grin.publicKey),
+      },
+    ]);
+
+    if (migrateResult.error) {
+      // Local state is already on v3 — reconcileUserKeys will push our v3
+      // public keys to the backend on the next unlock. We do NOT roll back
+      // the local save: rolling back would re-create the original hazard
+      // where backend update could land while local stays on v1/v2.
+      migrationStatus.phase = 'error';
+      migrationStatus.error = `Backend update failed: ${migrateResult.error}. Your funds are safe and will sync on next unlock.`;
+      return { success: false, error: migrationStatus.error };
+    }
 
     // Re-register new XMR/WOW addresses with LWS
     // This is critical — without it, balance queries return 403

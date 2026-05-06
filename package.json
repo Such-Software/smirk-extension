@@ -1,6 +1,6 @@
 {
   "name": "smirk-extension",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Non-custodial multi-currency tip wallet browser extension",
   "type": "module",
   "engines": {

@@ -1,5 +1,14 @@
 # Smirk Extension Changelog
 
+## v0.2.4 (2026-05-05)
+
+### Bug Fixes
+- **Migration robustness**: old addresses holding only unsweepable dust (outputs whose sum is below the network fee) are now skipped during the v3 upgrade instead of blocking it. Key migration proceeds and the dust is left where it sits. Applies to XMR, WOW, and Grin.
+
+### Hardening
+- **Migration concurrency guard**: `START_MIGRATION` is now refused while a previous run is still in flight, preventing a double-click or popup-reopen from spawning parallel sweeps.
+- **Migration save ordering**: local wallet state is persisted to v3 *before* the backend `migrate-keys` call. A crash in the window between the two now self-heals on next unlock via the existing key-reconciliation path, instead of risking the backend being silently regressed to v1/v2 by reconcile reading stale local state.
+
 ## v0.2.3 (2026-04-28)
 
 ### Bug Fixes

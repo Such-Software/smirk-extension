@@ -237,4 +237,11 @@ if (typeof window.smirk === 'undefined') {
     writable: false,
     configurable: false,
   });
+
+  // Notify any consumer that polled-too-early or only checked once.
+  // Inject scripts run as `type="module"`, which the browser defers
+  // until after DOMContentLoaded — so a website's React useEffect
+  // can fire before window.smirk exists. This event lets the page
+  // react when we *actually* arrive instead of having to poll.
+  window.dispatchEvent(new CustomEvent('smirk-ready'));
 }

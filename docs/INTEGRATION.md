@@ -2,6 +2,9 @@
 
 Add "Sign in with Smirk" to your website. Users authenticate by cryptographically proving they control their wallet keys - no passwords, no email, no OAuth.
 
+> **Targeting v0.3.0 desktop / mobile wallets too?**
+> The Smirk v0.2.x browser extension (this doc) and the Smirk v0.3.0+ standalone wallet (desktop today, mobile in v0.4) both expose `window.smirk` with the same API. The transports under the hood are different — content-script injection for the extension, iframe + `postMessage` for the wallet's embedded browser — but a one-line call to `installSmirkPageApi()` from `@smirk/dapp-api` auto-detects which path applies. **For new integrations, follow the unified guide here:** [smirk-monorepo/docs/DAPP_INTEGRATION.md](https://github.com/Such-Software/smirk-monorepo/blob/main/docs/DAPP_INTEGRATION.md). Everything below this banner still applies for the extension surface — nothing changes for existing v0.2.x dapps.
+
 ## Overview
 
 Smirk provides a `window.smirk` API that any website can use for authentication and payments. The flow works like MetaMask's `window.ethereum`:
